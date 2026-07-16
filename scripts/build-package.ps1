@@ -66,7 +66,6 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$')
 
 $solution = Join-Path $repoRoot 'GPTino.sln'
 $panelRoot = Join-Path $repoRoot 'ui\panel'
-$rhinoProject = Join-Path $repoRoot 'src\GPTino.Rhino\GPTino.Rhino.csproj'
 $agentProject = Join-Path $repoRoot 'src\GPTino.AgentHost\GPTino.AgentHost.csproj'
 $terminalProject = Join-Path $repoRoot 'src\GPTino.Terminal\GPTino.Terminal.csproj'
 $frameworkFolder = 'net8.0'
@@ -189,7 +188,7 @@ if (-not (Test-Path -LiteralPath $panelIndex -PathType Leaf)) {
 }
 
 if (-not $SkipRestore) {
-    Invoke-Tool 'dotnet' @('restore', $solution) $repoRoot
+    Invoke-Tool 'dotnet' @('restore', $solution, "/p:Version=$Version") $repoRoot
 }
 
 if (-not $SkipSolutionBuild) {
@@ -197,22 +196,11 @@ if (-not $SkipSolutionBuild) {
         'build', $solution,
         '-c', $Configuration,
         '--no-restore',
+        '--no-incremental',
         "/p:Version=$Version",
         '/p:IncludeSourceRevisionInInformationalVersion=false'
     )
     Invoke-Tool 'dotnet' $buildArguments $repoRoot
-
-    # Yak identifies the product from the RHP's assembly title. Keep the binary name
-    # GPTino.Rhino.rhp while presenting the single installed product as GPTino.
-    Invoke-Tool 'dotnet' @(
-        'build', $rhinoProject,
-        '-c', $Configuration,
-        '--no-restore',
-        '--no-dependencies',
-        "/p:Version=$Version",
-        '/p:AssemblyTitle=GPTino',
-        '/p:IncludeSourceRevisionInInformationalVersion=false'
-    ) $repoRoot
 }
 
 if (-not $SkipTests) {
@@ -317,6 +305,23 @@ foreach ($relativePath in $requiredFiles) {
     $requiredPath = Join-Path $stageRoot $relativePath
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Package validation failed; required file is missing: $relativePath"
+    }
+}
+
+foreach ($dependencyFile in @('GPTino.Rhino.deps.json', 'GPTino.Grasshopper.deps.json')) {
+    $dependencyPath = Join-Path $pluginStage $dependencyFile
+    $dependencyManifest = Get-Content -LiteralPath $dependencyPath -Raw | ConvertFrom-Json
+    $runtimeTarget = @($dependencyManifest.targets.PSObject.Properties)[0]
+    if ($null -eq $runtimeTarget) {
+        throw "Package dependency manifest has no runtime target: $dependencyFile"
+    }
+
+    $mismatchedProjects = @($runtimeTarget.Value.PSObject.Properties) | Where-Object {
+        $_.Name -match '^GPTino\.[^/]+/(.+)$' -and
+        -not [string]::Equals($Matches[1], $Version, [StringComparison]::Ordinal)
+    }
+    if ($mismatchedProjects) {
+        throw "Package dependency versions do not match $Version in $dependencyFile`: $($mismatchedProjects.Name -join ', ')"
     }
 }
 

@@ -32,6 +32,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.History.Tests", "tes
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Terminal.Tests", "tests\GPTino.Terminal.Tests\GPTino.Terminal.Tests.csproj", "{D1032453-791A-4D45-976A-8F3F0E47D7E1}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Rhino.Tests", "tests\GPTino.Rhino.Tests\GPTino.Rhino.Tests.csproj", "{A9B84B53-9F4B-43E1-9B66-3A3C04C967D3}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -98,6 +100,10 @@ Global
 		{D1032453-791A-4D45-976A-8F3F0E47D7E1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D1032453-791A-4D45-976A-8F3F0E47D7E1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D1032453-791A-4D45-976A-8F3F0E47D7E1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A9B84B53-9F4B-43E1-9B66-3A3C04C967D3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A9B84B53-9F4B-43E1-9B66-3A3C04C967D3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A9B84B53-9F4B-43E1-9B66-3A3C04C967D3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A9B84B53-9F4B-43E1-9B66-3A3C04C967D3}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -2,6 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
     <TargetExt>.rhp</TargetExt>
+    <AssemblyTitle>GPTino</AssemblyTitle>
     <UseSystemDrawing>true</UseSystemDrawing>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
