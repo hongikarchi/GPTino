@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Description>Document-bound bridge protocol shared by GPTino hosts and Rhino/Grasshopper.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../GPTino.Contracts/GPTino.Contracts.csproj" />
+  </ItemGroup>
+</Project>

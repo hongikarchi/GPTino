@@ -1,0 +1,54 @@
+# Third-party notices
+
+## Wireify
+
+- Source: https://github.com/ifylab/wireify
+- Pinned commit: `33aad3bd1f490d82bd9894f1dcb8f8711a517b54`
+- License: Apache License 2.0
+- Copyright: Hossein Zargar and Wireify contributors
+
+GPTino references Wireify's Rhino/Grasshopper bootstrap, Python component
+editing workflow, parameter typing, and runtime-error loop. Ported code must
+retain its SPDX header and be listed in `docs/upstream-map.json`.
+
+## Cordyceps
+
+- Source: https://github.com/brookstalley/cordyceps
+- Pinned commit: `af2b2c687d5fa8191d2f740f7b546ece01999c07`
+- License: MIT
+- Copyright (c) 2026 Brooks Talley
+
+GPTino references Cordyceps canvas, wiring, inspection, document-lock, and Rhino
+scene behavior. The MIT license is reproduced in
+`references/licenses/Cordyceps.MIT.txt`.
+
+## SkillMeld
+
+- Source: https://github.com/ifylab/skillmeld
+- Pinned commit: `66776dfcd3cf57b209cf302a2dbfeda73e1bc630`
+- License: Apache License 2.0
+
+SkillMeld is a design reference for deterministic routing evidence, strict
+winner selection, mandatory gates, and provenance. It is not a runtime dependency.
+
+## Bundled runtime and UI dependencies
+
+GPTino packages also bundle the following direct or transitive runtime code:
+
+- React and React DOM 19.2.7 — MIT, Copyright Meta Platforms, Inc. and affiliates.
+- Scheduler 0.27.0 — MIT, Copyright Meta Platforms, Inc. and affiliates.
+- Microsoft.Data.Sqlite 9.0.7 — MIT, Copyright Microsoft Corporation.
+- SQLitePCLRaw 2.1.10 and its e_sqlite3 bundle — Apache-2.0,
+  Copyright 2014-2024 SourceGear, LLC. The embedded SQLite engine is dedicated
+  to the public domain by the SQLite authors.
+- LibGit2Sharp 0.31.0 — MIT, Copyright LibGit2Sharp contributors.
+- libgit2 native binaries 2.0.323 — GPL-2.0 with the libgit2 linking exception,
+  plus the component notices reproduced by that project.
+- The self-contained Microsoft .NET runtime — MIT and the third-party terms
+  reproduced by the installed .NET SDK.
+
+The Yak package contains the complete corresponding texts under `legal/`,
+including Cordyceps, React, LibGit2Sharp, libgit2, direct MIT notices, SQLitePCLRaw, and
+the .NET runtime third-party notices. RhinoCommon and Grasshopper assemblies
+are build-time SDK references and are supplied at runtime by the user's
+licensed Rhino installation; GPTino does not redistribute those SDK binaries.

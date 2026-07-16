@@ -1,0 +1,105 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.AgentHost", "src\GPTino.AgentHost\GPTino.AgentHost.csproj", "{18AEFC26-8A44-4D97-B714-E2F784B7C99E}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.BridgeContract", "src\GPTino.BridgeContract\GPTino.BridgeContract.csproj", "{B7F7BBF0-4BF8-48CF-AF4C-ECF364A29CB9}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Contracts", "src\GPTino.Contracts\GPTino.Contracts.csproj", "{AAAEEC1E-867A-4A62-95B8-971F6DD9EEB7}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.CordycepsAdapter", "src\GPTino.CordycepsAdapter\GPTino.CordycepsAdapter.csproj", "{38D1EBE4-628C-4ED7-B0D2-34DBE149B0AD}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Core", "src\GPTino.Core\GPTino.Core.csproj", "{BB68F20F-CFA2-405A-BBF7-97F91319E21C}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Grasshopper", "src\GPTino.Grasshopper\GPTino.Grasshopper.csproj", "{3A5D8177-15A7-4CFD-A662-DC1A83FF5367}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.History", "src\GPTino.History\GPTino.History.csproj", "{9C925CE5-E3AF-4458-943A-2079D5CE8D38}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Rhino", "src\GPTino.Rhino\GPTino.Rhino.csproj", "{271D8DFB-9EFF-421C-833B-F44C81361C40}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Terminal", "src\GPTino.Terminal\GPTino.Terminal.csproj", "{26B16756-FBBD-43ED-B8C2-9A1A56ACBD96}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.WireifyAdapter", "src\GPTino.WireifyAdapter\GPTino.WireifyAdapter.csproj", "{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.AgentHost.Tests", "tests\GPTino.AgentHost.Tests\GPTino.AgentHost.Tests.csproj", "{E0DC7C77-B949-433B-9D57-BB80A05C06D0}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.BridgeContract.Tests", "tests\GPTino.BridgeContract.Tests\GPTino.BridgeContract.Tests.csproj", "{2D6E8D54-2F21-43E3-8C42-A55C39D87B78}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Core.Tests", "tests\GPTino.Core.Tests\GPTino.Core.Tests.csproj", "{00C0A560-C86F-4865-8133-E480CD65342B}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.History.Tests", "tests\GPTino.History.Tests\GPTino.History.Tests.csproj", "{E86FA0D9-AE01-4584-B6C9-94AEBB6E8FC8}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Terminal.Tests", "tests\GPTino.Terminal.Tests\GPTino.Terminal.Tests.csproj", "{D1032453-791A-4D45-976A-8F3F0E47D7E1}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{18AEFC26-8A44-4D97-B714-E2F784B7C99E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{18AEFC26-8A44-4D97-B714-E2F784B7C99E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{18AEFC26-8A44-4D97-B714-E2F784B7C99E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{18AEFC26-8A44-4D97-B714-E2F784B7C99E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B7F7BBF0-4BF8-48CF-AF4C-ECF364A29CB9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7F7BBF0-4BF8-48CF-AF4C-ECF364A29CB9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7F7BBF0-4BF8-48CF-AF4C-ECF364A29CB9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7F7BBF0-4BF8-48CF-AF4C-ECF364A29CB9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AAAEEC1E-867A-4A62-95B8-971F6DD9EEB7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AAAEEC1E-867A-4A62-95B8-971F6DD9EEB7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AAAEEC1E-867A-4A62-95B8-971F6DD9EEB7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AAAEEC1E-867A-4A62-95B8-971F6DD9EEB7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{38D1EBE4-628C-4ED7-B0D2-34DBE149B0AD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{38D1EBE4-628C-4ED7-B0D2-34DBE149B0AD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{38D1EBE4-628C-4ED7-B0D2-34DBE149B0AD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{38D1EBE4-628C-4ED7-B0D2-34DBE149B0AD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BB68F20F-CFA2-405A-BBF7-97F91319E21C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BB68F20F-CFA2-405A-BBF7-97F91319E21C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BB68F20F-CFA2-405A-BBF7-97F91319E21C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BB68F20F-CFA2-405A-BBF7-97F91319E21C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3A5D8177-15A7-4CFD-A662-DC1A83FF5367}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3A5D8177-15A7-4CFD-A662-DC1A83FF5367}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3A5D8177-15A7-4CFD-A662-DC1A83FF5367}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3A5D8177-15A7-4CFD-A662-DC1A83FF5367}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9C925CE5-E3AF-4458-943A-2079D5CE8D38}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9C925CE5-E3AF-4458-943A-2079D5CE8D38}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9C925CE5-E3AF-4458-943A-2079D5CE8D38}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9C925CE5-E3AF-4458-943A-2079D5CE8D38}.Release|Any CPU.Build.0 = Release|Any CPU
+		{271D8DFB-9EFF-421C-833B-F44C81361C40}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{271D8DFB-9EFF-421C-833B-F44C81361C40}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{271D8DFB-9EFF-421C-833B-F44C81361C40}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{271D8DFB-9EFF-421C-833B-F44C81361C40}.Release|Any CPU.Build.0 = Release|Any CPU
+		{26B16756-FBBD-43ED-B8C2-9A1A56ACBD96}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{26B16756-FBBD-43ED-B8C2-9A1A56ACBD96}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{26B16756-FBBD-43ED-B8C2-9A1A56ACBD96}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{26B16756-FBBD-43ED-B8C2-9A1A56ACBD96}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E0DC7C77-B949-433B-9D57-BB80A05C06D0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E0DC7C77-B949-433B-9D57-BB80A05C06D0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E0DC7C77-B949-433B-9D57-BB80A05C06D0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E0DC7C77-B949-433B-9D57-BB80A05C06D0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2D6E8D54-2F21-43E3-8C42-A55C39D87B78}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2D6E8D54-2F21-43E3-8C42-A55C39D87B78}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2D6E8D54-2F21-43E3-8C42-A55C39D87B78}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2D6E8D54-2F21-43E3-8C42-A55C39D87B78}.Release|Any CPU.Build.0 = Release|Any CPU
+		{00C0A560-C86F-4865-8133-E480CD65342B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{00C0A560-C86F-4865-8133-E480CD65342B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{00C0A560-C86F-4865-8133-E480CD65342B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{00C0A560-C86F-4865-8133-E480CD65342B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E86FA0D9-AE01-4584-B6C9-94AEBB6E8FC8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E86FA0D9-AE01-4584-B6C9-94AEBB6E8FC8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E86FA0D9-AE01-4584-B6C9-94AEBB6E8FC8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E86FA0D9-AE01-4584-B6C9-94AEBB6E8FC8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D1032453-791A-4D45-976A-8F3F0E47D7E1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D1032453-791A-4D45-976A-8F3F0E47D7E1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D1032453-791A-4D45-976A-8F3F0E47D7E1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D1032453-791A-4D45-976A-8F3F0E47D7E1}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

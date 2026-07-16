@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 2,
+  "derivedFiles": [
+    {
+      "target": "src/GPTino.Grasshopper/GrasshopperPythonFoundationAdapter.cs",
+      "source": "wireify",
+      "commit": "33aad3bd1f490d82bd9894f1dcb8f8711a517b54",
+      "upstreamPaths": [
+        "src/WireifyCore/Bridge/RhinoCodeInterop.cs",
+        "src/WireifyCore/Bridge/GrasshopperBridge.cs",
+        "src/WireifyCore/Bridge/StagedConversion.cs"
+      ],
+      "kind": "behavioral reimplementation and selective port",
+      "license": "Apache-2.0"
+    },
+    {
+      "target": "src/GPTino.Grasshopper/GrasshopperCanvasFoundationAdapter.cs",
+      "source": "cordyceps",
+      "commit": "af2b2c687d5fa8191d2f740f7b546ece01999c07",
+      "upstreamPaths": [
+        "src/Cordyceps/Tools/Unified/GhCanvasTool.cs",
+        "src/Cordyceps/Tools/Unified/GhCanvasTool.Groups.cs",
+        "src/Cordyceps/Tools/Unified/GhWireTool.cs",
+        "src/Cordyceps/Tools/Unified/GhInspectTool.cs"
+      ],
+      "kind": "behavioral reimplementation",
+      "license": "MIT"
+    },
+    {
+      "target": "src/GPTino.Rhino/RhinoSceneFoundationAdapter.cs",
+      "source": "cordyceps",
+      "commit": "af2b2c687d5fa8191d2f740f7b546ece01999c07",
+      "upstreamPaths": [
+        "src/Cordyceps/Tools/Unified/RhinoSceneTool.cs",
+        "src/Cordyceps/Tools/Unified/RhinoSceneTool.Layers.cs"
+      ],
+      "kind": "behavioral reimplementation",
+      "license": "MIT"
+    },
+    {
+      "target": "src/GPTino.AgentHost/Codex/AdaptiveModelRouting.cs",
+      "source": "skillmeld",
+      "commit": "66776dfcd3cf57b209cf302a2dbfeda73e1bc630",
+      "upstreamPaths": [],
+      "kind": "design-derived deterministic gate; no runtime code dependency",
+      "license": "Apache-2.0"
+    }
+  ],
+  "designReferences": [
+    {
+      "source": "wireify",
+      "commit": "33aad3bd1f490d82bd9894f1dcb8f8711a517b54",
+      "influence": [
+        "Grasshopper Python source and socket ownership boundaries",
+        "explicit project-scoped connection configuration"
+      ]
+    },
+    {
+      "source": "cordyceps",
+      "commit": "af2b2c687d5fa8191d2f740f7b546ece01999c07",
+      "influence": [
+        "Grasshopper canvas topology and layout ownership",
+        "snapshot and Rhino scene operation boundaries"
+      ]
+    },
+    {
+      "source": "skillmeld",
+      "commit": "66776dfcd3cf57b209cf302a2dbfeda73e1bc630",
+      "influence": [
+        "thin routing orchestrator over bounded capabilities",
+        "deterministic conflict and provenance mechanisms around model judgment"
+      ]
+    }
+  ]
+}

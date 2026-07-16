@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>GPTino.AgentHost</AssemblyName>
+    <RootNamespace>GPTino.AgentHost</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\GPTino.BridgeContract\GPTino.BridgeContract.csproj" />
+    <ProjectReference Include="..\GPTino.CordycepsAdapter\GPTino.CordycepsAdapter.csproj" />
+    <ProjectReference Include="..\GPTino.Contracts\GPTino.Contracts.csproj" />
+    <ProjectReference Include="..\GPTino.Core\GPTino.Core.csproj" />
+    <ProjectReference Include="..\GPTino.History\GPTino.History.csproj" />
+    <ProjectReference Include="..\GPTino.WireifyAdapter\GPTino.WireifyAdapter.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('..\..\ui\panel\dist')">
+    <Content Include="..\..\ui\panel\dist\**\*"
+             Link="wwwroot\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

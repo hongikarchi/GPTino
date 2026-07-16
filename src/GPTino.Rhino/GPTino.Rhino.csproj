@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetExt>.rhp</TargetExt>
+    <UseSystemDrawing>true</UseSystemDrawing>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <Description>Rhino 8 per-document panel and process bridge for GPTino.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="RhinoCommon" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../GPTino.BridgeContract/GPTino.BridgeContract.csproj" />
+    <ProjectReference Include="../GPTino.CordycepsAdapter/GPTino.CordycepsAdapter.csproj" />
+  </ItemGroup>
+</Project>

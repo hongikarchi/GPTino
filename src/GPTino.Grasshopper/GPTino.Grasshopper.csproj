@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetExt>.gha</TargetExt>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseSystemDrawing>true</UseSystemDrawing>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <Description>Grasshopper document registration and explicit target resolution for GPTino.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="RhinoCommon" />
+    <PackageReference Include="Grasshopper" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../GPTino.BridgeContract/GPTino.BridgeContract.csproj" />
+    <ProjectReference Include="../GPTino.WireifyAdapter/GPTino.WireifyAdapter.csproj" />
+    <ProjectReference Include="../GPTino.CordycepsAdapter/GPTino.CordycepsAdapter.csproj" />
+  </ItemGroup>
+</Project>

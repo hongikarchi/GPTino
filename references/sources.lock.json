@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "name": "wireify",
+      "repository": "https://github.com/ifylab/wireify.git",
+      "commit": "33aad3bd1f490d82bd9894f1dcb8f8711a517b54",
+      "license": "Apache-2.0",
+      "usage": "design-and-selective-port"
+    },
+    {
+      "name": "cordyceps",
+      "repository": "https://github.com/brookstalley/cordyceps.git",
+      "commit": "af2b2c687d5fa8191d2f740f7b546ece01999c07",
+      "license": "MIT",
+      "usage": "design-and-selective-port"
+    },
+    {
+      "name": "skillmeld",
+      "repository": "https://github.com/ifylab/skillmeld.git",
+      "commit": "66776dfcd3cf57b209cf302a2dbfeda73e1bc630",
+      "license": "Apache-2.0",
+      "usage": "design-reference-only"
+    }
+  ]
+}

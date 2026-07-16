@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Grasshopper" Version="8.21.25188.17001" />
+    <PackageVersion Include="LibGit2Sharp" Version="0.31.0" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="9.0.7" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="RhinoCommon" Version="8.21.25188.17001" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.1" />
+  </ItemGroup>
+</Project>
