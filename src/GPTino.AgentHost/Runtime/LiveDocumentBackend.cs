@@ -792,7 +792,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 return new JobExecutionResult(job.JobId, JobState.RecoveryRequired, message);
             }
 
-            entry.Committed = BuildCommittedJobView(job.ChangeSet, after);
+            try
+            {
+                entry.Committed = BuildCommittedJobView(job.ChangeSet, after);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Chaining data is observability sugar. The live change is verified and
+                // committed at this point; a projection bug must never demote the job.
+                _logger.LogWarning(exception, "Could not build the committed chaining view for job {JobId}.", job.JobId);
+            }
             await SetJobPhaseAsync(
                 entry,
                 JobState.Committed,

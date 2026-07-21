@@ -202,7 +202,16 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         {
             documentObject.NickName = request.NickName.Trim();
         }
-        documentObject.Attributes.Pivot = new System.Drawing.PointF(request.Pivot.X, request.Pivot.Y);
+        // Freshly emitted objects (Number Slider among them) have null Attributes until
+        // CreateAttributes runs; setting Pivot first would throw for those types.
+        if (documentObject.Attributes is null)
+        {
+            documentObject.CreateAttributes();
+        }
+        var attributes = documentObject.Attributes
+            ?? throw new InvalidOperationException(
+                $"Grasshopper did not create attributes for component type {request.ComponentTypeId:D}.");
+        attributes.Pivot = new System.Drawing.PointF(request.Pivot.X, request.Pivot.Y);
         document.UndoUtil.RecordAddObjectEvent($"GPTino: {request.OperationId}", documentObject);
         if (!document.AddObject(documentObject, update: true))
         {

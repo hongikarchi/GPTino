@@ -62,5 +62,16 @@ public static class HouseRules
           instead of calling snapshot_read again.
         - If a submit is rejected or blocked as stale, the error message carries the current fingerprint or current
           snapshotId. Correct only those values and resubmit immediately; do not restart discovery.
+        - Use this exact ChangeSet shape on the first submit (property names are exact; no other spellings exist):
+          {"changeSetId":"<uuid>","projectId":"<from snapshot_read>","sessionId":"<from snapshot_read>",
+           "baseSnapshotRevision":7,"baseGitCommit":null,"dependencies":[],
+           "readSet":[],"writeSet":[{"resource":{"kind":"grasshopperComponent","id":"<uuid>","field":"*"},
+           "expectedFingerprint":"gptino:absent"}],
+           "operations":[{"operationId":"create-x","kind":"createComponent","owner":"cordyceps",
+           "reads":[],"writes":[{"kind":"grasshopperComponent","id":"<uuid>","field":"*"}],
+           "reversible":false,"payloadArtifact":"operations/create-x.json"}],
+           "acceptancePredicates":[{"name":"create-x exists","kind":"objectExists",
+           "resource":{"kind":"grasshopperComponent","id":"<uuid>","field":"*"},"expectedValue":null}],
+           "rollbackBeforeImages":[],"createdAt":"<iso8601>"}
         """;
 }
