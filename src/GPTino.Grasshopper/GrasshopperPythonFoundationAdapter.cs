@@ -354,9 +354,18 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
                 continue;
             }
             var arguments = new object?[] { null };
-            if (method.Invoke(component, arguments) is true && arguments[0] is string source)
+            try
             {
-                return source;
+                if (method.Invoke(component, arguments) is true && arguments[0] is string source)
+                {
+                    return source;
+                }
+            }
+            catch (TargetInvocationException exception) when (exception.InnerException is not null)
+            {
+                throw new InvalidOperationException(
+                    $"RhinoCode TryGetSource failed: {exception.InnerException.Message}",
+                    exception.InnerException);
             }
             break;
         }
@@ -876,8 +885,17 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         }
         else
         {
-            component.GetType().GetMethod("VariableParameterMaintenance", Type.EmptyTypes)
-                ?.Invoke(component, null);
+            try
+            {
+                component.GetType().GetMethod("VariableParameterMaintenance", Type.EmptyTypes)
+                    ?.Invoke(component, null);
+            }
+            catch (TargetInvocationException exception) when (exception.InnerException is not null)
+            {
+                throw new InvalidOperationException(
+                    $"VariableParameterMaintenance failed: {exception.InnerException.Message}",
+                    exception.InnerException);
+            }
         }
         if (component is IGH_Component ghComponent)
         {

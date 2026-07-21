@@ -751,14 +751,22 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            // Reflection-backed adapters can surface TargetInvocationException whose outer
+            // message ("Exception has been thrown by the target of an invocation") hides the
+            // actionable cause; unwrap so sessions and operators see the real error.
+            var effective = exception;
+            while (effective is System.Reflection.TargetInvocationException { InnerException: { } inner })
+            {
+                effective = inner;
+            }
             var failure = new BridgeFailure(
-                exception is BridgeProtocolException protocolException
+                effective is BridgeProtocolException protocolException
                     ? protocolException.Code
-                    : exception is DocumentTargetMismatchException or DocumentTargetUnavailableException
+                    : effective is DocumentTargetMismatchException or DocumentTargetUnavailableException
                         ? "document_target_mismatch"
                         : "bridge_operation_failed",
-                exception.Message,
-                Retryable: exception is IOException,
+                effective.Message,
+                Retryable: effective is IOException,
                 TryReadOperationId(frame));
             var error = BridgeFrame.Create(
                 BridgeMessageKind.Error,
