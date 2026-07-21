@@ -3,7 +3,6 @@ import { ChatPane } from "./components/ChatPane";
 import { Icon } from "./components/Icons";
 import { OperationsPane } from "./components/OperationsPane";
 import { SessionCanvas } from "./components/SessionCanvas";
-import { SessionList } from "./components/SessionList";
 import { useRuntime } from "./hooks/useRuntime";
 import "./styles.css";
 
@@ -154,26 +153,32 @@ export default function App() {
 
       {canvasOpen ? (
         <section className="canvas-row" aria-label="Session graph">
-          <SessionCanvas runtime={runtime} selectedId={selectedId} onSelect={setSelectedId} />
+          <SessionCanvas
+            runtime={runtime}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onReorder={actions.reorder}
+            onPauseToggle={(id, paused) => void actions.pauseSession(id, paused)}
+            onTerminal={(id) => void actions.openTerminal(id)}
+          />
+          <div className="canvas-toolbar">
+            <button
+              type="button"
+              className="new-session-button"
+              onClick={() => {
+                const suggested = `Session ${runtime.sessions.length + 1}`;
+                const name = window.prompt("Name this GPTino session", suggested)?.trim();
+                if (name) void actions.createSession(name);
+              }}
+              disabled={busyActions.has("create-session")}
+            >
+              <span>+</span> Session
+            </button>
+          </div>
         </section>
       ) : null}
 
       <main className="workspace-grid">
-        <SessionList
-          sessions={runtime.sessions}
-          selectedId={selectedId}
-          busyActions={busyActions}
-          onSelect={setSelectedId}
-          onCreate={() => {
-            const suggested = `Session ${runtime.sessions.length + 1}`;
-            const name = window.prompt("Name this GPTino session", suggested)?.trim();
-            if (name) void actions.createSession(name);
-          }}
-          onReorder={actions.reorder}
-          onShift={actions.shift}
-          onPause={(id, paused) => void actions.pauseSession(id, paused)}
-          onTerminal={(id) => void actions.openTerminal(id)}
-        />
         <ChatPane
           session={selected}
           models={models}
@@ -182,7 +187,6 @@ export default function App() {
           onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
           onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
           onSend={(content) => selected ? actions.sendMessage(selected.id, content) : undefined}
-          onTerminal={() => selected && void actions.openTerminal(selected.id)}
         />
         <OperationsPane
           runtime={runtime}

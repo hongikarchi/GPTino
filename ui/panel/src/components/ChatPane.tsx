@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { GptinoSession, ModelInfo, ModelProfile, SessionMode } from "../types";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import type { ChatMessage, GptinoSession, ModelInfo, ModelProfile, SessionActivity, SessionMode } from "../types";
 import { Icon } from "./Icons";
 import { StatusBadge } from "./StatusBadge";
 
@@ -11,8 +11,11 @@ interface ChatPaneProps {
   onModel(profile: ModelProfile): void;
   onPinModel(model: string | null): void;
   onSend(content: string): Promise<void> | void;
-  onTerminal(): void;
 }
+
+type StreamItem =
+  | { type: "message"; at: number; message: ChatMessage }
+  | { type: "activity"; at: number; activity: SessionActivity };
 
 const profiles: { value: ModelProfile; label: string; description: string }[] = [
   { value: "auto", label: "Auto", description: "Route by task risk" },
@@ -24,13 +27,26 @@ const profiles: { value: ModelProfile; label: string; description: string }[] = 
 const formatTime = (value: string) =>
   new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 
-export function ChatPane({ session, models, busyActions, onMode, onModel, onPinModel, onSend, onTerminal }: ChatPaneProps) {
+export function ChatPane({ session, models, busyActions, onMode, onModel, onPinModel, onSend }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   const streamRef = useRef<HTMLDivElement>(null);
 
+  const stream = useMemo<StreamItem[]>(() => {
+    if (!session) return [];
+    const items: StreamItem[] = session.messages.map((message) => ({
+      type: "message",
+      at: Date.parse(message.createdAt) || 0,
+      message,
+    }));
+    for (const activity of session.activity ?? []) {
+      items.push({ type: "activity", at: Date.parse(activity.at) || 0, activity });
+    }
+    return items.sort((a, b) => a.at - b.at);
+  }, [session]);
+
   useEffect(() => {
     streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
-  }, [session?.id, session?.messages.length]);
+  }, [session?.id, stream.length]);
 
   if (!session) {
     return (
@@ -73,24 +89,36 @@ export function ChatPane({ session, models, busyActions, onMode, onModel, onPinM
           </div>
           <p>{session.summary}</p>
         </div>
-        <button type="button" className="terminal-button" onClick={onTerminal}>
-          <Icon name="terminal" />
-          <span>Terminal</span>
-          {session.terminalOpen ? <span className="terminal-live" /> : null}
-        </button>
       </header>
 
       <div className="chat-stream" ref={streamRef} aria-live="polite">
-        {session.messages.map((message) => (
-          <article className={`message message-${message.role} ${message.pending ? "pending" : ""}`} key={message.id}>
-            <div className="message-author">
-              <span>{message.role === "assistant" ? "GPTino" : message.role === "system" ? "System" : "You"}</span>
-              <time dateTime={message.createdAt}>{formatTime(message.createdAt)}</time>
+        {stream.map((item) =>
+          item.type === "message" ? (
+            <article
+              className={`message message-${item.message.role} ${item.message.pending ? "pending" : ""}`}
+              key={`m-${item.message.id}`}
+            >
+              <div className="message-author">
+                <span>
+                  {item.message.role === "assistant" ? "GPTino" : item.message.role === "system" ? "System" : "You"}
+                </span>
+                <time dateTime={item.message.createdAt}>{formatTime(item.message.createdAt)}</time>
+              </div>
+              <p>{item.message.content}</p>
+              {item.message.pending ? <span className="pending-label">Sending…</span> : null}
+            </article>
+          ) : (
+            <div
+              className={`activity-row ${item.activity.ok ? "" : "failed"}`}
+              key={`a-${item.at}-${item.activity.kind}-${item.activity.summary}`}
+              title={`${item.activity.kind}${item.activity.durationMs > 0 ? ` · ${item.activity.durationMs}ms` : ""}`}
+            >
+              <span className="activity-dot" />
+              <span className="activity-text">{item.activity.summary}</span>
+              <time dateTime={item.activity.at}>{formatTime(item.activity.at)}</time>
             </div>
-            <p>{message.content}</p>
-            {message.pending ? <span className="pending-label">Sending…</span> : null}
-          </article>
-        ))}
+          ),
+        )}
         {session.status === "drafting" || session.status === "working" ? (
           <div className="thinking-row" aria-label="GPTino is working">
             <span />

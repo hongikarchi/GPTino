@@ -27,6 +27,14 @@ export interface SessionJob {
   baseRevision?: number;
 }
 
+export interface SessionActivity {
+  at: string;
+  kind: string;
+  summary: string;
+  ok: boolean;
+  durationMs: number;
+}
+
 export interface ModelInfo {
   id: string;
   model: string;
@@ -54,6 +62,8 @@ export interface GptinoSession {
   paused: boolean;
   terminalOpen?: boolean;
   unread?: number;
+  currentActivity?: string | null;
+  activity?: SessionActivity[];
   messages: ChatMessage[];
   job?: SessionJob;
 }

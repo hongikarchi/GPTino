@@ -27,6 +27,7 @@ describe("deriveGraph", () => {
     expect(node(model, "orchestrator").kind).toBe("orchestrator");
     expect(node(model, "doc:rhino").docTarget).toBe("rhino");
     expect(node(model, "doc:gh").docTarget).toBe("grasshopper");
+    expect(node(model, "session:facade").sublabel).toBe("Submitting: Rebuild panel boundaries");
   });
 
   it("marks only the writer session wire as active and animated", () => {

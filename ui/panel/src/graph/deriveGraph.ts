@@ -124,7 +124,7 @@ export function deriveGraph(state: RuntimeState): GraphModel {
       w: SESSION_W,
       h: SESSION_H,
       label: session.title,
-      sublabel: session.job?.phase ?? session.summary,
+      sublabel: session.currentActivity ?? session.job?.phase ?? session.summary,
       rank: index + 1,
       session,
       warning: singleSessionWarnings.get(session.id),

@@ -334,7 +334,7 @@ textarea:disabled {
 .workspace-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(280px, 0.82fr) minmax(390px, 1.55fr) minmax(275px, 0.82fr);
+  grid-template-columns: minmax(390px, 1.6fr) minmax(275px, 0.8fr);
 }
 
 .sessions-pane,
@@ -1104,10 +1104,24 @@ textarea:disabled {
 }
 
 .canvas-row {
-  height: clamp(180px, 26vh, 300px);
+  position: relative;
+  height: clamp(200px, 30vh, 340px);
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: #0c0e0f;
+}
+
+.canvas-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  display: flex;
+  gap: 6px;
+}
+
+.canvas-empty {
+  fill: var(--dim);
+  font-size: 11px;
 }
 
 .session-canvas {
@@ -1196,6 +1210,22 @@ textarea:disabled {
 .gnode-session.paused .gnode-box { stroke: rgb(230 184 92 / 0.45); }
 .gnode-session.paused { opacity: 0.78; }
 .gnode-session.warning .gnode-box { stroke: rgb(225 111 98 / 0.55); }
+.gnode-session.dragging { opacity: 0.85; }
+.gnode-session.dragging .gnode-box { stroke: var(--cyan); stroke-dasharray: 4 4; }
+
+.gnode-action { cursor: pointer; pointer-events: all; }
+.gnode-action circle { fill: var(--surface-3); stroke: var(--border); stroke-width: 1; }
+.gnode-action:hover circle { stroke: var(--lime); }
+.gnode-action-glyph { fill: var(--muted); stroke: var(--muted); stroke-width: 1.4; stroke-linecap: round; }
+.gnode-action:hover .gnode-action-glyph { fill: var(--lime); stroke: var(--lime); }
+.gnode-action-text {
+  fill: var(--muted);
+  font-family: "DM Mono", monospace;
+  font-size: 7px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.gnode-action:hover .gnode-action-text { fill: var(--lime); }
 
 .gnode text { user-select: none; pointer-events: none; }
 .gnode-rank { fill: var(--dim); font-family: "DM Mono", monospace; font-size: 9px; }
@@ -1239,14 +1269,40 @@ textarea:disabled {
 
 .gnode-doc .gnode-box { fill: #121516; }
 .gnode-detail { fill: var(--lime); font-family: "DM Mono", monospace; font-size: 7px; }
+
+/* Activity feed rows inside the chat stream */
+
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0;
+  padding: 2px 6px;
+  color: var(--dim);
+  font-family: "DM Mono", monospace;
+  font-size: 9px;
+}
+
+.activity-row .activity-dot {
+  width: 4px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--cyan);
+}
+
+.activity-row.failed { color: #d99b93; }
+.activity-row.failed .activity-dot { background: var(--red); }
+.activity-row .activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-row time { margin-left: auto; flex: 0 0 auto; color: #4a5352; font-size: 8px; }
 .gnode-doc-mark { fill: var(--surface-3); stroke: var(--border); stroke-width: 1; }
 .gnode-doc-glyph { fill: var(--muted); font-family: "DM Mono", monospace; font-size: 9px; font-weight: 700; text-anchor: middle; }
 .session-canvas.health-degraded .gnode-doc .gnode-box { stroke: rgb(230 184 92 / 0.5); }
 .session-canvas.health-disconnected .gnode-doc .gnode-box { stroke: rgb(225 111 98 / 0.55); }
 
 @media (max-width: 1120px) {
-  .canvas-row { height: clamp(150px, 22vh, 220px); }
-  .workspace-grid { grid-template-columns: minmax(270px, 0.78fr) minmax(380px, 1.4fr); }
+  .canvas-row { height: clamp(170px, 25vh, 260px); }
+  .workspace-grid { grid-template-columns: minmax(380px, 1fr); }
   .operations-pane {
     grid-column: 1 / -1;
     display: grid;

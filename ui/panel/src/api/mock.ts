@@ -74,6 +74,14 @@ const demoState: RuntimeState = {
       paused: false,
       terminalOpen: true,
       unread: 1,
+      currentActivity: "Submitting: Rebuild panel boundaries",
+      activity: [
+        { at: minutesAgo(13), kind: "turn", summary: "Turn started — gpt-5.6-sol (xhigh)", ok: true, durationMs: 0 },
+        { at: minutesAgo(12), kind: "snapshot_read", summary: "Reading the canvas snapshot", ok: true, durationMs: 420 },
+        { at: minutesAgo(11), kind: "skill_read", summary: "Reading skill bake_manager.py", ok: true, durationMs: 12 },
+        { at: minutesAgo(9), kind: "artifact_write", summary: "Drafting operations/panel-remap.json", ok: true, durationMs: 8 },
+        { at: minutesAgo(4), kind: "change_submit", summary: "Submitting: Rebuild panel boundaries", ok: true, durationMs: 260 },
+      ],
       job: {
         id: "job-184",
         title: "Rebuild panel boundaries",
@@ -112,6 +120,10 @@ const demoState: RuntimeState = {
       effectiveModel: "gpt-5.6-terra",
       reasoning: "low",
       paused: false,
+      activity: [
+        { at: minutesAgo(9), kind: "turn", summary: "Turn started — gpt-5.6-terra (low)", ok: true, durationMs: 0 },
+        { at: minutesAgo(8), kind: "change_submit", summary: "Submitting: Connect staged sockets", ok: true, durationMs: 180 },
+      ],
       messages: [
         {
           id: "m-w-1",
