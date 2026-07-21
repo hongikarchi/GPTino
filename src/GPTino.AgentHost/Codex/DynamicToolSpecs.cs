@@ -6,12 +6,14 @@ internal static class DynamicToolSpecs
         "First call artifact_write with one JSON request object per operation, then set payloadArtifact to that session-relative path. " +
         "The artifact must be exactly {bridgeOperation,arguments}; bridgeOperation is mandatory and must match this mapping: " +
         "moveComponent/setLayout=canvas.move {operationId,pivots:{guid:{x,y}},expectedFingerprints:{guid:sha256}}; " +
+        "setValue=canvas.setNumberSlider {operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces}; only Number Slider is supported; " +
         "connectWire/disconnectWire=canvas.setWire {operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:connect|disconnect,rejectCycles:true}; " +
         "createComponent=canvas.create {operationId,objectId,componentTypeId,pivot:{x,y},nickName}; " +
         "deleteComponent=canvas.delete {operationId,objectId,expectedFingerprint}; " +
         "setGroup=canvas.setGroup {operationId,groupId,name,objectIds,argbColor}; " +
         "updatePythonSource=python.setSource {operationId,componentId,expectedSourceSha256,source,runtime:cpython3|ironPython2,expireSolution}; " +
         "setComponentIo=python.setSchema {operationId,componentId,inputs,outputs,preserveIncidentWires}; " +
+        "Python schema may append sockets only: preserve every existing socket UUID and order, and assign a new non-empty UUID to each appended socket; socket removal is unsupported; " +
         "convertSocket=python.setTyping {operationId,componentId,inputParameterId,typeHint,access:item|list|tree}; " +
         "executePython=python.execute {operationId,componentId,expireUpstream,recomputeDocument}; " +
         "readRuntimeMessages=python.runtimeMessages {componentId}; " +
@@ -23,14 +25,14 @@ internal static class DynamicToolSpecs
         "Every operation read needs a readSet fingerprint and every write needs an exact writeSet expectation; unused expectations and extra payload-unrelated writes are rejected. " +
         "Every typed read operation must keep its writes empty; a read-only ChangeSet also keeps writeSet empty, while a mixed ChangeSet uses writeSet only for its write operations. Canvas points require exactly x/y and Rhino points or vectors exactly x/y/z. " +
         "Use field='*' and canonical lowercase UUIDs: D format for object resources and N-format endpoints for wires. " +
-        "Write domains are exact: move/layout=grasshopperComponentLayout; component create/delete=grasshopperComponent; wire=grasshopperWire; group=grasshopperGroup; " +
+        "Write domains are exact: move/layout=grasshopperComponentLayout; Number Slider setValue=grasshopperComponentValue; component create/delete=grasshopperComponent; wire=grasshopperWire; group=grasshopperGroup; " +
         "Python source/schema-or-typing/execute=grasshopperComponentSource/grasshopperComponentIo/grasshopperComponentValue; every Rhino mutation=rhinoObject. " +
         "Python source/I/O/value writes share runtime-sensitive whole-component state: one ChangeSet may write exactly one Python component, those writes must be contiguous, no other writes may be mixed in, and every writeSet entry uses the same inspected starting fingerprint. " +
         "CreateComponent, CreateRhinoPrimitive, CreateRhinoObject, BakeGeometry, ConnectWire, and a new SetGroup use writeSet expectedFingerprint='gptino:absent' " +
         "for the exact new resource; all existing resources use the actual snapshot fingerprint. For CreateRhinoObject/BakeGeometry only, payload arguments.expectedFingerprint is null. " +
         "Rhino geometryJson must be native RhinoCommon JSON and match geometryType; attributesJson is native ObjectAttributes JSON, or an empty string for default/new attributes. Distinct Rhino object IDs in one ChangeSet must use distinct case-sensitive logicalEntityId values. " +
         "Payload fingerprints for existing canvas/Rhino resources must exactly match writeSet, and two operations in one ChangeSet cannot write overlapping domains. " +
-        "SetValue, Rename, SetSolverState, DocumentGlobal, and UpdateRhinoLayer are reserved and rejected. " +
+        "Rename, SetSolverState, DocumentGlobal, and UpdateRhinoLayer are reserved and rejected. " +
         "Every write needs an explicit supported acceptance predicate.";
 
     public static object[] Create() =>

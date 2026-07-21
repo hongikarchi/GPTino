@@ -27,6 +27,9 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
     public Task<CanvasObjectState> InspectObjectAsync(DocumentTarget target, Guid objectId, CancellationToken cancellationToken = default) =>
         InspectObjectCoreAsync(Resolve(target), objectId, cancellationToken);
 
+    public Task<CanvasOutputInspection> InspectOutputsAsync(DocumentTarget target, InspectCanvasOutputsRequest request, CancellationToken cancellationToken = default) =>
+        InspectOutputsCoreAsync(Resolve(target), request, cancellationToken);
+
     public Task<ComponentCatalogSearchResult> SearchComponentCatalogAsync(DocumentTarget target, ComponentCatalogSearchRequest request, CancellationToken cancellationToken = default) =>
         SearchComponentCatalogCoreAsync(Resolve(target), request, cancellationToken);
 
@@ -39,6 +42,9 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
     public Task<CanvasMutationResult> MoveObjectsAsync(DocumentTarget target, MoveCanvasObjectsRequest request, CancellationToken cancellationToken = default) =>
         MoveObjectsCoreAsync(Resolve(target), request, cancellationToken);
 
+    public Task<CanvasMutationResult> SetNumberSliderValueAsync(DocumentTarget target, SetNumberSliderValueRequest request, CancellationToken cancellationToken = default) =>
+        SetNumberSliderValueCoreAsync(Resolve(target), request, cancellationToken);
+
     public Task<CanvasMutationResult> SetWireAsync(DocumentTarget target, SetWireRequest request, CancellationToken cancellationToken = default) =>
         SetWireCoreAsync(Resolve(target), request, cancellationToken);
 
@@ -47,10 +53,12 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
 
     protected abstract Task<CanvasSnapshot> CaptureSnapshotCoreAsync(TDocument document, CancellationToken cancellationToken);
     protected abstract Task<CanvasObjectState> InspectObjectCoreAsync(TDocument document, Guid objectId, CancellationToken cancellationToken);
+    protected abstract Task<CanvasOutputInspection> InspectOutputsCoreAsync(TDocument document, InspectCanvasOutputsRequest request, CancellationToken cancellationToken);
     protected abstract Task<ComponentCatalogSearchResult> SearchComponentCatalogCoreAsync(TDocument document, ComponentCatalogSearchRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> CreateObjectCoreAsync(TDocument document, CreateCanvasObjectRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> DeleteObjectCoreAsync(TDocument document, DeleteCanvasObjectRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> MoveObjectsCoreAsync(TDocument document, MoveCanvasObjectsRequest request, CancellationToken cancellationToken);
+    protected abstract Task<CanvasMutationResult> SetNumberSliderValueCoreAsync(TDocument document, SetNumberSliderValueRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> SetWireCoreAsync(TDocument document, SetWireRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> SetGroupCoreAsync(TDocument document, SetGroupRequest request, CancellationToken cancellationToken);
 

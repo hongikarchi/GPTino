@@ -62,6 +62,20 @@ public sealed class MessageRoutingPolicy
         "move", "wire", "connect", "disconnect", "이동", "옮겨", "와이어", "연결", "연결 해제"
     ];
 
+    private static readonly string[] StructuralBuildTerms =
+    [
+        "create", "add", "build", "make", "generate", "construct",
+        "생성", "추가", "만들", "구성", "작성"
+    ];
+
+    private static readonly string[] ParametricBuildSubjectTerms =
+    [
+        "grasshopper", "definition", "component graph", "parametric", "adjustable",
+        "cylinder", "cone", "sphere", "surface", "solid", "diameter", "radius", "height",
+        "그래스호퍼", "파라메트릭", "조절 가능한", "조정할 수 있는", "컴포넌트 구성",
+        "실린더", "원기둥", "원뿔", "구체", "곡면", "솔리드", "지름", "반지름", "높이"
+    ];
+
     private static readonly string[] AnyWriteTerms =
     [
         .. SimpleWriteTerms,
@@ -122,13 +136,19 @@ public sealed class MessageRoutingPolicy
 
         var lineCount = content.Count(character => character == '\n') + 1;
         var largeContext = content.Length >= LargeContextCharacters || lineCount >= LargeContextLines;
+        var structuralParametricBuild =
+            ContainsAny(content, StructuralBuildTerms) &&
+            ContainsAny(content, ParametricBuildSubjectTerms);
         if (largeContext ||
+            structuralParametricBuild ||
             ContainsAny(content, LargeScopeTerms) ||
             ContainsAny(content, AmbiguityTerms) ||
             ContainsAny(content, HighAssuranceTerms))
         {
             var reason = largeContext
                 ? "Large message context requires high-assurance reasoning."
+                : structuralParametricBuild
+                    ? "A structural parametric or geometric build requires high-assurance reasoning."
                 : ContainsAny(content, AmbiguityTerms)
                     ? "Ambiguous target language requires high-assurance reasoning."
                     : ContainsAny(content, LargeScopeTerms)

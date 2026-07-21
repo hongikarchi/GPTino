@@ -50,6 +50,28 @@ public sealed class MessageRoutingPolicyTests
         Assert.Equal(ModelProfile.HighAssurance, route.EffectiveProfile);
     }
 
+    [Theory]
+    [InlineData("Create an adjustable Grasshopper cylinder controlled by diameter and height.")]
+    [InlineData("그래스호퍼에 지름과 높이를 조정할 수 있는 실린더 만들어줘.")]
+    public void StructuralParametricBuildRequiresHighAssurance(string message)
+    {
+        var route = _policy.Route(message, "auto");
+
+        Assert.Equal(TaskClass.ComplexWrite, route.TaskClass);
+        Assert.Equal(ModelProfile.HighAssurance, route.EffectiveProfile);
+    }
+
+    [Theory]
+    [InlineData("Move a Grasshopper component 20 pixels to the right.")]
+    [InlineData("그래스호퍼 컴포넌트를 오른쪽으로 이동해줘.")]
+    public void ExplicitGrasshopperContextDoesNotEscalateSimpleMove(string message)
+    {
+        var route = _policy.Route(message, "auto");
+
+        Assert.Equal(TaskClass.SimpleDeterministicWrite, route.TaskClass);
+        Assert.Equal(ModelProfile.FastSafe, route.EffectiveProfile);
+    }
+
     [Fact]
     public void LargeContextRequiresHighAssurance()
     {

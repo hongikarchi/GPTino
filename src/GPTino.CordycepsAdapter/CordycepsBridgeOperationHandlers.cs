@@ -23,10 +23,12 @@ public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHand
         {
             "canvas.snapshot" => await SnapshotAsync(target, request, cancellationToken).ConfigureAwait(false),
             "canvas.inspect" => await InspectAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "canvas.inspectOutputs" => await InspectOutputsAsync(target, request, cancellationToken).ConfigureAwait(false),
             "canvas.catalog" => await CatalogAsync(target, request, cancellationToken).ConfigureAwait(false),
             "canvas.create" => await MutationAsync<CreateCanvasObjectRequest>(target, request, _adapter.CreateObjectAsync, cancellationToken).ConfigureAwait(false),
             "canvas.delete" => await MutationAsync<DeleteCanvasObjectRequest>(target, request, _adapter.DeleteObjectAsync, cancellationToken).ConfigureAwait(false),
             "canvas.move" => await MutationAsync<MoveCanvasObjectsRequest>(target, request, _adapter.MoveObjectsAsync, cancellationToken).ConfigureAwait(false),
+            "canvas.setNumberSlider" => await MutationAsync<SetNumberSliderValueRequest>(target, request, _adapter.SetNumberSliderValueAsync, cancellationToken).ConfigureAwait(false),
             "canvas.setWire" => await MutationAsync<SetWireRequest>(target, request, _adapter.SetWireAsync, cancellationToken).ConfigureAwait(false),
             "canvas.setGroup" => await MutationAsync<SetGroupRequest>(target, request, _adapter.SetGroupAsync, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
@@ -62,6 +64,23 @@ public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHand
             changed: false,
             state,
             afterFingerprint: state.Fingerprint);
+    }
+
+    private async Task<BridgeOperationResponse> InspectOutputsAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireAccess(request, BridgeOperationAccess.Read);
+        var result = await _adapter.InspectOutputsAsync(
+            target,
+            request.DeserializeArguments<InspectCanvasOutputsRequest>(),
+            cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: false,
+            result,
+            afterFingerprint: result.Fingerprint);
     }
 
     private async Task<BridgeOperationResponse> CatalogAsync(

@@ -10,6 +10,7 @@ public sealed class CliArgumentsTests
         var result = CliArguments.Parse(
         [
             "attach",
+            "--new-console",
             "--endpoint", "http://127.0.0.1:51872",
             "--session", sessionId.ToString("D"),
             "--token", "local-secret",
@@ -21,6 +22,7 @@ public sealed class CliArgumentsTests
         Assert.Equal(sessionId, result.Arguments.SessionId);
         Assert.Equal("local-secret", result.Arguments.Token);
         Assert.Equal("Facade study", result.Arguments.Title);
+        Assert.True(result.Arguments.NewConsole);
     }
 
     [Theory]
@@ -71,6 +73,7 @@ public sealed class CliArgumentsTests
 
         Assert.True(result.IsSuccess);
         Assert.Equal("child-only-secret", result.Arguments!.Token);
+        Assert.False(result.Arguments.NewConsole);
     }
 
     [Fact]

@@ -19,43 +19,9 @@ internal sealed class TestDirectory : IDisposable
 
     public void Dispose()
     {
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        if (Directory.Exists(Path))
-        {
-            DeleteTestTree(Path);
-        }
-    }
-
-    private static void DeleteTestTree(string directory)
-    {
-        foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
-        {
-            var attributes = File.GetAttributes(entry);
-            if ((attributes & FileAttributes.ReparsePoint) != 0)
-            {
-                if ((attributes & FileAttributes.Directory) != 0)
-                {
-                    Directory.Delete(entry);
-                }
-                else
-                {
-                    File.SetAttributes(entry, FileAttributes.Normal);
-                    File.Delete(entry);
-                }
-            }
-            else if ((attributes & FileAttributes.Directory) != 0)
-            {
-                DeleteTestTree(entry);
-            }
-            else
-            {
-                File.SetAttributes(entry, FileAttributes.Normal);
-                File.Delete(entry);
-            }
-        }
-
-        File.SetAttributes(directory, FileAttributes.Normal);
-        Directory.Delete(directory);
+        // Local verification artifacts are evidence and are intentionally preserved. Do not call
+        // the process-wide SQLite pool-clearing API here: xUnit disposes test directories
+        // concurrently, and global cleanup can invalidate another test's connection while it opens.
     }
 
     private static string FindRepositoryRoot()

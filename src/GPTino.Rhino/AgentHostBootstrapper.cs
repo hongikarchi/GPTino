@@ -21,6 +21,7 @@ internal sealed class AgentHostBootstrapper : IDisposable
     private uint? _panelBootstrapDocumentSerial;
     private Task? _panelNonceRequest;
     private DateTimeOffset _nextPanelNonceAttempt;
+    private int _activeReadyCallbacks;
     private bool _disposed;
 
     public event EventHandler? Ready;
@@ -41,7 +42,7 @@ internal sealed class AgentHostBootstrapper : IDisposable
         {
             lock (_gate)
             {
-                return _uiBaseUri;
+                return _disposed ? null : _uiBaseUri;
             }
         }
     }
@@ -57,6 +58,29 @@ internal sealed class AgentHostBootstrapper : IDisposable
         }
     }
 
+    public bool HasExited
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (_disposed)
+                {
+                    return true;
+                }
+                try
+                {
+                    return _process.HasExited;
+                }
+                catch (Exception exception) when (
+                    exception is InvalidOperationException or ObjectDisposedException)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
     public bool TryTakePanelBootstrapNonce(uint documentSerial, out string nonce)
     {
         if (documentSerial == 0)
@@ -66,6 +90,12 @@ internal sealed class AgentHostBootstrapper : IDisposable
 
         lock (_gate)
         {
+            if (_disposed)
+            {
+                nonce = string.Empty;
+                return false;
+            }
+
             if (_panelBootstrapNonce is not null &&
                 _panelBootstrapDocumentSerial == documentSerial)
             {
@@ -75,8 +105,7 @@ internal sealed class AgentHostBootstrapper : IDisposable
                 return true;
             }
 
-            if (!_disposed &&
-                _uiBaseUri is not null &&
+            if (_uiBaseUri is not null &&
                 _panelParentCredential is not null &&
                 _panelNonceRequest is null &&
                 DateTimeOffset.UtcNow >= _nextPanelNonceAttempt)
@@ -104,6 +133,10 @@ internal sealed class AgentHostBootstrapper : IDisposable
         var assemblyDirectory = Path.GetDirectoryName(Path.GetFullPath(plugInAssemblyPath))
             ?? throw new InvalidOperationException("Cannot resolve the GPTino plug-in directory.");
         var executablePath = ResolveAgentHostPath(assemblyDirectory);
+        DevelopmentDiagnosticTrace.TryWrite(
+            "Rhino",
+            "agent-executable-resolved",
+            $"file={Path.GetFileName(executablePath)};exists={File.Exists(executablePath)}");
 
         using var currentProcess = Process.GetCurrentProcess();
         var processIdentity = $"rhino-{currentProcess.Id}-{currentProcess.StartTime.ToUniversalTime().Ticks}";
@@ -136,6 +169,28 @@ internal sealed class AgentHostBootstrapper : IDisposable
         startInfo.ArgumentList.Add(
             Path.GetDirectoryName(target.GrasshopperPath)
             ?? throw new InvalidOperationException("Cannot resolve the Grasshopper project directory."));
+        var developmentDataDirectory = DevelopmentDataDirectoryPolicy.ResolveFromEnvironment();
+        if (developmentDataDirectory is not null)
+        {
+            startInfo.ArgumentList.Add("--data-directory");
+            startInfo.ArgumentList.Add(developmentDataDirectory);
+        }
+        RemoveGptinoEnvironment(startInfo);
+        if (developmentDataDirectory is not null)
+        {
+            var developmentApiToken = Environment.GetEnvironmentVariable("GPTINO_API_TOKEN");
+            if (developmentApiToken is null ||
+                developmentApiToken.Length != 64 ||
+                developmentApiToken.Any(character => !Uri.IsHexDigit(character)))
+            {
+                throw new InvalidOperationException(
+                    "A 256-bit hexadecimal API token is required for a development launch.");
+            }
+            startInfo.Environment[DevelopmentDataDirectoryPolicy.ModeEnvironmentVariable] = "1";
+            startInfo.Environment[DevelopmentDataDirectoryPolicy.DataDirectoryEnvironmentVariable] =
+                developmentDataDirectory;
+            startInfo.Environment["GPTINO_API_TOKEN"] = developmentApiToken;
+        }
         startInfo.Environment["GPTINO_BRIDGE_PIPE"] = endpoint.Name;
         startInfo.Environment["GPTINO_BRIDGE_SECRET"] = secret.ExportBase64();
 
@@ -145,15 +200,26 @@ internal sealed class AgentHostBootstrapper : IDisposable
         process.ErrorDataReceived += bootstrapper.OnError;
         process.Exited += bootstrapper.OnExited;
 
-        if (!process.Start())
+        try
         {
-            process.Dispose();
-            throw new InvalidOperationException("AgentHost did not start.");
-        }
+            if (!process.Start())
+            {
+                throw new InvalidOperationException("AgentHost did not start.");
+            }
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Rhino",
+                "agent-process-started",
+                $"pid={process.Id}");
 
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        return bootstrapper;
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            return bootstrapper;
+        }
+        catch
+        {
+            bootstrapper.Dispose();
+            throw;
+        }
     }
 
     public DocumentPipeClient CreateBridgeClient() =>
@@ -161,6 +227,7 @@ internal sealed class AgentHostBootstrapper : IDisposable
 
     public void Dispose()
     {
+        int timedOutReadyCallbackCount;
         lock (_gate)
         {
             if (_disposed)
@@ -169,26 +236,77 @@ internal sealed class AgentHostBootstrapper : IDisposable
             }
 
             _disposed = true;
+            Ready = null;
+            _uiBaseUri = null;
+            _panelParentCredential = null;
+            _panelBootstrapNonce = null;
+            _panelBootstrapDocumentSerial = null;
+            var callbackDeadline = Stopwatch.StartNew();
+            while (_activeReadyCallbacks != 0 &&
+                   callbackDeadline.Elapsed < TimeSpan.FromSeconds(2))
+            {
+                var remaining = TimeSpan.FromSeconds(2) - callbackDeadline.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
+                Monitor.Wait(_gate, remaining);
+            }
+            timedOutReadyCallbackCount = _activeReadyCallbacks;
         }
-
-        _lifetime.Cancel();
-
-        _process.OutputDataReceived -= OnOutput;
-        _process.ErrorDataReceived -= OnError;
-        _process.Exited -= OnExited;
-        Ready = null;
+        if (timedOutReadyCallbackCount != 0)
+        {
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Rhino",
+                "agent-ready-callback-timeout",
+                $"active={timedOutReadyCallbackCount}");
+        }
 
         try
         {
-            if (!_process.HasExited)
+            try
             {
-                _process.Kill(entireProcessTree: true);
-                _process.WaitForExit(2_000);
+                _lifetime.Cancel();
             }
-        }
-        catch (InvalidOperationException)
-        {
-            // The process exited between the check and termination.
+            catch (Exception exception) when (
+                exception is AggregateException or ObjectDisposedException)
+            {
+                DevelopmentDiagnosticTrace.TryWriteException(
+                    "Rhino",
+                    "agent-cancellation-failed",
+                    exception);
+            }
+
+            _process.OutputDataReceived -= OnOutput;
+            _process.ErrorDataReceived -= OnError;
+            _process.Exited -= OnExited;
+
+            try
+            {
+                if (!_process.HasExited)
+                {
+                    _process.Kill(entireProcessTree: true);
+                    if (!_process.WaitForExit(2_000) && !_process.HasExited)
+                    {
+                        DevelopmentDiagnosticTrace.TryWrite(
+                            "Rhino",
+                            "agent-termination-timeout",
+                            $"pid={_process.Id}");
+                    }
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // The process exited between the check and termination.
+            }
+            catch (Exception exception) when (
+                exception is System.ComponentModel.Win32Exception or NotSupportedException)
+            {
+                DevelopmentDiagnosticTrace.TryWriteException(
+                    "Rhino",
+                    "agent-termination-failed",
+                    exception);
+            }
         }
         finally
         {
@@ -211,6 +329,20 @@ internal sealed class AgentHostBootstrapper : IDisposable
                 candidates[0]);
     }
 
+    private static void RemoveGptinoEnvironment(ProcessStartInfo startInfo)
+    {
+        foreach (var key in startInfo.Environment.Keys
+                     .Where(IsGptinoEnvironmentKey)
+                     .ToArray())
+        {
+            startInfo.Environment.Remove(key);
+        }
+    }
+
+    private static bool IsGptinoEnvironmentKey(string key) =>
+        key.StartsWith("GPTINO_", StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith("GPTINO:", StringComparison.OrdinalIgnoreCase);
+
     private void OnOutput(object sender, DataReceivedEventArgs args)
     {
         if (args.Data is not { } line || !line.StartsWith(ReadyPrefix, StringComparison.Ordinal))
@@ -218,13 +350,15 @@ internal sealed class AgentHostBootstrapper : IDisposable
             return;
         }
 
+        AgentHostReady ready;
+        Uri uri;
         try
         {
-            var ready = JsonSerializer.Deserialize<AgentHostReady>(
+            ready = JsonSerializer.Deserialize<AgentHostReady>(
                 line[ReadyPrefix.Length..],
                 BridgeProtocol.JsonOptions)
                 ?? throw new JsonException("AgentHost readiness payload was null.");
-            var uri = new Uri(ready.UiBaseUrl, UriKind.Absolute);
+            uri = new Uri(ready.UiBaseUrl, UriKind.Absolute);
             if (!IsLoopbackHttp(uri))
             {
                 throw new InvalidDataException("AgentHost UI URL must use HTTP on loopback.");
@@ -233,23 +367,80 @@ internal sealed class AgentHostBootstrapper : IDisposable
             {
                 throw new InvalidDataException("AgentHost panel parent credential is invalid.");
             }
-
-            lock (_gate)
-            {
-                _uiBaseUri = uri;
-                _panelParentCredential = ready.PanelParentCredential;
-                _status = "AgentHost UI is ready; connecting the document bridge.";
-            }
-
-            Ready?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception exception) when (exception is JsonException or UriFormatException or InvalidDataException)
         {
             lock (_gate)
             {
-                _status = $"AgentHost announced an invalid UI endpoint: {exception.Message}";
+                if (_disposed)
+                {
+                    return;
+                }
+                _status = "AgentHost announced an invalid UI endpoint.";
+            }
+            DevelopmentDiagnosticTrace.TryWriteException(
+                "Rhino",
+                "agent-ready-invalid",
+                exception);
+            return;
+        }
+
+        EventHandler? readyHandler;
+        int processId;
+        Exception? readyHandlerFailure = null;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _uiBaseUri = uri;
+            _panelParentCredential = ready.PanelParentCredential;
+            _status = "AgentHost UI is ready; connecting the document bridge.";
+            processId = _process.Id;
+            readyHandler = Ready;
+            if (readyHandler is not null)
+            {
+                _activeReadyCallbacks++;
             }
         }
+
+        try
+        {
+            readyHandler?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception exception)
+        {
+            readyHandlerFailure = exception;
+        }
+        finally
+        {
+            if (readyHandler is not null)
+            {
+                lock (_gate)
+                {
+                    if (readyHandlerFailure is not null && !_disposed)
+                    {
+                        _status = "AgentHost is ready, but the document bridge callback failed.";
+                    }
+                    _activeReadyCallbacks--;
+                    Monitor.PulseAll(_gate);
+                }
+            }
+        }
+        if (readyHandlerFailure is not null)
+        {
+            DevelopmentDiagnosticTrace.TryWriteException(
+                "Rhino",
+                "agent-ready-handler-failed",
+                readyHandlerFailure);
+            return;
+        }
+        DevelopmentDiagnosticTrace.TryWrite(
+            "Rhino",
+            "agent-ready",
+            $"pid={processId}");
     }
 
     private void OnError(object sender, DataReceivedEventArgs args)
@@ -261,25 +452,70 @@ internal sealed class AgentHostBootstrapper : IDisposable
 
         lock (_gate)
         {
+            if (_disposed)
+            {
+                return;
+            }
             _status = "AgentHost reported an error. See the local GPTino runtime log.";
         }
+        DevelopmentDiagnosticTrace.TryWriteStandardError("Rhino", args.Data);
     }
 
     private void OnExited(object? sender, EventArgs args)
     {
-        lock (_gate)
+        int? exitCode = null;
+        var shouldTrace = false;
+        try
         {
-            if (!_disposed)
+            try
             {
-                _status = $"AgentHost exited with code {_process.ExitCode}.";
-                _uiBaseUri = null;
-                _panelParentCredential = null;
-                _panelBootstrapNonce = null;
-                _panelBootstrapDocumentSerial = null;
+                exitCode = (sender as Process ?? _process).ExitCode;
+            }
+            catch (Exception exception) when (
+                exception is InvalidOperationException or ObjectDisposedException)
+            {
+                // Disposal can race an already queued Exited callback.
+            }
+
+            lock (_gate)
+            {
+                if (!_disposed)
+                {
+                    shouldTrace = true;
+                    _status = exitCode is { } code
+                        ? $"AgentHost exited with code {code}."
+                        : "AgentHost exited.";
+                    _uiBaseUri = null;
+                    _panelParentCredential = null;
+                    _panelBootstrapNonce = null;
+                    _panelBootstrapDocumentSerial = null;
+                }
+            }
+
+            if (shouldTrace)
+            {
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "agent-exited",
+                    exitCode is { } codeValue ? $"code={codeValue}" : "code=unavailable");
             }
         }
-
-        _lifetime.Cancel();
+        finally
+        {
+            try
+            {
+                _lifetime.Cancel();
+            }
+            catch (Exception exception) when (
+                exception is AggregateException or ObjectDisposedException)
+            {
+                // Dispose can complete while an already queued Exited callback is running.
+                DevelopmentDiagnosticTrace.TryWriteException(
+                    "Rhino",
+                    "agent-exit-cancellation-failed",
+                    exception);
+            }
+        }
     }
 
     private async Task RequestPanelBootstrapNonceAsync(
@@ -325,7 +561,7 @@ internal sealed class AgentHostBootstrapper : IDisposable
                 if (!_disposed)
                 {
                     _nextPanelNonceAttempt = DateTimeOffset.UtcNow.AddSeconds(1);
-                    _status = $"Could not authorize the Rhino panel; retrying: {exception.Message}";
+                    _status = "Could not authorize the Rhino panel; retrying.";
                 }
             }
         }

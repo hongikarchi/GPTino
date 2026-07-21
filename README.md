@@ -28,6 +28,7 @@ managed history.
 src/        .NET projects for contracts, host, bridge, history, and terminal
 ui/panel/   React panel rendered inside Rhino's Eto WebView
 tests/      Unit, integration, and routing replay tests
+tools/      Fixed-command verification, smoke bridge, and live E2E harnesses
 packaging/  Yak package inputs
 references/ Pinned metadata for upstream design references
 scripts/    Reproducible developer tooling
@@ -41,7 +42,7 @@ GPTino does not track those repositories as remotes or merge them automatically.
 - Windows x64 and Rhino 8.21+
 - .NET SDK 8
 - Node.js 24 for panel development and packaging
-- Codex CLI 0.144.4 (validated) or a protocol-compatible newer version
+- Codex CLI 0.144.6 (validated) or a protocol-compatible newer version
 
 ## Development
 

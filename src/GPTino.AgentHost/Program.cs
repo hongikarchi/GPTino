@@ -9,6 +9,7 @@ using GPTino.AgentHost.Data;
 using GPTino.AgentHost.Hosting;
 using GPTino.AgentHost.Runtime;
 using GPTino.AgentHost.Security;
+using GPTino.BridgeContract;
 
 var packagedWebRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -25,6 +26,16 @@ builder.Logging.AddSimpleConsole(console =>
 });
 
 var options = AgentHostArguments.Parse(args, builder.Configuration);
+var developmentDataDirectory = DevelopmentDataDirectoryPolicy.ResolveFromEnvironment();
+if (developmentDataDirectory is not null &&
+    !string.Equals(
+        developmentDataDirectory,
+        options.ResolveDataDirectory(),
+        StringComparison.OrdinalIgnoreCase))
+{
+    throw new InvalidOperationException(
+        "The explicit AgentHost data directory does not match the validated development run directory.");
+}
 using var runtimeInstance = RuntimeInstanceLock.Acquire(options.ResolveDataDirectory());
 var identity = new RuntimeIdentity(
     options.ProjectId,
@@ -47,6 +58,7 @@ builder.Services.AddSingleton<ILiveDocumentQueueControl>(services =>
     services.GetRequiredService<LiveDocumentBackend>());
 builder.Services.AddHostedService(services => services.GetRequiredService<LiveDocumentBackend>());
 builder.Services.AddSingleton<CodexAppServerClient>();
+builder.Services.AddSingleton<ICodexSessionClient>(services => services.GetRequiredService<CodexAppServerClient>());
 builder.Services.AddSingleton<IModelCatalog>(services => services.GetRequiredService<CodexAppServerClient>());
 builder.Services.AddSingleton<MessageRoutingPolicy>();
 builder.Services.AddSingleton<EffectiveModelState>();
@@ -338,13 +350,79 @@ api.MapPost("/runtime/stop-current", async (CancellationToken cancellationToken)
 api.MapGet("/models", async (ModelSelector selector, CancellationToken cancellationToken) =>
     Results.Ok(await selector.ReadModelsAsync(cancellationToken)));
 
-api.MapGet("/health", () => Results.Ok(new
+api.MapGet("/health", () =>
 {
-    status = "ok",
-    bridgeConnected = backend.IsConnected,
-    codexRunning = codex.IsRunning,
-    processId = Environment.ProcessId
-}));
+    var codexProcess = codex.ReadProcessIdentity();
+    return Results.Ok(new
+    {
+        status = "ok",
+        bridgeConnected = backend.IsConnected,
+        codexRunning = codexProcess is not null,
+        codexProcessId = codexProcess?.ProcessId,
+        codexProcessStartTimeUtc = codexProcess?.ProcessStartTimeUtc,
+        processId = Environment.ProcessId
+    });
+});
+
+if (developmentDataDirectory is not null)
+{
+    api.MapGet("/dev/snapshot", async (
+        LiveDocumentBackend liveBackend,
+        CancellationToken cancellationToken) =>
+    {
+        using var arguments = JsonDocument.Parse("{}");
+        return Results.Ok(await liveBackend.ReadSnapshotAsync(
+            arguments.RootElement,
+            cancellationToken));
+    });
+    api.MapGet("/dev/rhino-objects", async (
+        LiveDocumentBackend liveBackend,
+        CancellationToken cancellationToken) =>
+    {
+        var arguments = JsonSerializer.SerializeToElement(new { limit = 1000 });
+        return Results.Ok(await liveBackend.ListRhinoObjectsAsync(arguments, cancellationToken));
+    });
+    api.MapGet("/dev/grasshopper/{objectId:guid}/outputs", async (
+        Guid objectId,
+        LiveDocumentBackend liveBackend,
+        CancellationToken cancellationToken) =>
+    {
+        var arguments = JsonSerializer.SerializeToElement(new { objectId });
+        return Results.Ok(await liveBackend.InspectCanvasOutputsAsync(
+            arguments,
+            cancellationToken));
+    });
+    api.MapGet("/dev/grasshopper/{componentId:guid}/python", async (
+        Guid componentId,
+        LiveDocumentBackend liveBackend,
+        CancellationToken cancellationToken) =>
+    {
+        var arguments = JsonSerializer.SerializeToElement(new
+        {
+            scopes = new[]
+            {
+                $"wireify:{componentId:D}",
+                $"wireify-messages:{componentId:D}"
+            }
+        });
+        return Results.Ok(await liveBackend.ReadSnapshotAsync(
+            arguments,
+            cancellationToken));
+    });
+    api.MapGet("/dev/terminals/{sessionId:guid}", (
+        Guid sessionId,
+        TerminalLauncher launcher) =>
+        Results.Ok(launcher.ReadStatus(sessionId)));
+    api.MapPut("/dev/writer/pause", (
+        SetPausedRequest request,
+        ILiveDocumentQueueControl writerQueue,
+        EventHub eventHub) =>
+    {
+        writerQueue.SetPaused(request.Paused);
+        eventHub.Publish();
+        return Results.NoContent();
+    });
+}
 
 app.MapGet("/api/state", async (RuntimeStateProjector projector, CancellationToken cancellationToken) =>
     Results.Ok(await projector.BuildAsync(cancellationToken)));

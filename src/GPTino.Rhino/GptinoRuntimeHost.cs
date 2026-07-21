@@ -13,20 +13,28 @@ namespace GPTino.Rhino;
 /// </summary>
 public sealed class GptinoRuntimeHost : IDisposable
 {
+    private static readonly TimeSpan AgentHostReadyTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan BootstrapMonitorInterval = TimeSpan.FromMilliseconds(250);
+
     private readonly object _gate = new();
+    private readonly object _observationGate = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly ConcurrentDictionary<string, DocumentTarget> _targets = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<uint, string> _observedRhinoDocuments = new();
-    private readonly ConcurrentDictionary<Guid, string> _observedGrasshopperDocuments = new();
+    private readonly AutomaticRestartPolicy _automaticRestartPolicy = new();
+    private readonly Dictionary<uint, string> _observedRhinoDocuments = [];
+    private readonly Dictionary<Guid, string> _observedGrasshopperDocuments = [];
     private readonly ConcurrentDictionary<BridgeAdapterOwner, IBridgeOperationHandler> _handlers = new();
     private AgentHostBootstrapper? _bootstrapper;
     private string? _plugInAssemblyPath;
     private Guid? _bootstrapProjectId;
     private DocumentPipeConnection? _connection;
+    private Task? _bootstrapMonitorTask;
     private Task? _connectionTask;
     private CancellationTokenSource? _connectionLifetime;
     private string _bridgeStatus = "Document bridge has not started.";
+    private long _runtimeGeneration;
     private int _connectionStarted;
+    private bool _automaticRestartPending;
     private bool _hubAttached;
     private bool _disposed;
 
@@ -40,12 +48,29 @@ public sealed class GptinoRuntimeHost : IDisposable
     {
         get
         {
+            DocumentPipeConnection? connection;
+            AgentHostBootstrapper? bootstrapper;
+            string bridgeStatus;
             lock (_gate)
             {
-                return _connection is { IsConnected: true }
-                    ? _bridgeStatus
-                    : _bootstrapper?.Status ?? _bridgeStatus;
+                connection = _connection;
+                bootstrapper = _bootstrapper;
+                bridgeStatus = _bridgeStatus;
             }
+
+            try
+            {
+                if (connection is { IsConnected: true })
+                {
+                    return bridgeStatus;
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // The connection task owns disposal and may finish after this snapshot.
+            }
+
+            return bootstrapper?.Status ?? bridgeStatus;
         }
     }
 
@@ -95,10 +120,21 @@ public sealed class GptinoRuntimeHost : IDisposable
         target.Validate();
         _ = new ExplicitRhinoDocumentResolver().Resolve(target);
 
-        var registered = _targets.AddOrUpdate(
-            target.StableTargetKey(),
-            target,
-            (_, current) => target.Generation >= current.Generation ? target : current);
+        DocumentTarget registered;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_targets.Values.Any(existing => existing.ProjectId != target.ProjectId) ||
+                _bootstrapProjectId is { } bootstrapProjectId && bootstrapProjectId != target.ProjectId)
+            {
+                throw new InvalidOperationException(
+                    "This GPTino runtime is already bound to another Rhino/Grasshopper file pair.");
+            }
+            registered = _targets.AddOrUpdate(
+                target.StableTargetKey(),
+                target,
+                (_, current) => target.Generation >= current.Generation ? target : current);
+        }
         EnsureBootstrap(registered);
         QueueRegistration(registered);
     }
@@ -121,7 +157,26 @@ public sealed class GptinoRuntimeHost : IDisposable
             return;
         }
 
-        _observedRhinoDocuments[documentSerial] = Path.GetFullPath(document.Path);
+        var normalizedPath = Path.GetFullPath(document.Path);
+        bool pathChanged;
+        int observedCount;
+        lock (_observationGate)
+        {
+            pathChanged = _observedRhinoDocuments.TryGetValue(documentSerial, out var previousPath) &&
+                !PathsEqual(previousPath, normalizedPath);
+            _observedRhinoDocuments[documentSerial] = normalizedPath;
+            observedCount = _observedRhinoDocuments.Count;
+        }
+        DevelopmentDiagnosticTrace.TryWrite(
+            "Rhino",
+            "rhino-document-observed",
+            $"serial={documentSerial};count={observedCount}");
+        if (pathChanged)
+        {
+            RemoveTargets(
+                target => target.RhinoDocumentSerial == documentSerial,
+                "Rhino document path changed.");
+        }
         TryRegisterUnambiguousPair();
     }
 
@@ -132,7 +187,26 @@ public sealed class GptinoRuntimeHost : IDisposable
             return;
         }
 
-        _observedGrasshopperDocuments[documentId] = Path.GetFullPath(filePath);
+        var normalizedPath = Path.GetFullPath(filePath);
+        bool pathChanged;
+        int observedCount;
+        lock (_observationGate)
+        {
+            pathChanged = _observedGrasshopperDocuments.TryGetValue(documentId, out var previousPath) &&
+                !PathsEqual(previousPath, normalizedPath);
+            _observedGrasshopperDocuments[documentId] = normalizedPath;
+            observedCount = _observedGrasshopperDocuments.Count;
+        }
+        DevelopmentDiagnosticTrace.TryWrite(
+            "Rhino",
+            "grasshopper-document-observed",
+            $"id={documentId:D};count={observedCount}");
+        if (pathChanged)
+        {
+            RemoveTargets(
+                target => target.GrasshopperDocumentId == documentId,
+                "Grasshopper document path changed.");
+        }
         TryRegisterUnambiguousPair();
     }
 
@@ -140,10 +214,14 @@ public sealed class GptinoRuntimeHost : IDisposable
     {
         if (documentId != Guid.Empty)
         {
-            _observedGrasshopperDocuments.TryRemove(documentId, out _);
+            lock (_observationGate)
+            {
+                _observedGrasshopperDocuments.Remove(documentId);
+            }
             RemoveTargets(
                 target => target.GrasshopperDocumentId == documentId,
                 "Grasshopper document closed.");
+            TryRegisterUnambiguousPair();
         }
     }
 
@@ -151,10 +229,14 @@ public sealed class GptinoRuntimeHost : IDisposable
     {
         if (documentSerial != 0)
         {
-            _observedRhinoDocuments.TryRemove(documentSerial, out _);
+            lock (_observationGate)
+            {
+                _observedRhinoDocuments.Remove(documentSerial);
+            }
             RemoveTargets(
                 target => target.RhinoDocumentSerial == documentSerial,
                 "Rhino document closed.");
+            TryRegisterUnambiguousPair();
         }
     }
 
@@ -165,58 +247,61 @@ public sealed class GptinoRuntimeHost : IDisposable
             throw new ArgumentOutOfRangeException(nameof(documentSerial));
         }
 
+        AgentHostBootstrapper? bootstrapper;
+        DocumentTarget? target;
         lock (_gate)
         {
-            var target = _targets.Values.FirstOrDefault(candidate =>
+            target = _targets.Values.FirstOrDefault(candidate =>
                 candidate.ProjectId == _bootstrapProjectId &&
                 candidate.RhinoDocumentSerial == documentSerial);
-            if (_bootstrapper?.UiBaseUri is not { } baseUri ||
-                target is null)
-            {
-                uri = null!;
-                return false;
-            }
-
-            try
-            {
-                _ = new ExplicitRhinoDocumentResolver().Resolve(target);
-            }
-            catch (DocumentTargetUnavailableException)
-            {
-                uri = null!;
-                return false;
-            }
-
-            if (!_bootstrapper.TryTakePanelBootstrapNonce(documentSerial, out var panelBootstrapNonce))
-            {
-                uri = null!;
-                return false;
-            }
-
-            var builder = new UriBuilder(new Uri(baseUri, "panel"))
-            {
-                Query = $"documentSerial={documentSerial}&bootstrap={Uri.EscapeDataString(panelBootstrapNonce)}",
-            };
-            uri = builder.Uri;
-            return true;
+            bootstrapper = _bootstrapper;
         }
+        if (bootstrapper?.UiBaseUri is not { } baseUri || target is null)
+        {
+            uri = null!;
+            return false;
+        }
+
+        try
+        {
+            _ = new ExplicitRhinoDocumentResolver().Resolve(target);
+        }
+        catch (DocumentTargetUnavailableException)
+        {
+            uri = null!;
+            return false;
+        }
+
+        if (!bootstrapper.TryTakePanelBootstrapNonce(documentSerial, out var panelBootstrapNonce))
+        {
+            uri = null!;
+            return false;
+        }
+
+        var builder = new UriBuilder(new Uri(baseUri, "panel"))
+        {
+            Query = $"documentSerial={documentSerial}&bootstrap={Uri.EscapeDataString(panelBootstrapNonce)}",
+        };
+        uri = builder.Uri;
+        return true;
     }
 
     public DocumentPipeClient CreateBridgeClient()
     {
+        AgentHostBootstrapper? bootstrapper;
         lock (_gate)
         {
-            return _bootstrapper?.CreateBridgeClient()
-                ?? throw new InvalidOperationException("AgentHost has not started.");
+            bootstrapper = _bootstrapper;
         }
+
+        return bootstrapper?.CreateBridgeClient()
+            ?? throw new InvalidOperationException("AgentHost has not started.");
     }
 
     public void Dispose()
     {
-        AgentHostBootstrapper? bootstrapper;
-        DocumentPipeConnection? connection;
-        Task? connectionTask;
-        CancellationTokenSource? connectionLifetime;
+        DetachedRuntime? detached;
+        bool hubAttached;
 
         lock (_gate)
         {
@@ -226,77 +311,107 @@ public sealed class GptinoRuntimeHost : IDisposable
             }
 
             _disposed = true;
-            bootstrapper = _bootstrapper;
-            connection = _connection;
-            connectionTask = _connectionTask;
-            connectionLifetime = _connectionLifetime;
-            _bootstrapper = null;
+            detached = DetachRuntimeLocked("Document bridge stopped.");
             _plugInAssemblyPath = null;
-            _bootstrapProjectId = null;
-            _connection = null;
-            _connectionLifetime = null;
-        }
-
-        _lifetime.Cancel();
-        connectionLifetime?.Cancel();
-        if (connection is not null)
-        {
-            connection.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        }
-
-        if (connectionTask is not null)
-        {
-            try
-            {
-                connectionTask.Wait(TimeSpan.FromSeconds(2));
-            }
-            catch (AggregateException exception) when (
-                exception.InnerExceptions.All(inner => inner is OperationCanceledException or IOException))
-            {
-            }
-        }
-
-        if (bootstrapper is not null)
-        {
-            bootstrapper.Ready -= OnAgentHostReady;
-            bootstrapper.Dispose();
-        }
-        connectionLifetime?.Dispose();
-
-        if (_hubAttached)
-        {
-            BridgeProcessHub.GrasshopperDocumentObserved -= ObserveGrasshopperDocument;
-            BridgeProcessHub.GrasshopperDocumentForgotten -= ForgetGrasshopperDocument;
-            BridgeProcessHub.OperationHandlerRegistered -= RegisterOperationHandler;
+            _targets.Clear();
+            hubAttached = _hubAttached;
             _hubAttached = false;
         }
 
-        _lifetime.Dispose();
+        lock (_observationGate)
+        {
+            _observedRhinoDocuments.Clear();
+            _observedGrasshopperDocuments.Clear();
+        }
+
+        try
+        {
+            CancelSafely(_lifetime, "runtime-cancellation-failed");
+            StopDetachedRuntime(detached);
+        }
+        finally
+        {
+            if (hubAttached)
+            {
+                BridgeProcessHub.GrasshopperDocumentObserved -= OnHubGrasshopperDocumentObserved;
+                BridgeProcessHub.GrasshopperDocumentForgotten -= OnHubGrasshopperDocumentForgotten;
+                BridgeProcessHub.OperationHandlerRegistered -= OnHubOperationHandlerRegistered;
+            }
+
+            _lifetime.Dispose();
+        }
     }
 
     private void AttachProcessHub()
     {
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (_hubAttached)
             {
                 return;
             }
 
-            BridgeProcessHub.GrasshopperDocumentObserved += ObserveGrasshopperDocument;
-            BridgeProcessHub.GrasshopperDocumentForgotten += ForgetGrasshopperDocument;
-            BridgeProcessHub.OperationHandlerRegistered += RegisterOperationHandler;
+            BridgeProcessHub.GrasshopperDocumentObserved += OnHubGrasshopperDocumentObserved;
+            BridgeProcessHub.GrasshopperDocumentForgotten += OnHubGrasshopperDocumentForgotten;
+            BridgeProcessHub.OperationHandlerRegistered += OnHubOperationHandlerRegistered;
             _hubAttached = true;
         }
 
         foreach (var pair in BridgeProcessHub.GetGrasshopperDocuments())
         {
-            ObserveGrasshopperDocument(pair.Key, pair.Value);
+            OnHubGrasshopperDocumentObserved(pair.Key, pair.Value);
         }
 
         foreach (var handler in BridgeProcessHub.GetOperationHandlers())
         {
+            OnHubOperationHandlerRegistered(handler);
+        }
+    }
+
+    private void OnHubGrasshopperDocumentObserved(Guid documentId, string filePath)
+    {
+        if (IsDisposed())
+        {
+            return;
+        }
+        try
+        {
+            ObserveGrasshopperDocument(documentId, filePath);
+        }
+        catch (ObjectDisposedException) when (IsDisposed())
+        {
+        }
+    }
+
+    private void OnHubGrasshopperDocumentForgotten(Guid documentId)
+    {
+        if (IsDisposed())
+        {
+            return;
+        }
+        try
+        {
+            ForgetGrasshopperDocument(documentId);
+        }
+        catch (ObjectDisposedException) when (IsDisposed())
+        {
+        }
+    }
+
+    private void OnHubOperationHandlerRegistered(IBridgeOperationHandler handler)
+    {
+        if (!IsDisposed())
+        {
             RegisterOperationHandler(handler);
+        }
+    }
+
+    private bool IsDisposed()
+    {
+        lock (_gate)
+        {
+            return _disposed;
         }
     }
 
@@ -308,12 +423,21 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
     }
 
-    private void EnsureBootstrap(DocumentTarget target)
+    private void EnsureBootstrap(DocumentTarget target, bool reservedRestart = false)
     {
         AgentHostBootstrapper? bootstrapper;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_targets.TryGetValue(target.StableTargetKey(), out var currentTarget) ||
+                !ReferenceEquals(currentTarget, target))
+            {
+                return;
+            }
+            if (reservedRestart && !_automaticRestartPending)
+            {
+                return;
+            }
             if (_bootstrapper is not null)
             {
                 if (_bootstrapProjectId != target.ProjectId)
@@ -321,19 +445,37 @@ public sealed class GptinoRuntimeHost : IDisposable
                     throw new InvalidOperationException(
                         "This GPTino runtime is already bound to another Rhino/Grasshopper file pair.");
                 }
-                return;
+                bootstrapper = _bootstrapper;
             }
-            if (_plugInAssemblyPath is null)
+            else if (_plugInAssemblyPath is null ||
+                _automaticRestartPending && !reservedRestart ||
+                _automaticRestartPolicy.IsSuppressed)
             {
                 return;
             }
-
-            bootstrapper = AgentHostBootstrapper.Start(_plugInAssemblyPath, target);
-            bootstrapper.Ready += OnAgentHostReady;
-            _bootstrapper = bootstrapper;
-            _bootstrapProjectId = target.ProjectId;
-            _connectionLifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-            _bridgeStatus = "Starting the file-pair AgentHost.";
+            else
+            {
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "agent-bootstrap-starting",
+                    $"project={target.ProjectId:D}");
+                bootstrapper = AgentHostBootstrapper.Start(_plugInAssemblyPath, target);
+                bootstrapper.Ready += OnAgentHostReady;
+                _bootstrapper = bootstrapper;
+                _bootstrapProjectId = target.ProjectId;
+                _connectionLifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+                _bridgeStatus = "Starting the file-pair AgentHost.";
+                _runtimeGeneration++;
+                _connectionStarted = 0;
+                if (reservedRestart)
+                {
+                    _automaticRestartPending = false;
+                }
+                var generation = _runtimeGeneration;
+                var cancellationToken = _connectionLifetime.Token;
+                _bootstrapMonitorTask = Task.Run(
+                    () => MonitorBootstrapAsync(bootstrapper, generation, cancellationToken));
+            }
         }
 
         if (bootstrapper.UiBaseUri is not null)
@@ -342,30 +484,103 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
     }
 
+    private async Task MonitorBootstrapAsync(
+        AgentHostBootstrapper bootstrapper,
+        long generation,
+        CancellationToken cancellationToken)
+    {
+        var readyDeadline = Stopwatch.StartNew();
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                lock (_gate)
+                {
+                    if (!IsCurrentRuntimeLocked(bootstrapper, generation))
+                    {
+                        return;
+                    }
+                }
+
+                if (bootstrapper.HasExited)
+                {
+                    RecoverFailedRuntime(
+                        bootstrapper,
+                        generation,
+                        "AgentHost exited before its document bridge became ready.");
+                    return;
+                }
+
+                if (bootstrapper.UiBaseUri is not null)
+                {
+                    // This also repairs a READY notification that arrived before the host subscribed.
+                    BeginConnection(bootstrapper);
+                    return;
+                }
+
+                if (readyDeadline.Elapsed >= AgentHostReadyTimeout)
+                {
+                    RecoverFailedRuntime(
+                        bootstrapper,
+                        generation,
+                        "AgentHost did not become ready within 30 seconds.");
+                    return;
+                }
+
+                await Task.Delay(BootstrapMonitorInterval, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
     private void BeginConnection(AgentHostBootstrapper bootstrapper)
     {
-        if (Interlocked.Exchange(ref _connectionStarted, 1) != 0)
-        {
-            return;
-        }
-
         lock (_gate)
         {
+            if (_disposed || !ReferenceEquals(_bootstrapper, bootstrapper))
+            {
+                return;
+            }
+            if (_connectionStarted != 0)
+            {
+                return;
+            }
+            _connectionStarted = 1;
             _connectionLifetime ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            var generation = _runtimeGeneration;
+            var cancellationToken = _connectionLifetime.Token;
             _bridgeStatus = "Connecting the authenticated document bridge.";
             _connectionTask = Task.Run(
-                () => ConnectAndReceiveAsync(bootstrapper, _connectionLifetime.Token),
-                _connectionLifetime.Token);
+                () => ConnectAndReceiveAsync(bootstrapper, generation, cancellationToken),
+                cancellationToken);
         }
     }
 
     private async Task ConnectAndReceiveAsync(
         AgentHostBootstrapper bootstrapper,
+        long generation,
         CancellationToken cancellationToken)
     {
+        var restartExitedRuntime = false;
         while (!cancellationToken.IsCancellationRequested)
         {
+            lock (_gate)
+            {
+                if (!IsCurrentRuntimeLocked(bootstrapper, generation))
+                {
+                    return;
+                }
+            }
+            if (bootstrapper.HasExited)
+            {
+                restartExitedRuntime = true;
+                break;
+            }
+
             DocumentPipeConnection? connection = null;
+            var staleGeneration = false;
             try
             {
                 var client = bootstrapper.CreateBridgeClient();
@@ -376,8 +591,19 @@ public sealed class GptinoRuntimeHost : IDisposable
 
                 lock (_gate)
                 {
-                    _connection = connection;
-                    _bridgeStatus = "AgentHost and document bridge are connected.";
+                    if (!IsCurrentRuntimeLocked(bootstrapper, generation))
+                    {
+                        staleGeneration = true;
+                    }
+                    else
+                    {
+                        _connection = connection;
+                        _bridgeStatus = "AgentHost and document bridge are connected.";
+                    }
+                }
+                if (staleGeneration)
+                {
+                    return;
                 }
 
                 foreach (var target in _targets.Values)
@@ -390,32 +616,48 @@ public sealed class GptinoRuntimeHost : IDisposable
                     var frame = await connection.ReceiveAsync(cancellationToken).ConfigureAwait(false);
                     await ProcessIncomingFrameAsync(connection, frame, cancellationToken).ConfigureAwait(false);
                 }
+                restartExitedRuntime = bootstrapper.HasExited;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
             catch (Exception exception) when (
-                exception is IOException or TimeoutException or UnauthorizedAccessException or BridgeProtocolException)
+                exception is IOException or TimeoutException or UnauthorizedAccessException or
+                BridgeProtocolException or ObjectDisposedException)
             {
                 lock (_gate)
                 {
-                    _bridgeStatus = $"Document bridge disconnected; retrying: {exception.Message}";
+                    if (IsCurrentRuntimeLocked(bootstrapper, generation))
+                    {
+                        _bridgeStatus = "Document bridge disconnected; retrying.";
+                    }
                 }
+                DevelopmentDiagnosticTrace.TryWriteException(
+                    "Rhino",
+                    "document-bridge-disconnected",
+                    exception);
+                restartExitedRuntime = bootstrapper.HasExited;
             }
             finally
             {
                 lock (_gate)
                 {
-                    if (ReferenceEquals(_connection, connection))
+                    if (IsCurrentRuntimeLocked(bootstrapper, generation) &&
+                        ReferenceEquals(_connection, connection))
                     {
                         _connection = null;
                     }
                 }
                 if (connection is not null)
                 {
-                    await connection.DisposeAsync().ConfigureAwait(false);
+                    await DisposeConnectionSafelyAsync(connection).ConfigureAwait(false);
                 }
+            }
+
+            if (restartExitedRuntime)
+            {
+                break;
             }
 
             try
@@ -426,6 +668,11 @@ public sealed class GptinoRuntimeHost : IDisposable
             {
                 break;
             }
+        }
+
+        if (restartExitedRuntime && !cancellationToken.IsCancellationRequested)
+        {
+            RecoverFailedRuntime(bootstrapper, generation, "AgentHost exited unexpectedly.");
         }
     }
 
@@ -542,95 +789,381 @@ public sealed class GptinoRuntimeHost : IDisposable
     private void QueueRegistration(DocumentTarget target)
     {
         DocumentPipeConnection? connection;
+        CancellationToken cancellationToken;
+        long generation;
         lock (_gate)
         {
+            if (_disposed ||
+                !_targets.TryGetValue(target.StableTargetKey(), out var currentTarget) ||
+                !ReferenceEquals(currentTarget, target) ||
+                _connectionLifetime is null)
+            {
+                return;
+            }
             connection = _connection;
+            cancellationToken = _connectionLifetime.Token;
+            generation = _runtimeGeneration;
         }
 
-        if (connection is not { IsConnected: true })
+        try
+        {
+            if (connection is not { IsConnected: true })
+            {
+                return;
+            }
+        }
+        catch (ObjectDisposedException)
         {
             return;
         }
 
-        _ = SendRegistrationSafelyAsync(connection, target, _lifetime.Token);
+        _ = SendRegistrationSafelyAsync(
+            connection,
+            target,
+            generation,
+            cancellationToken);
     }
 
     private void RemoveTargets(Func<DocumentTarget, bool> predicate, string reason)
     {
-        foreach (var pair in _targets.Where(pair => predicate(pair.Value)).ToArray())
+        List<DocumentTarget> removedTargets = [];
+        DocumentPipeConnection? connection;
+        CancellationToken cancellationToken;
+        long generation;
+        DetachedRuntime? detached = null;
+        lock (_gate)
         {
-            if (!_targets.TryRemove(pair.Key, out var removed))
+            foreach (var pair in _targets.Where(pair => predicate(pair.Value)).ToArray())
             {
-                continue;
+                if (_targets.TryRemove(pair.Key, out var removed))
+                {
+                    removedTargets.Add(removed);
+                }
             }
 
-            DocumentPipeConnection? connection;
-            lock (_gate)
+            connection = _connection;
+            cancellationToken = _connectionLifetime?.Token ?? _lifetime.Token;
+            generation = _runtimeGeneration;
+            if (_targets.IsEmpty)
             {
-                connection = _connection;
-            }
-
-            if (connection is { IsConnected: true })
-            {
-                _ = SendDocumentClosedSafelyAsync(connection, removed, reason, _lifetime.Token);
+                ResetAutomaticRestartPolicyLocked();
+                detached = DetachRuntimeLocked(
+                    "Waiting for one saved Rhino and Grasshopper file pair.");
             }
         }
 
-        if (_targets.IsEmpty)
+        if (detached is null && connection is not null)
         {
-            ResetFilePairRuntime();
+            foreach (var removed in removedTargets)
+            {
+                _ = SendDocumentClosedSafelyAsync(
+                    connection,
+                    removed,
+                    reason,
+                    generation,
+                    cancellationToken);
+            }
+        }
+        StopDetachedRuntime(detached);
+    }
+
+    private DetachedRuntime? DetachRuntimeLocked(string status)
+    {
+        var detached = new DetachedRuntime(
+            _bootstrapper,
+            _connectionLifetime,
+            _bootstrapMonitorTask,
+            _connectionTask);
+        _bootstrapper = null;
+        _bootstrapProjectId = null;
+        _connectionLifetime = null;
+        _bootstrapMonitorTask = null;
+        _connectionTask = null;
+        _connection = null;
+        _bridgeStatus = status;
+        _runtimeGeneration++;
+        _connectionStarted = 0;
+        return detached.Bootstrapper is null &&
+            detached.ConnectionLifetime is null &&
+            detached.BootstrapMonitorTask is null &&
+            detached.ConnectionTask is null
+                ? null
+                : detached;
+    }
+
+    private static void CancelSafely(
+        CancellationTokenSource cancellation,
+        string diagnosticEvent)
+    {
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (Exception exception) when (
+            exception is AggregateException or ObjectDisposedException)
+        {
+            DevelopmentDiagnosticTrace.TryWriteException(
+                "Rhino",
+                diagnosticEvent,
+                exception);
         }
     }
 
-    private void ResetFilePairRuntime()
+    private void StopDetachedRuntime(DetachedRuntime? detached)
     {
-        AgentHostBootstrapper? bootstrapper;
-        CancellationTokenSource? connectionLifetime;
-        Task? connectionTask;
+        if (detached is null)
+        {
+            return;
+        }
+
+        if (detached.ConnectionLifetime is { } connectionLifetime)
+        {
+            CancelSafely(connectionLifetime, "connection-cancellation-failed");
+        }
+
+        if (detached.Bootstrapper is { } bootstrapper)
+        {
+            try
+            {
+                bootstrapper.Ready -= OnAgentHostReady;
+                bootstrapper.Dispose();
+            }
+            catch (Exception exception)
+            {
+                DevelopmentDiagnosticTrace.TryWriteException(
+                    "Rhino",
+                    "agent-bootstrap-dispose-failed",
+                    exception);
+            }
+        }
+
+        var runtimeTasks = new[]
+        {
+            detached.BootstrapMonitorTask,
+            detached.ConnectionTask,
+        }.OfType<Task>().Distinct().ToArray();
+        if (runtimeTasks.Length != 0)
+        {
+            _ = ObserveRuntimeTasksAsync(runtimeTasks, detached.ConnectionLifetime);
+        }
+        else
+        {
+            detached.ConnectionLifetime?.Dispose();
+        }
+    }
+
+    private static async Task ObserveRuntimeTasksAsync(
+        IReadOnlyCollection<Task> runtimeTasks,
+        CancellationTokenSource? connectionLifetime)
+    {
+        try
+        {
+            await Task.WhenAll(runtimeTasks).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+        }
+        catch (Exception exception)
+        {
+            DevelopmentDiagnosticTrace.TryWriteException(
+                "Rhino",
+                "runtime-task-failed",
+                exception);
+        }
+        finally
+        {
+            connectionLifetime?.Dispose();
+        }
+    }
+
+    private void RecoverFailedRuntime(
+        AgentHostBootstrapper bootstrapper,
+        long generation,
+        string failureStatus)
+    {
+        DetachedRuntime? detached;
+        TimeSpan restartDelay;
+        long detachedGeneration;
+        CancellationToken lifetimeToken;
         lock (_gate)
         {
-            if (_targets.Count != 0 || _bootstrapper is null)
+            if (_disposed || !IsCurrentRuntimeLocked(bootstrapper, generation))
             {
                 return;
             }
 
-            bootstrapper = _bootstrapper;
-            connectionLifetime = _connectionLifetime;
-            connectionTask = _connectionTask;
-            _bootstrapper = null;
-            _bootstrapProjectId = null;
-            _connectionLifetime = null;
-            _connectionTask = null;
-            _connection = null;
-            _bridgeStatus = "Waiting for one saved Rhino and Grasshopper file pair.";
-            Interlocked.Exchange(ref _connectionStarted, 0);
+            detached = DetachRuntimeLocked(failureStatus);
+            detachedGeneration = _runtimeGeneration;
+            lifetimeToken = _lifetime.Token;
+            if (_targets.IsEmpty)
+            {
+                ResetAutomaticRestartPolicyLocked();
+                _bridgeStatus = "Waiting for one saved Rhino and Grasshopper file pair.";
+                restartDelay = Timeout.InfiniteTimeSpan;
+            }
+            else if (!TryScheduleAutomaticRestartLocked(failureStatus, out restartDelay))
+            {
+                restartDelay = Timeout.InfiniteTimeSpan;
+            }
         }
 
-        connectionLifetime?.Cancel();
-        bootstrapper.Ready -= OnAgentHostReady;
-        bootstrapper.Dispose();
-        if (connectionTask is not null)
+        StopDetachedRuntime(detached);
+        if (restartDelay == Timeout.InfiniteTimeSpan)
         {
-            try
-            {
-                connectionTask.Wait(TimeSpan.FromSeconds(2));
-            }
-            catch (AggregateException exception) when (
-                exception.InnerExceptions.All(inner => inner is OperationCanceledException or IOException))
-            {
-            }
+            return;
         }
-        connectionLifetime?.Dispose();
+
+        _ = RestartRuntimeAfterDelayAsync(detachedGeneration, restartDelay, lifetimeToken);
     }
 
-    private static async Task SendDocumentClosedSafelyAsync(
-        DocumentPipeConnection connection,
-        DocumentTarget target,
-        string reason,
+    private bool TryScheduleAutomaticRestartLocked(string failureStatus, out TimeSpan restartDelay)
+    {
+        if (!_automaticRestartPolicy.TryReserve(out restartDelay))
+        {
+            _automaticRestartPending = false;
+            _bridgeStatus = $"{failureStatus} Automatic restart stopped after " +
+                $"{AutomaticRestartPolicy.MaximumAttempts} retries; " +
+                "close and reopen either project file to retry.";
+            return false;
+        }
+
+        _automaticRestartPending = true;
+        _bridgeStatus = $"{failureStatus} Restarting in {restartDelay.TotalSeconds:0} second(s) " +
+            $"({_automaticRestartPolicy.AttemptCount}/{AutomaticRestartPolicy.MaximumAttempts}).";
+        return true;
+    }
+
+    private async Task RestartRuntimeAfterDelayAsync(
+        long detachedGeneration,
+        TimeSpan restartDelay,
         CancellationToken cancellationToken)
     {
         try
         {
+            await Task.Delay(restartDelay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        DocumentTarget? replacement;
+        try
+        {
+            lock (_gate)
+            {
+                if (_disposed ||
+                    _runtimeGeneration != detachedGeneration ||
+                    !_automaticRestartPending ||
+                    _automaticRestartPolicy.IsSuppressed ||
+                    _bootstrapper is not null)
+                {
+                    return;
+                }
+
+                replacement = _targets.Values
+                    .OrderBy(target => target.StableTargetKey(), StringComparer.Ordinal)
+                    .FirstOrDefault();
+                if (replacement is null)
+                {
+                    ResetAutomaticRestartPolicyLocked();
+                    _bridgeStatus = "Waiting for one saved Rhino and Grasshopper file pair.";
+                    return;
+                }
+                // Keep the restart lease and target selection under the same re-entrant gate.
+                // Concurrent document replacement therefore cannot consume the reservation or
+                // leave a stable replacement target without a bootstrap attempt.
+                EnsureBootstrap(replacement, reservedRestart: true);
+                if (_bootstrapper is null)
+                {
+                    _automaticRestartPending = false;
+                    _bridgeStatus = "AgentHost restart was deferred while documents were changing.";
+                    return;
+                }
+            }
+            QueueRegistration(replacement);
+        }
+        catch (ObjectDisposedException) when (IsDisposed())
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            TimeSpan nextRestartDelay = Timeout.InfiniteTimeSpan;
+            lock (_gate)
+            {
+                if (!_disposed &&
+                    _runtimeGeneration == detachedGeneration &&
+                    _bootstrapper is null &&
+                    !_targets.IsEmpty)
+                {
+                    _ = TryScheduleAutomaticRestartLocked(
+                        "Could not start AgentHost for this file pair.",
+                        out nextRestartDelay);
+                }
+            }
+            DevelopmentDiagnosticTrace.TryWriteException(
+                "Rhino",
+                "agent-bootstrap-restart-failed",
+                exception);
+            if (nextRestartDelay != Timeout.InfiniteTimeSpan)
+            {
+                _ = RestartRuntimeAfterDelayAsync(
+                    detachedGeneration,
+                    nextRestartDelay,
+                    cancellationToken);
+            }
+        }
+    }
+
+    private void ResetAutomaticRestartPolicyLocked()
+    {
+        _automaticRestartPolicy.Reset();
+        _automaticRestartPending = false;
+    }
+
+    private bool IsCurrentRuntimeLocked(AgentHostBootstrapper bootstrapper, long generation) =>
+        !_disposed &&
+        ReferenceEquals(_bootstrapper, bootstrapper) &&
+        _runtimeGeneration == generation;
+
+    private static async Task DisposeConnectionSafelyAsync(DocumentPipeConnection connection)
+    {
+        try
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            DevelopmentDiagnosticTrace.TryWriteException(
+                "Rhino",
+                "document-bridge-dispose-failed",
+                exception);
+        }
+    }
+
+    private async Task SendDocumentClosedSafelyAsync(
+        DocumentPipeConnection connection,
+        DocumentTarget target,
+        string reason,
+        long generation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            lock (_gate)
+            {
+                if (_disposed ||
+                    _runtimeGeneration != generation ||
+                    !ReferenceEquals(_connection, connection) ||
+                    _targets.TryGetValue(target.StableTargetKey(), out var currentTarget) &&
+                    currentTarget.Generation >= target.Generation)
+                {
+                    return;
+                }
+            }
             await connection.SendAsync(
                 BridgeFrame.Create(
                     BridgeMessageKind.Event,
@@ -639,7 +1172,8 @@ public sealed class GptinoRuntimeHost : IDisposable
                     target),
                 cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is IOException or OperationCanceledException)
+        catch (Exception exception) when (
+            exception is IOException or OperationCanceledException or ObjectDisposedException)
         {
         }
     }
@@ -647,18 +1181,40 @@ public sealed class GptinoRuntimeHost : IDisposable
     private async Task SendRegistrationSafelyAsync(
         DocumentPipeConnection connection,
         DocumentTarget target,
+        long generation,
         CancellationToken cancellationToken)
     {
         try
         {
+            lock (_gate)
+            {
+                if (_disposed ||
+                    _runtimeGeneration != generation ||
+                    !ReferenceEquals(_connection, connection) ||
+                    !_targets.TryGetValue(target.StableTargetKey(), out var currentTarget) ||
+                    !ReferenceEquals(currentTarget, target))
+                {
+                    return;
+                }
+            }
             await SendRegistrationAsync(connection, target, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is IOException or OperationCanceledException)
+        catch (Exception exception) when (
+            exception is IOException or OperationCanceledException or ObjectDisposedException)
         {
             lock (_gate)
             {
-                _bridgeStatus = $"Could not register document target: {exception.Message}";
+                if (!_disposed &&
+                    _runtimeGeneration == generation &&
+                    ReferenceEquals(_connection, connection))
+                {
+                    _bridgeStatus = "Could not register the document target; retrying on reconnect.";
+                }
             }
+            DevelopmentDiagnosticTrace.TryWriteException(
+                "Rhino",
+                "document-registration-failed",
+                exception);
         }
     }
 
@@ -681,23 +1237,30 @@ public sealed class GptinoRuntimeHost : IDisposable
 
     private void TryRegisterUnambiguousPair()
     {
-        if (_observedRhinoDocuments.Count != 1 || _observedGrasshopperDocuments.Count != 1)
+        lock (_observationGate)
         {
-            return;
-        }
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Rhino",
+                "pair-evaluated",
+                $"rhino={_observedRhinoDocuments.Count};grasshopper={_observedGrasshopperDocuments.Count}");
+            if (_observedRhinoDocuments.Count != 1 || _observedGrasshopperDocuments.Count != 1)
+            {
+                return;
+            }
 
-        var rhinoPair = _observedRhinoDocuments.Single();
-        var grasshopperPair = _observedGrasshopperDocuments.Single();
-        using var process = Process.GetCurrentProcess();
-        var target = DocumentRuntimeTarget.Create(
-            CreateProjectId(rhinoPair.Value, grasshopperPair.Value),
-            process.Id,
-            new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero),
-            rhinoPair.Key,
-            grasshopperPair.Key,
-            rhinoPair.Value,
-            grasshopperPair.Value);
-        RegisterDocument(target);
+            var rhinoPair = _observedRhinoDocuments.Single();
+            var grasshopperPair = _observedGrasshopperDocuments.Single();
+            using var process = Process.GetCurrentProcess();
+            var target = DocumentRuntimeTarget.Create(
+                CreateProjectId(rhinoPair.Value, grasshopperPair.Value),
+                process.Id,
+                new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero),
+                rhinoPair.Key,
+                grasshopperPair.Key,
+                rhinoPair.Value,
+                grasshopperPair.Value);
+            RegisterDocument(target);
+        }
     }
 
     private static Guid CreateProjectId(string rhinoPath, string grasshopperPath)
@@ -707,6 +1270,12 @@ public sealed class GptinoRuntimeHost : IDisposable
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
         return new Guid(hash.AsSpan(0, 16));
     }
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
 
     private static string? TryReadOperationId(BridgeFrame frame)
     {
@@ -721,4 +1290,10 @@ public sealed class GptinoRuntimeHost : IDisposable
             return null;
         }
     }
+
+    private sealed record DetachedRuntime(
+        AgentHostBootstrapper? Bootstrapper,
+        CancellationTokenSource? ConnectionLifetime,
+        Task? BootstrapMonitorTask,
+        Task? ConnectionTask);
 }

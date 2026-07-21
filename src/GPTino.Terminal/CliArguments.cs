@@ -1,11 +1,17 @@
 namespace GPTino.Terminal;
 
-internal sealed record CliArguments(Uri Endpoint, Guid SessionId, string Token, string Title)
+internal sealed record CliArguments(
+    Uri Endpoint,
+    Guid SessionId,
+    string Token,
+    string Title,
+    bool NewConsole = false)
 {
     public const string TokenEnvironmentVariable = "GPTINO_API_TOKEN";
 
     public const string Usage =
-        "Usage: GPTino.Terminal attach --endpoint <loopback-url> --session <guid> [--token <token>] [--title <text>] " +
+        "Usage: GPTino.Terminal attach [--new-console] --endpoint <loopback-url> --session <guid> " +
+        "[--token <token>] [--title <text>] " +
         "(--token may be supplied through GPTINO_API_TOKEN)";
 
     public static CliParseResult Parse(IReadOnlyList<string> args) =>
@@ -27,12 +33,19 @@ internal sealed record CliArguments(Uri Endpoint, Guid SessionId, string Token, 
         string? session = null;
         string? token = null;
         string? title = null;
+        var newConsole = false;
         for (var index = 1; index < args.Count; index++)
         {
             var option = args[index];
             if (IsHelp(option))
             {
                 return CliParseResult.Help();
+            }
+
+            if (option == "--new-console")
+            {
+                newConsole = true;
+                continue;
             }
 
             if (option is not ("--endpoint" or "--session" or "--token" or "--title"))
@@ -87,7 +100,12 @@ internal sealed record CliArguments(Uri Endpoint, Guid SessionId, string Token, 
 
         var displayTitle = string.IsNullOrWhiteSpace(title) ? $"Session {sessionId:D}" : title.Trim();
         var normalizedEndpoint = new Uri(endpointUri.AbsoluteUri.TrimEnd('/') + '/', UriKind.Absolute);
-        return CliParseResult.Success(new CliArguments(normalizedEndpoint, sessionId, token, displayTitle));
+        return CliParseResult.Success(new CliArguments(
+            normalizedEndpoint,
+            sessionId,
+            token,
+            displayTitle,
+            newConsole));
     }
 
     private static bool IsHelp(string value) => value is "--help" or "-h" or "/?";

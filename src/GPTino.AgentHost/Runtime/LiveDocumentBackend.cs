@@ -259,6 +259,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             arguments,
             cancellationToken);
 
+    public Task<object> InspectCanvasOutputsAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken) =>
+        ReadBridgeQueryAsync(
+            BridgeAdapterOwner.CordycepsCanvas,
+            "canvas.inspectOutputs",
+            arguments,
+            cancellationToken);
+
     private async Task<object> ReadBridgeQueryAsync(
         BridgeAdapterOwner owner,
         string operation,
@@ -1265,6 +1274,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             resources.Add(new ResourceFingerprint(
                 new ResourceAddress(ResourceKind.GrasshopperComponentLayout, id),
                 item.Fingerprint));
+            if (item.ValueJson is not null)
+            {
+                resources.Add(new ResourceFingerprint(
+                    new ResourceAddress(ResourceKind.GrasshopperComponentValue, id),
+                    item.Fingerprint));
+            }
         }
         foreach (var wire in canvas.Wires)
         {
@@ -1697,6 +1712,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var frozen = new TypedOperation[prepared.Count];
         try
         {
+            Directory.CreateDirectory(stagingRoot);
+            File.WriteAllText(
+                Path.Combine(stagingRoot, ".gptino-owned-reserved-job"),
+                jobId.ToString("D"));
             var stagingOperations = Path.Combine(stagingRoot, "operations");
             Directory.CreateDirectory(stagingOperations);
             for (var index = 0; index < prepared.Count; index++)
@@ -1725,11 +1744,21 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
             Directory.Move(stagingRoot, finalRoot);
         }
-        catch
+        catch (Exception primaryException)
         {
             if (Directory.Exists(stagingRoot))
             {
-                Directory.Delete(stagingRoot, recursive: true);
+                try
+                {
+                    DeleteOwnedReservedJob(sessionRoot, stagingRoot);
+                }
+                catch (Exception cleanupException)
+                {
+                    throw new AggregateException(
+                        "The reserved payload operation failed and its owned staging directory could not be removed safely.",
+                        primaryException,
+                        cleanupException);
+                }
             }
             throw;
         }
@@ -1746,8 +1775,26 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var jobRoot = ReservedArtifactStorage.JobRoot(sessionRoot, jobId);
         if (Directory.Exists(jobRoot))
         {
-            Directory.Delete(jobRoot, recursive: true);
+            DeleteOwnedReservedJob(sessionRoot, jobRoot);
         }
+    }
+
+    private static void DeleteOwnedReservedJob(string sessionRoot, string candidate)
+    {
+        var safePath = ConstrainedPath.Resolve(
+            sessionRoot,
+            Path.GetRelativePath(sessionRoot, candidate),
+            "Reserved artifact cleanup");
+        ConstrainedPath.RejectExistingReparsePoints(
+            sessionRoot,
+            safePath,
+            "Reserved artifact cleanup");
+        if (!File.Exists(Path.Combine(safePath, ".gptino-owned-reserved-job")))
+        {
+            throw new InvalidOperationException(
+                "Refusing to remove an unmarked reserved artifact directory.");
+        }
+        Directory.Delete(safePath, recursive: true);
     }
 
     private static BridgeAdapterOwner ResolveOwner(TypedOperation operation)
@@ -1786,6 +1833,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var inferred = operation.Kind switch
         {
             OperationKind.MoveComponent or OperationKind.SetLayout => "canvas.move",
+            OperationKind.SetValue => "canvas.setNumberSlider",
             OperationKind.ConnectWire or OperationKind.DisconnectWire => "canvas.setWire",
             OperationKind.CreateComponent => "canvas.create",
             OperationKind.DeleteComponent => "canvas.delete",
@@ -1832,6 +1880,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var required = bridgeOperation switch
         {
             "canvas.move" => new[] { "operationId", "pivots", "expectedFingerprints" },
+            "canvas.setNumberSlider" => new[]
+            {
+                "operationId", "objectId", "expectedFingerprint", "value", "minimum", "maximum",
+                "decimalPlaces"
+            },
             "canvas.setWire" => new[] { "operationId", "wire", "action", "rejectCycles" },
             "canvas.create" => new[] { "operationId", "objectId", "componentTypeId", "pivot" },
             "canvas.delete" => new[] { "operationId", "objectId", "expectedFingerprint" },
@@ -1934,6 +1987,22 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                         operation.OperationId);
                     ValidateMoveArguments(
                         DeserializeArguments<MoveCanvasObjectsRequest>(arguments, operation.OperationId));
+                    return;
+                case "canvas.setNumberSlider":
+                    var slider = DeserializeArguments<SetNumberSliderValueRequest>(
+                        arguments,
+                        operation.OperationId);
+                    if (slider.ObjectId == Guid.Empty ||
+                        string.IsNullOrWhiteSpace(slider.ExpectedFingerprint) ||
+                        slider.Minimum >= slider.Maximum || slider.Value < slider.Minimum ||
+                        slider.Value > slider.Maximum || slider.DecimalPlaces is < 0 or > 12 ||
+                        decimal.Round(slider.Value, slider.DecimalPlaces) != slider.Value ||
+                        decimal.Round(slider.Minimum, slider.DecimalPlaces) != slider.Minimum ||
+                        decimal.Round(slider.Maximum, slider.DecimalPlaces) != slider.Maximum)
+                    {
+                        throw new InvalidOperationException(
+                            $"Operation '{operation.OperationId}' has an invalid Number Slider payload.");
+                    }
                     return;
                 case "canvas.setWire":
                     ValidateWireArguments(
@@ -2310,6 +2379,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     {
         switch (bridgeOperation)
         {
+            case "canvas.setNumberSlider":
+                RequireExactDeclaredGuidTarget(
+                    operation,
+                    RequireArgumentGuid(arguments, "objectId", operation.OperationId),
+                    write: true,
+                    ResourceKind.GrasshopperComponentValue);
+                return;
+
             case "canvas.move":
                 var pivotIds = ReadGuidPropertyNames(
                     arguments.GetProperty("pivots"),
@@ -2547,6 +2624,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     {
         "canvas.create" => ["objectId", "componentTypeId"],
         "canvas.delete" => ["objectId"],
+        "canvas.setNumberSlider" => ["objectId"],
         "canvas.setGroup" => ["groupId"],
         "python.setSource" or "python.setSchema" or "python.execute" or
             "python.runtimeMessages" or "python.inspect" => ["componentId"],
@@ -3089,6 +3167,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var arguments = prepared.Arguments;
         switch (prepared.BridgeOperation)
         {
+            case "canvas.setNumberSlider":
+                RequirePayloadFingerprint(
+                    changeSet,
+                    operation,
+                    TargetResource(operation, arguments, ResourceKind.GrasshopperComponentValue),
+                    RequireArgumentString(arguments, "expectedFingerprint", operation.OperationId));
+                return;
+
             case "canvas.move":
                 foreach (var item in arguments.GetProperty("expectedFingerprints").EnumerateObject())
                 {
@@ -3256,11 +3342,21 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
-    private static ResourceAddress? PythonStateWrite(TypedOperation operation) =>
-        operation.Writes.SingleOrDefault(resource => resource.Kind is
+    private static ResourceAddress? PythonStateWrite(TypedOperation operation)
+    {
+        if (operation.Kind is not (
+                OperationKind.UpdatePythonSource or
+                OperationKind.SetComponentIo or
+                OperationKind.ConvertSocket or
+                OperationKind.ExecutePython))
+        {
+            return null;
+        }
+        return operation.Writes.SingleOrDefault(resource => resource.Kind is
             ResourceKind.GrasshopperComponentSource or
             ResourceKind.GrasshopperComponentIo or
             ResourceKind.GrasshopperComponentValue);
+    }
 
     private static void ValidateResourceAddress(ResourceAddress resource, Guid projectId)
     {

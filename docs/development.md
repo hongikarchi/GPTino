@@ -6,10 +6,10 @@
 - .NET SDK 8 (the pinned SDK is in `global.json`)
 - Node.js 24 and npm
 - Rhino 8.21+ for live plug-in validation and `Yak.exe`
-- Codex CLI 0.144.4 (validated) or a protocol-compatible newer version
+- Codex CLI 0.144.6 (validated) or a protocol-compatible newer version
 
-Clone the repository anywhere writable. The canonical local location used for this
-project is `C:\Users\user\Desktop\GPTino`.
+Clone the repository into any writable local directory and run the commands below
+from that repository root.
 
 ## Build order
 
@@ -28,6 +28,46 @@ dotnet build GPTino.sln -c Release --no-restore
 dotnet test GPTino.sln -c Release --no-build --no-restore
 ```
 
+For repeatable local verification, use the fixed-command development loop. Every
+invocation creates a marked evidence directory under `artifacts/dev-loop/`, redirects
+temporary and package-cache writes into that directory, records exact child PIDs and
+start times, redacts secrets, and preserves stdout, stderr, timing, exit codes, and
+normalized failure signatures:
+
+```powershell
+dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj -- verify --stage boundary
+dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj -- verify --stage mcp
+dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj -- verify --stage orchestrator
+dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj -- verify --stage full
+dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj -- verify --stage smoke
+dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj -- verify --stage live-codex
+dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj -- verify --stage package
+dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj -- verify --stage rhino-live
+```
+
+The command accepts no arbitrary executable or script argument. Local evidence is
+never automatically removed. Network/login, Rhino or Yak installation and GUI
+automation, and GitHub push remain explicit external approval stages.
+
+The `rhino-live` stage is the approved-machine acceptance test. It builds one local
+Yak package, replaces the locally installed GPTino package, and starts exactly one
+owned Rhino process. It refuses to run while any Rhino process is already open. The
+fixed Desktop `Untitled.3dm` and `unnamed.gh` inputs are hashed and copied into the
+marked run directory; only those copies are opened. The test drives real Codex
+sessions to build a Grasshopper cylinder and Rhino sphere, independently inspects
+slider values, sockets, wires, Python source/runtime, output bounds, Rhino object
+identity and bounds, then verifies manual session ordering, conflict handling,
+parallel reads, and terminal attachment. It stops only captured PID/start-time
+identities, re-hashes the Desktop originals, preserves all evidence, and never logs
+the generated API token. Because it changes local Yak installation state and opens
+GUI processes, run it only after explicit approval.
+
+When `rhino-live` enables the validated development data directory, the Rhino and
+Grasshopper plug-ins also emit bounded `.gptino-diagnostic-*.json` startup
+breadcrumbs there. These records identify document discovery and AgentHost lifecycle
+events without recording API tokens or bridge secrets, and remain with the run evidence
+when startup fails before the HTTP endpoint exists.
+
 After a Release build, run the real AgentHost against the installed Codex CLI.
 This checks the READY schema, API authentication, Codex model catalog, exact
 Rhino-document binding, one-time panel nonce, and cookie reopen flow without
@@ -39,6 +79,24 @@ opening Rhino:
 
 To validate the exact staged self-contained executable, add
 `-AgentHostExecutable artifacts/yak/GPTino/net8.0/agent/GPTino.AgentHost.exe`.
+
+The default smoke starts the real Codex App Server and validates its model catalog,
+so it is also an explicit network/login stage and must run in an approved, logged-in
+user environment. It does not spend a model turn. Before packaging a release, run
+the opt-in live turn against a logged-in native Codex executable:
+
+```powershell
+./scripts/smoke-agenthost.ps1 -Configuration Release `
+  -CodexExecutable C:\path\to\codex.exe `
+  -LiveCodexTurn
+```
+
+That path attaches a disposable, read-only Grasshopper bridge, requires exactly one
+`snapshot_read`, and verifies an exact Korean UTF-8 assistant response containing the
+unpredictable snapshot fingerprint. It rejects any mutation or second bridge request,
+does not print the bridge secret or raw fingerprint, stops only its owned child
+processes, and always preserves its marked runtime directory under
+`artifacts/dev-loop/` as verification evidence.
 
 To inspect the pinned Wireify, Cordyceps, and SkillMeld sources used for design
 comparison, run `./scripts/fetch-references.ps1`. They are checked out under the
@@ -104,6 +162,9 @@ restricted to `artifacts/` or one of its descendants so a clean rebuild cannot e
 an unrelated directory.
 
 ## Live validation checklist
+
+The `rhino-live` development-loop stage automates the core acceptance path below;
+the checklist remains useful for release-candidate visual inspection.
 
 Automated builds cannot prove Rhino UI-thread behavior. Before publishing a version:
 

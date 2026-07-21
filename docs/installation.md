@@ -12,7 +12,7 @@ automatically; there is no port or shared-secret setup in the normal workflow.
 ## Prerequisites
 
 - Windows x64 and Rhino 8.21+
-- Codex CLI 0.144.4 (validated) or a protocol-compatible newer version
+- Codex CLI 0.144.6 (validated) or a protocol-compatible newer version
 - a completed local Codex login (`codex login`)
 
 The GPTino package includes a self-contained .NET runtime for AgentHost and the
@@ -42,6 +42,10 @@ uploads it; publishing requires a separate, deliberate Yak login and push.
 2. Open the matching saved Rhino and Grasshopper documents.
 3. Open the **GPTino** Rhino panel.
 4. Create or select a session, then send a read-only request before the first edit.
+
+GPTino intentionally has no separate Codex-login tab. It reuses the authenticated
+user state created by `codex login` in a regular terminal. A session's **Terminal**
+button opens that GPTino conversation; it is not a second Codex login shell.
 
 The Rhino plug-in starts one AgentHost for the exact saved Rhino/Grasshopper file
 pair in that Rhino process and connects it over a mutually authenticated named

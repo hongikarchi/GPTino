@@ -423,6 +423,150 @@ public sealed class LiveDocumentBackendTests
     }
 
     [Fact]
+    public async Task NumberSliderValueUsesExactValueResourceAndTypedBridgePayload()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        harness.IncludeNumberSliderValue = true;
+        await using var responder = harness.StartResponder();
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Number Slider"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var resource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentValue,
+            harness.CanvasObjectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "number-slider.json",
+            new
+            {
+                bridgeOperation = "canvas.setNumberSlider",
+                arguments = new
+                {
+                    operationId = "set-diameter",
+                    objectId = harness.CanvasObjectId,
+                    expectedFingerprint = harness.ObjectFingerprint,
+                    value = 10m,
+                    minimum = 0m,
+                    maximum = 100m,
+                    decimalPlaces = 0
+                }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "set-diameter",
+                OperationKind.SetValue,
+                AdapterOwner.Cordyceps,
+                [],
+                [resource],
+                Reversible: true,
+                artifact),
+            [new ResourceExpectation(resource, harness.ObjectFingerprint)]);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "set-diameter", "Set diameter to 10"),
+            CancellationToken.None));
+        var state = await harness.WaitForJobStateAsync(submitted.GetProperty("jobId").GetGuid());
+
+        var jobView = await harness.ReadJobViewAsync(submitted.GetProperty("jobId").GetGuid());
+        Assert.True(
+            state == "committed",
+            jobView.GetProperty("message").GetString());
+        var bridgeRequest = Assert.Single(
+            responder.Requests,
+            item => string.Equals(item.Operation, "canvas.setNumberSlider", StringComparison.Ordinal));
+        Assert.Equal(BridgeOperationAccess.Write, bridgeRequest.Access);
+        Assert.Equal(harness.ObjectFingerprint, bridgeRequest.ExpectedFingerprint);
+        Assert.Equal(harness.CanvasObjectId, bridgeRequest.Arguments.GetProperty("objectId").GetGuid());
+        Assert.Equal(10m, bridgeRequest.Arguments.GetProperty("value").GetDecimal());
+        Assert.Equal(0m, bridgeRequest.Arguments.GetProperty("minimum").GetDecimal());
+        Assert.Equal(100m, bridgeRequest.Arguments.GetProperty("maximum").GetDecimal());
+        Assert.Equal(0, bridgeRequest.Arguments.GetProperty("decimalPlaces").GetInt32());
+    }
+
+    [Fact]
+    public async Task DistinctNumberSliderWritesAreNotMisclassifiedAsPythonState()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        harness.IncludeNumberSliderValue = true;
+        await using var responder = harness.StartResponder();
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Two sliders"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var firstResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentValue,
+            harness.CanvasObjectId.ToString("D"));
+        var secondResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentValue,
+            harness.SecondCanvasObjectId.ToString("D"));
+        var firstArtifact = await harness.WritePayloadAsync(
+            session,
+            "first-slider.json",
+            new
+            {
+                bridgeOperation = "canvas.setNumberSlider",
+                arguments = new
+                {
+                    operationId = "first-slider",
+                    objectId = harness.CanvasObjectId,
+                    expectedFingerprint = harness.ObjectFingerprint,
+                    value = 10m,
+                    minimum = 0m,
+                    maximum = 100m,
+                    decimalPlaces = 0
+                }
+            });
+        var secondArtifact = await harness.WritePayloadAsync(
+            session,
+            "second-slider.json",
+            new
+            {
+                bridgeOperation = "canvas.setNumberSlider",
+                arguments = new
+                {
+                    operationId = "second-slider",
+                    objectId = harness.SecondCanvasObjectId,
+                    expectedFingerprint = harness.SecondObjectFingerprint,
+                    value = 20m,
+                    minimum = 0m,
+                    maximum = 100m,
+                    decimalPlaces = 0
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [
+                new ResourceExpectation(firstResource, harness.ObjectFingerprint),
+                new ResourceExpectation(secondResource, harness.SecondObjectFingerprint)
+            ],
+            [
+                new TypedOperation("first-slider", OperationKind.SetValue, AdapterOwner.Cordyceps, [], [firstResource], true, firstArtifact),
+                new TypedOperation("second-slider", OperationKind.SetValue, AdapterOwner.Cordyceps, [], [secondResource], true, secondArtifact)
+            ],
+            [new VerificationPredicate("No runtime errors", PredicateKind.RuntimeErrorAbsent, null, null)],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "two-sliders", "Set two sliders"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var jobView = await harness.ReadJobViewAsync(jobId);
+
+        Assert.True(state == "committed", jobView.GetProperty("message").GetString());
+        Assert.Equal(["first-slider", "second-slider"], responder.WriteOperationIds);
+        Assert.Equal(1, responder.MaximumConcurrentWrites);
+    }
+
+    [Fact]
     public async Task OperationCannotDeclareAdditionalUnrelatedWriteTargets()
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync();
@@ -477,10 +621,21 @@ public sealed class LiveDocumentBackendTests
                     expectedFingerprint = "object-fingerprint",
                     matrix = new
                     {
-                        m00 = 1, m01 = 0, m02 = 0, m03 = 0,
-                        m10 = 0, m11 = 1, m12 = 0, m13 = 0,
-                        m20 = 0, m21 = 0, m22 = 1, m23 = 0,
-                        m30 = 0, m31 = 0, m32 = 0
+                        m00 = 1,
+                        m01 = 0,
+                        m02 = 0,
+                        m03 = 0,
+                        m10 = 0,
+                        m11 = 1,
+                        m12 = 0,
+                        m13 = 0,
+                        m20 = 0,
+                        m21 = 0,
+                        m22 = 1,
+                        m23 = 0,
+                        m30 = 0,
+                        m31 = 0,
+                        m32 = 0
                     }
                 }
             });
@@ -1327,7 +1482,13 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
 
     public Guid CanvasObjectId { get; } = Guid.Parse("9a2c86f6-f2a7-4ee0-b1a0-43e981e70d03");
 
+    public Guid SecondCanvasObjectId { get; } = Guid.Parse("63ef5e65-a239-4b02-89ea-d959fbd68404");
+
     public string ObjectFingerprint => "object-v1";
+
+    public string SecondObjectFingerprint => "object-v2";
+
+    public bool IncludeNumberSliderValue { get; set; }
 
     public Guid? LastRegistrationMessageId { get; private set; }
 
@@ -1455,21 +1616,43 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
         return RequireConnection().SendAsync(response).AsTask();
     }
 
-    public CanvasSnapshot CreateSnapshot() =>
-        new(
+    public CanvasSnapshot CreateSnapshot()
+    {
+        var state = new CanvasObjectState(
+            CanvasObjectId,
+            Guid.Parse("29322931-96ae-4d34-874b-a722bc3a0e4a"),
+            "Point",
+            new CanvasPoint(10, 20),
+            new CanvasSize(90, 40),
+            ObjectFingerprint)
+        {
+            ValueJson = IncludeNumberSliderValue
+                ? "{\"kind\":\"numberSlider\",\"value\":5,\"minimum\":0,\"maximum\":100,\"decimalPlaces\":0}"
+                : null
+        };
+        var objects = IncludeNumberSliderValue
+            ? new[]
+            {
+                state,
+                new CanvasObjectState(
+                    SecondCanvasObjectId,
+                    Guid.Parse("29322931-96ae-4d34-874b-a722bc3a0e4a"),
+                    "Height",
+                    new CanvasPoint(10, 80),
+                    new CanvasSize(90, 40),
+                    SecondObjectFingerprint)
+                {
+                    ValueJson = "{\"kind\":\"numberSlider\",\"value\":5,\"minimum\":0,\"maximum\":100,\"decimalPlaces\":0}"
+                }
+            }
+            : [state];
+        return new(
             Target.GrasshopperDocumentId,
             "document-v1",
-            [
-                new CanvasObjectState(
-                    CanvasObjectId,
-                    Guid.Parse("29322931-96ae-4d34-874b-a722bc3a0e4a"),
-                    "Point",
-                    new CanvasPoint(10, 20),
-                    new CanvasSize(90, 40),
-                    ObjectFingerprint)
-            ],
+            objects,
             Array.Empty<WireState>(),
             Array.Empty<GroupState>());
+    }
 
     public FakeBridgeResponder StartResponder(
         TimeSpan? writeDelay = null,

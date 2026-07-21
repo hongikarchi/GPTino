@@ -49,6 +49,19 @@ if (-not ($OutputRoot + [IO.Path]::DirectorySeparatorChar).StartsWith(
     throw "OutputRoot must be the repository artifacts directory or one of its descendants: $artifactRoot"
 }
 
+for ($current = [IO.DirectoryInfo]::new($OutputRoot); $null -ne $current; $current = $current.Parent) {
+    if ($current.Exists -and
+        (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "OutputRoot contains a reparse point: $($current.FullName)"
+    }
+    if ([string]::Equals(
+            $current.FullName.TrimEnd([IO.Path]::DirectorySeparatorChar),
+            $artifactRoot.TrimEnd([IO.Path]::DirectorySeparatorChar),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        break
+    }
+}
+
 $manifestSource = Join-Path $repoRoot 'packaging\yak\manifest.yml'
 $manifestText = [IO.File]::ReadAllText($manifestSource)
 $versionMatch = [regex]::Match($manifestText, '(?m)^version:\s*(\S+)\s*$')
@@ -107,10 +120,22 @@ function Reset-GeneratedDirectory {
     param([Parameter(Mandatory)][string]$Path)
 
     $safePath = Assert-GeneratedPath $Path
+    $ownedMarker = $safePath + '.gptino-owned-directory'
     if (Test-Path -LiteralPath $safePath) {
+        $item = Get-Item -LiteralPath $safePath -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to reset a generated reparse point: $safePath"
+        }
+        if (-not (Test-Path -LiteralPath $ownedMarker -PathType Leaf)) {
+            throw "Refusing to reset an unmarked generated directory: $safePath"
+        }
         Remove-Item -LiteralPath $safePath -Recurse -Force
     }
     New-Item -ItemType Directory -Path $safePath -Force | Out-Null
+    [IO.File]::WriteAllText(
+        $ownedMarker,
+        "GPTino package output`n",
+        [Text.UTF8Encoding]::new($false))
 }
 
 function Invoke-Tool {
@@ -308,6 +333,17 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
+$stagedGptinoBinaries = Get-ChildItem -LiteralPath $stageRoot -Recurse -File | Where-Object {
+    $_.Name.StartsWith('GPTino.', [StringComparison]::OrdinalIgnoreCase) -and
+    @('.dll', '.exe', '.rhp', '.gha') -contains $_.Extension.ToLowerInvariant()
+}
+foreach ($binary in $stagedGptinoBinaries) {
+    $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($binary.FullName).ProductVersion
+    if (-not [string]::Equals($productVersion, $Version, [StringComparison]::Ordinal)) {
+        throw "Staged GPTino binary version '$productVersion' does not match package version '$Version': $($binary.FullName)"
+    }
+}
+
 foreach ($dependencyFile in @('GPTino.Rhino.deps.json', 'GPTino.Grasshopper.deps.json')) {
     $dependencyPath = Join-Path $pluginStage $dependencyFile
     $dependencyManifest = Get-Content -LiteralPath $dependencyPath -Raw | ConvertFrom-Json
@@ -343,10 +379,20 @@ $contents = Get-ChildItem -LiteralPath $stageRoot -Recurse -File |
 
 $archivePath = Join-Path $OutputRoot "GPTino-$Version-yak-stage.zip"
 $archivePath = Assert-GeneratedPath $archivePath
+$archiveMarker = $archivePath + '.gptino-owned-file'
 if (Test-Path -LiteralPath $archivePath) {
+    $archiveItem = Get-Item -LiteralPath $archivePath -Force
+    if (($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        -not (Test-Path -LiteralPath $archiveMarker -PathType Leaf)) {
+        throw "Refusing to replace an unmarked or reparse-point archive: $archivePath"
+    }
     Remove-Item -LiteralPath $archivePath -Force
 }
 Compress-Archive -Path (Join-Path $stageRoot '*') -DestinationPath $archivePath -CompressionLevel Optimal
+[IO.File]::WriteAllText(
+    $archiveMarker,
+    "GPTino package archive`n",
+    [Text.UTF8Encoding]::new($false))
 
 if ($BuildYak) {
     if ([string]::IsNullOrWhiteSpace($YakExe)) {

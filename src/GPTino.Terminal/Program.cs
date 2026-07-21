@@ -16,6 +16,10 @@ internal static class Program
         }
 
         var arguments = parsed.Arguments!;
+        if (arguments.NewConsole)
+        {
+            WindowsConsoleHost.CreateDedicated();
+        }
         TrySetTitle(arguments.Title);
         using var cancellation = new CancellationTokenSource();
         ConsoleCancelEventHandler handler = (_, eventArgs) =>

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -59,19 +60,60 @@ public sealed class ReadySignalService : IHostedService
         {
             var dataDirectory = _options.ResolveDataDirectory();
             Directory.CreateDirectory(dataDirectory);
+            using var currentProcess = Process.GetCurrentProcess();
             var discovery = JsonSerializer.Serialize(
                 new
                 {
                     uiBaseUrl = address.ToString().TrimEnd('/'),
                     processId = Environment.ProcessId,
+                    processStartTimeUtc = currentProcess.StartTime.ToUniversalTime(),
                     startedAt = DateTimeOffset.UtcNow
                 },
                 new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(Path.Combine(dataDirectory, "endpoint.json"), discovery);
+            WriteEndpointDiscoveryFile(dataDirectory, discovery);
         }
         catch (Exception exception)
         {
             _logger.LogWarning(exception, "Could not write the local endpoint discovery file.");
+        }
+    }
+
+    private static void WriteEndpointDiscoveryFile(string dataDirectory, string discovery)
+    {
+        var endpointPath = Path.Combine(dataDirectory, "endpoint.json");
+        var endpointInfo = new FileInfo(endpointPath);
+        endpointInfo.Refresh();
+        if (endpointInfo.LinkTarget is not null ||
+            (endpointInfo.Exists && (endpointInfo.Attributes & FileAttributes.ReparsePoint) != 0))
+        {
+            throw new InvalidOperationException("The endpoint discovery file is a reparse point.");
+        }
+
+        var temporaryPath = Path.Combine(
+            dataDirectory,
+            $".endpoint-{Environment.ProcessId}-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            var bytes = new UTF8Encoding(false).GetBytes(discovery);
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       4096,
+                       FileOptions.WriteThrough))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporaryPath, endpointPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
         }
     }
 }

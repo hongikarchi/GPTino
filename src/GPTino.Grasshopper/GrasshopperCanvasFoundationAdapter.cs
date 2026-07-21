@@ -3,6 +3,7 @@
 
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Runtime.CompilerServices;
 using GPTino.CordycepsAdapter;
 using Grasshopper.Kernel;
@@ -69,6 +70,42 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         var documentObject = document.FindObject(objectId, true)
             ?? throw new KeyNotFoundException($"Grasshopper object {objectId:D} was not found.");
         return Task.FromResult(ToObjectState(documentObject, BuildParameterOwners(document)));
+    }
+
+    protected override Task<CanvasOutputInspection> InspectOutputsCoreAsync(
+        GH_Document document,
+        InspectCanvasOutputsRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.ObjectId == Guid.Empty)
+        {
+            throw new InvalidOperationException("ObjectId is required for output inspection.");
+        }
+
+        var documentObject = document.FindObject(request.ObjectId, true)
+            ?? throw new KeyNotFoundException(
+                $"Grasshopper object {request.ObjectId:D} was not found.");
+        if (documentObject is not IGH_Component component)
+        {
+            throw new NotSupportedException(
+                $"Grasshopper object {request.ObjectId:D} does not expose component outputs.");
+        }
+
+        var outputs = component.Params.Output
+            .Select(parameter => InspectOutputParameter(parameter, cancellationToken))
+            .ToArray();
+        var canonical = JsonSerializer.Serialize(outputs);
+        var fingerprint = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(
+                $"{document.DocumentID:N}|{request.ObjectId:N}|{canonical}")))
+            .ToLowerInvariant();
+        return Task.FromResult(new CanvasOutputInspection(
+            document.DocumentID,
+            request.ObjectId,
+            outputs,
+            fingerprint));
     }
 
     protected override Task<ComponentCatalogSearchResult> SearchComponentCatalogCoreAsync(
@@ -308,6 +345,92 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             changes.Select(item => item.ObjectId).ToArray());
     }
 
+    protected override Task<CanvasMutationResult> SetNumberSliderValueCoreAsync(
+        GH_Document document,
+        SetNumberSliderValueRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        RequireOperationId(request.OperationId);
+        if (request.ObjectId == Guid.Empty || string.IsNullOrWhiteSpace(request.ExpectedFingerprint) ||
+            request.Minimum >= request.Maximum || request.Value < request.Minimum ||
+            request.Value > request.Maximum || request.DecimalPlaces is < 0 or > 12 ||
+            !IsRepresentableAtPrecision(request.Value, request.DecimalPlaces) ||
+            !IsRepresentableAtPrecision(request.Minimum, request.DecimalPlaces) ||
+            !IsRepresentableAtPrecision(request.Maximum, request.DecimalPlaces))
+        {
+            throw new InvalidOperationException("The Number Slider value request is invalid.");
+        }
+
+        var slider = document.FindObject(request.ObjectId, true) as GH_NumberSlider
+            ?? throw new InvalidOperationException(
+                $"Grasshopper object {request.ObjectId:D} is not a Number Slider.");
+        var beforeState = ToObjectState(slider, BuildParameterOwners(document));
+        if (!string.Equals(beforeState.Fingerprint, request.ExpectedFingerprint, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The Number Slider changed after the request snapshot.");
+        }
+
+        var oldMinimum = slider.Slider.Minimum;
+        var oldMaximum = slider.Slider.Maximum;
+        var oldValue = slider.CurrentValue;
+        var oldDecimalPlaces = slider.Slider.DecimalPlaces;
+        if (oldMinimum == request.Minimum && oldMaximum == request.Maximum &&
+            oldValue == request.Value && oldDecimalPlaces == request.DecimalPlaces)
+        {
+            return Task.FromResult(new CanvasMutationResult(
+                request.OperationId,
+                Changed: false,
+                beforeState.Fingerprint,
+                beforeState.Fingerprint,
+                [request.ObjectId]));
+        }
+
+        document.UndoUtil.RecordGenericObjectEvent($"GPTino: {request.OperationId}", slider);
+        try
+        {
+            SetSliderRangeAndValue(
+                slider,
+                request.Minimum,
+                request.Maximum,
+                request.Value,
+                request.DecimalPlaces);
+            slider.ExpireSolution(true);
+            if (slider.Slider.Minimum != request.Minimum ||
+                slider.Slider.Maximum != request.Maximum ||
+                slider.CurrentValue != request.Value ||
+                slider.Slider.DecimalPlaces != request.DecimalPlaces)
+            {
+                throw new InvalidOperationException(
+                    "Grasshopper did not apply the Number Slider state exactly as requested.");
+            }
+        }
+        catch (Exception mutationFailure)
+        {
+            try
+            {
+                SetSliderRangeAndValue(slider, oldMinimum, oldMaximum, oldValue, oldDecimalPlaces);
+                slider.ExpireSolution(true);
+            }
+            catch (Exception rollbackFailure)
+            {
+                throw new AggregateException(
+                    "Number Slider mutation failed and its in-place rollback also failed; use Grasshopper Undo.",
+                    mutationFailure,
+                    rollbackFailure);
+            }
+            throw;
+        }
+
+        var afterState = ToObjectState(slider, BuildParameterOwners(document));
+        return Task.FromResult(new CanvasMutationResult(
+            request.OperationId,
+            Changed: true,
+            beforeState.Fingerprint,
+            afterState.Fingerprint,
+            [request.ObjectId]));
+    }
+
     protected override async Task<CanvasMutationResult> SetWireCoreAsync(
         GH_Document document,
         SetWireRequest request,
@@ -476,9 +599,19 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             $"{parameter.TypeName}:{parameter.TypeHint}:{parameter.Access}:{parameter.Optional}:" +
             string.Join(',', parameter.CurrentSources.Select(source =>
                 $"{source.OwnerObjectId:N}/{source.ParameterId:N}"))));
+        var valueJson = documentObject is GH_NumberSlider slider
+            ? JsonSerializer.Serialize(new
+            {
+                kind = "numberSlider",
+                value = slider.CurrentValue,
+                minimum = slider.Slider.Minimum,
+                maximum = slider.Slider.Maximum,
+                decimalPlaces = slider.Slider.DecimalPlaces
+            })
+            : null;
         var fingerprintSource = string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{documentObject.InstanceGuid:N}|{documentObject.ComponentGuid:N}|{pivot.X:R}|{pivot.Y:R}|{bounds.Width:R}|{bounds.Height:R}|{documentObject.NickName}|{sockets}");
+            $"{documentObject.InstanceGuid:N}|{documentObject.ComponentGuid:N}|{pivot.X:R}|{pivot.Y:R}|{bounds.Width:R}|{bounds.Height:R}|{documentObject.NickName}|{sockets}|{valueJson}");
         var fingerprint = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintSource))).ToLowerInvariant();
         return new CanvasObjectState(
@@ -491,8 +624,84 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         {
             Inputs = inputs,
             Outputs = outputs,
+            ValueJson = valueJson,
         };
     }
+
+    private static void SetSliderRangeAndValue(
+        GH_NumberSlider slider,
+        decimal minimum,
+        decimal maximum,
+        decimal value,
+        int decimalPlaces)
+    {
+        slider.Slider.Minimum = Math.Min(slider.Slider.Minimum, Math.Min(minimum, value));
+        slider.Slider.Maximum = Math.Max(slider.Slider.Maximum, Math.Max(maximum, value));
+        slider.Slider.Minimum = minimum;
+        slider.Slider.Maximum = maximum;
+        slider.Slider.DecimalPlaces = decimalPlaces;
+        slider.SetSliderValue(value);
+    }
+
+    private static bool IsRepresentableAtPrecision(decimal value, int decimalPlaces) =>
+        decimal.Round(value, decimalPlaces) == value;
+
+    private static CanvasOutputParameterInspection InspectOutputParameter(
+        IGH_Param parameter,
+        CancellationToken cancellationToken)
+    {
+        var count = 0;
+        var typeNames = new HashSet<string>(StringComparer.Ordinal);
+        Rhino.Geometry.BoundingBox? bounds = null;
+        foreach (var goo in parameter.VolatileData.AllData(true))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            count++;
+            if (goo is null)
+            {
+                typeNames.Add("null");
+                continue;
+            }
+
+            typeNames.Add(goo.GetType().FullName ?? goo.GetType().Name);
+            if (goo.ScriptVariable() is not Rhino.Geometry.GeometryBase geometry)
+            {
+                continue;
+            }
+            var candidate = geometry.GetBoundingBox(accurate: true);
+            if (!candidate.IsValid)
+            {
+                continue;
+            }
+            if (bounds is null)
+            {
+                bounds = candidate;
+            }
+            else
+            {
+                var union = bounds.Value;
+                union.Union(candidate);
+                bounds = union;
+            }
+        }
+
+        return new CanvasOutputParameterInspection(
+            parameter.InstanceGuid,
+            parameter.Name ?? string.Empty,
+            parameter.NickName ?? string.Empty,
+            count,
+            typeNames.OrderBy(item => item, StringComparer.Ordinal).ToArray(),
+            bounds is { } value ? ToCanvasBounds(value) : null);
+    }
+
+    private static CanvasBoundingBox3d ToCanvasBounds(Rhino.Geometry.BoundingBox bounds) =>
+        new(
+            new CanvasPoint3d(bounds.Min.X, bounds.Min.Y, bounds.Min.Z),
+            new CanvasPoint3d(bounds.Max.X, bounds.Max.Y, bounds.Max.Z),
+            new CanvasPoint3d(
+                bounds.Max.X - bounds.Min.X,
+                bounds.Max.Y - bounds.Min.Y,
+                bounds.Max.Z - bounds.Min.Z));
 
     private static IReadOnlyDictionary<IGH_Param, Guid> BuildParameterOwners(GH_Document document) =>
         EnumerateParameters(document)

@@ -26,14 +26,33 @@ public sealed class GptinoAssemblyPriority : GH_AssemblyPriority
 {
     public override GH_LoadingInstruction PriorityLoad()
     {
-        GrasshopperDocumentCatalog.Initialize();
-        var resolver = new ExplicitGrasshopperDocumentResolver();
-        BridgeProcessHub.RegisterOperationHandler(
-            new CordycepsCanvasBridgeOperationHandler(
-                new GrasshopperCanvasFoundationAdapter(resolver)));
-        BridgeProcessHub.RegisterOperationHandler(
-            new WireifyBridgeOperationHandler(
-                new GrasshopperPythonFoundationAdapter(resolver)));
-        return GH_LoadingInstruction.Proceed;
+        DevelopmentDiagnosticTrace.TryWrite("Grasshopper", "priority-load-enter");
+        try
+        {
+            GrasshopperDocumentCatalog.Initialize();
+            var resolver = new ExplicitGrasshopperDocumentResolver();
+            BridgeProcessHub.RegisterOperationHandler(
+                new CordycepsCanvasBridgeOperationHandler(
+                    new GrasshopperCanvasFoundationAdapter(resolver)));
+            BridgeProcessHub.RegisterOperationHandler(
+                new WireifyBridgeOperationHandler(
+                    new GrasshopperPythonFoundationAdapter(resolver)));
+            var documentCount = global::Grasshopper.Instances.DocumentServer.DocumentCount;
+            var hasActiveCanvas = global::Grasshopper.Instances.ActiveCanvas is not null;
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Grasshopper",
+                "priority-load-ready",
+                $"documents={documentCount};activeCanvas={hasActiveCanvas}");
+            return GH_LoadingInstruction.Proceed;
+        }
+        catch (Exception exception)
+        {
+            GrasshopperDocumentCatalog.Teardown();
+            DevelopmentDiagnosticTrace.TryWriteException(
+                "Grasshopper",
+                "priority-load-failed",
+                exception);
+            throw;
+        }
     }
 }

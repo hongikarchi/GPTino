@@ -11,26 +11,50 @@ internal static class RhinoUiThreadDispatcher
 
         if (!global::Rhino.RhinoApp.InvokeRequired)
         {
-            return action();
+            return action().WaitAsync(cancellationToken);
         }
 
         var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        global::Rhino.RhinoApp.InvokeOnUiThread((Action)(async () =>
+        var cancellationRegistration = cancellationToken.Register(
+            () => completion.TrySetCanceled(cancellationToken));
+        try
         {
-            try
+            global::Rhino.RhinoApp.InvokeOnUiThread((Action)(async () =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                completion.TrySetResult(await action().ConfigureAwait(true));
-            }
-            catch (OperationCanceledException exception)
-            {
-                completion.TrySetCanceled(exception.CancellationToken);
-            }
-            catch (Exception exception)
-            {
-                completion.TrySetException(exception);
-            }
-        }));
-        return completion.Task;
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    completion.TrySetResult(await action().ConfigureAwait(true));
+                }
+                catch (OperationCanceledException exception)
+                {
+                    completion.TrySetCanceled(exception.CancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    completion.TrySetException(exception);
+                }
+            }));
+        }
+        catch
+        {
+            cancellationRegistration.Dispose();
+            throw;
+        }
+        return AwaitCompletionAsync(completion.Task, cancellationRegistration);
+    }
+
+    private static async Task<T> AwaitCompletionAsync<T>(
+        Task<T> completion,
+        CancellationTokenRegistration cancellationRegistration)
+    {
+        try
+        {
+            return await completion.ConfigureAwait(false);
+        }
+        finally
+        {
+            cancellationRegistration.Dispose();
+        }
     }
 }

@@ -134,17 +134,14 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         var before = ReadState(component);
         var inputs = ReadParameterObjects(component, "Inputs");
         var outputs = ReadParameterObjects(component, "Outputs");
-        if (inputs.Count != request.Inputs.Count || outputs.Count != request.Outputs.Count)
-        {
-            throw new NotSupportedException(
-                "Foundation schema updates preserve socket count. Add/remove sockets through an undo-safe staged component workflow.");
-        }
-
         ValidateSchema(request.Inputs, request.Outputs);
-        var plans = PrepareSchema(inputs, request.Inputs)
-            .Concat(PrepareSchema(outputs, request.Outputs))
+        ValidateAppendOnlySchema(inputs, request.Inputs, "input");
+        ValidateAppendOnlySchema(outputs, request.Outputs, "output");
+        var initialPlans = PrepareSchema(inputs, request.Inputs.Take(inputs.Count).ToArray())
+            .Concat(PrepareSchema(outputs, request.Outputs.Take(outputs.Count).ToArray()))
             .ToArray();
-        if (plans.All(plan => plan.IsNoOp))
+        if (inputs.Count == request.Inputs.Count && outputs.Count == request.Outputs.Count &&
+            initialPlans.All(plan => plan.IsNoOp))
         {
             return Task.FromResult(new WireifyMutationResult(
                 request.OperationId,
@@ -155,9 +152,18 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         }
 
         var wireState = CaptureWireState(inputs.Concat(outputs));
+        var additions = new List<AppendedParameter>();
+        ParameterMutationPlan[] plans = [];
         document.UndoUtil.RecordGenericObjectEvent($"GPTino: {request.OperationId}", component);
         try
         {
+            AppendMissingParameters(component, GH_ParameterSide.Input, inputs.Count, request.Inputs, additions);
+            AppendMissingParameters(component, GH_ParameterSide.Output, outputs.Count, request.Outputs, additions);
+            inputs = ReadParameterObjects(component, "Inputs");
+            outputs = ReadParameterObjects(component, "Outputs");
+            plans = PrepareSchema(inputs, request.Inputs)
+            .Concat(PrepareSchema(outputs, request.Outputs))
+            .ToArray();
             foreach (var plan in plans)
             {
                 ApplyPlan(plan);
@@ -169,7 +175,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         }
         catch (Exception mutationFailure)
         {
-            RestorePlans(plans, wireState, component, mutationFailure);
+            RestoreSchemaMutation(plans, additions, wireState, component, mutationFailure);
             throw;
         }
 
@@ -535,6 +541,74 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         }
     }
 
+    private static void ValidateAppendOnlySchema(
+        IReadOnlyList<ScriptParameterObject> actual,
+        IReadOnlyList<PythonParameter> requested,
+        string side)
+    {
+        if (requested.Count < actual.Count)
+        {
+            throw new NotSupportedException(
+                $"Removing Python {side} sockets is not supported by the foundation adapter.");
+        }
+        for (var index = 0; index < actual.Count; index++)
+        {
+            if (actual[index].ParameterId != requested[index].ParameterId)
+            {
+                throw new InvalidOperationException(
+                    $"Existing Python {side} socket identity changed at schema position {index}.");
+            }
+        }
+    }
+
+    private static void AppendMissingParameters(
+        IGH_DocumentObject component,
+        GH_ParameterSide side,
+        int existingCount,
+        IReadOnlyList<PythonParameter> requested,
+        ICollection<AppendedParameter> additions)
+    {
+        if (existingCount == requested.Count)
+        {
+            return;
+        }
+        if (component is not IGH_VariableParameterComponent variable ||
+            component is not IGH_Component ghComponent)
+        {
+            throw new NotSupportedException(
+                "This Python component does not support undo-safe appended sockets.");
+        }
+
+        for (var index = existingCount; index < requested.Count; index++)
+        {
+            if (!variable.CanInsertParameter(side, index))
+            {
+                throw new NotSupportedException(
+                    $"The Python component rejected an appended {side} socket at position {index}.");
+            }
+            var parameter = variable.CreateParameter(side, index)
+                ?? throw new InvalidOperationException(
+                    $"The Python component did not create the requested {side} socket.");
+            if (parameter is not GH_DocumentObject documentObject)
+            {
+                throw new InvalidOperationException(
+                    "A new Python socket did not expose deterministic Grasshopper identity.");
+            }
+            documentObject.NewInstanceGuid(requested[index].ParameterId);
+            var registered = side == GH_ParameterSide.Input
+                ? ghComponent.Params.RegisterInputParam(parameter, index)
+                : ghComponent.Params.RegisterOutputParam(parameter, index);
+            if (!registered)
+            {
+                throw new InvalidOperationException(
+                    $"Grasshopper did not register the appended {side} socket.");
+            }
+            additions.Add(new AppendedParameter(side, parameter));
+            variable.VariableParameterMaintenance();
+            ghComponent.Params.OnParametersChanged();
+        }
+    }
+
     private static IReadOnlyList<ParameterMutationPlan> PrepareSchema(
         IReadOnlyList<ScriptParameterObject> actual,
         IReadOnlyList<PythonParameter> requested)
@@ -632,6 +706,56 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         {
             throw new AggregateException(
                 "Python schema update failed and its in-place rollback also failed; use Grasshopper Undo.",
+                mutationFailure,
+                rollbackFailure);
+        }
+    }
+
+    private static void RestoreSchemaMutation(
+        IReadOnlyList<ParameterMutationPlan> plans,
+        IReadOnlyList<AppendedParameter> additions,
+        IReadOnlyList<WireSnapshot> wireState,
+        IGH_DocumentObject component,
+        Exception mutationFailure)
+    {
+        try
+        {
+            foreach (var plan in plans.Reverse())
+            {
+                SetProperty(plan.VariableProperty, plan.Target.ScriptParameter, plan.Snapshot.VariableName);
+                SetProperty(plan.PrettyProperty, plan.Target.ScriptParameter, plan.Snapshot.PrettyName);
+                SetProperty(plan.AccessProperty, plan.Target.ScriptParameter, plan.Snapshot.Access);
+                SetProperty(plan.ConverterProperty, plan.Target.ScriptParameter, plan.Snapshot.Converter);
+                if (plan.Target.GrasshopperParameter is { } parameter)
+                {
+                    parameter.Name = plan.Snapshot.GhName ?? string.Empty;
+                    parameter.NickName = plan.Snapshot.GhNickName ?? string.Empty;
+                    parameter.Optional = plan.Snapshot.GhOptional;
+                }
+            }
+            if (component is not IGH_Component ghComponent)
+            {
+                throw new InvalidOperationException(
+                    "The Python component cannot unregister appended sockets during rollback.");
+            }
+            foreach (var addition in additions.Reverse())
+            {
+                var removed = addition.Side == GH_ParameterSide.Input
+                    ? ghComponent.Params.UnregisterInputParameter(addition.Parameter, true)
+                    : ghComponent.Params.UnregisterOutputParameter(addition.Parameter, true);
+                if (!removed)
+                {
+                    throw new InvalidOperationException(
+                        "Grasshopper did not unregister an appended Python socket during rollback.");
+                }
+            }
+            SynchronizeParameters(component);
+            RestoreWireState(wireState);
+        }
+        catch (Exception rollbackFailure)
+        {
+            throw new AggregateException(
+                "Python schema update failed and its staged rollback also failed; use Grasshopper Undo.",
                 mutationFailure,
                 rollbackFailure);
         }
@@ -873,6 +997,10 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         Guid ParameterId,
         object ScriptParameter,
         IGH_Param? GrasshopperParameter);
+
+    private sealed record AppendedParameter(
+        GH_ParameterSide Side,
+        IGH_Param Parameter);
 
     private sealed record ParameterSnapshot(
         object? VariableName,

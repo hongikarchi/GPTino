@@ -30,6 +30,8 @@ jobs:
           dotnet-version: 8.0.422
       - name: Check patch whitespace
         run: git diff --check HEAD^ HEAD
+      - name: Verify repository safety boundary
+        run: dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj --configuration Release -- verify --stage boundary
       - name: Build panel, validate .NET, and stage one package
         shell: pwsh
         run: ./scripts/build-package.ps1

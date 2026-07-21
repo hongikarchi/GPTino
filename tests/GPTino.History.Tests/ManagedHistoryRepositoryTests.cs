@@ -150,41 +150,6 @@ public sealed class ManagedHistoryRepositoryTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_root))
-        {
-            DeleteTestTree(_root);
-        }
-    }
-
-    private static void DeleteTestTree(string directory)
-    {
-        foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
-        {
-            var attributes = File.GetAttributes(entry);
-            if ((attributes & FileAttributes.ReparsePoint) != 0)
-            {
-                if ((attributes & FileAttributes.Directory) != 0)
-                {
-                    Directory.Delete(entry);
-                }
-                else
-                {
-                    File.SetAttributes(entry, FileAttributes.Normal);
-                    File.Delete(entry);
-                }
-            }
-            else if ((attributes & FileAttributes.Directory) != 0)
-            {
-                DeleteTestTree(entry);
-            }
-            else
-            {
-                File.SetAttributes(entry, FileAttributes.Normal);
-                File.Delete(entry);
-            }
-        }
-
-        File.SetAttributes(directory, FileAttributes.Normal);
-        Directory.Delete(directory);
+        // Local verification artifacts are evidence and are intentionally preserved.
     }
 }

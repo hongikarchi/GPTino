@@ -17,6 +17,11 @@ public interface ICordycepsCanvasAdapter
         Guid objectId,
         CancellationToken cancellationToken = default);
 
+    Task<CanvasOutputInspection> InspectOutputsAsync(
+        DocumentTarget target,
+        InspectCanvasOutputsRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<ComponentCatalogSearchResult> SearchComponentCatalogAsync(
         DocumentTarget target,
         ComponentCatalogSearchRequest request,
@@ -35,6 +40,11 @@ public interface ICordycepsCanvasAdapter
     Task<CanvasMutationResult> MoveObjectsAsync(
         DocumentTarget target,
         MoveCanvasObjectsRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<CanvasMutationResult> SetNumberSliderValueAsync(
+        DocumentTarget target,
+        SetNumberSliderValueRequest request,
         CancellationToken cancellationToken = default);
 
     Task<CanvasMutationResult> SetWireAsync(
@@ -68,6 +78,8 @@ public sealed record CanvasObjectState(
 
     public IReadOnlyList<CanvasParameterState> Outputs { get; init; } =
         Array.Empty<CanvasParameterState>();
+
+    public string? ValueJson { get; init; }
 }
 
 public sealed record CanvasParameterState(
@@ -81,6 +93,29 @@ public sealed record CanvasParameterState(
     CanvasParameterAccess Access,
     bool Optional,
     IReadOnlyList<CanvasParameterEndpoint> CurrentSources);
+
+public sealed record InspectCanvasOutputsRequest(Guid ObjectId);
+
+public sealed record CanvasOutputInspection(
+    Guid GrasshopperDocumentId,
+    Guid ObjectId,
+    IReadOnlyList<CanvasOutputParameterInspection> Outputs,
+    string Fingerprint);
+
+public sealed record CanvasOutputParameterInspection(
+    Guid ParameterId,
+    string Name,
+    string NickName,
+    int DataCount,
+    IReadOnlyList<string> TypeNames,
+    CanvasBoundingBox3d? GeometryBounds);
+
+public sealed record CanvasBoundingBox3d(
+    CanvasPoint3d Minimum,
+    CanvasPoint3d Maximum,
+    CanvasPoint3d Size);
+
+public sealed record CanvasPoint3d(double X, double Y, double Z);
 
 public sealed record CanvasParameterEndpoint(
     Guid OwnerObjectId,
@@ -152,6 +187,15 @@ public sealed record MoveCanvasObjectsRequest(
     string OperationId,
     IReadOnlyDictionary<Guid, CanvasPoint> Pivots,
     IReadOnlyDictionary<Guid, string> ExpectedFingerprints);
+
+public sealed record SetNumberSliderValueRequest(
+    string OperationId,
+    Guid ObjectId,
+    string ExpectedFingerprint,
+    decimal Value,
+    decimal Minimum,
+    decimal Maximum,
+    int DecimalPlaces);
 
 public sealed record SetWireRequest(
     string OperationId,

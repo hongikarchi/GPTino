@@ -25,6 +25,14 @@ public sealed class AgentHostOptions
 
     public int MaxParallelTurns { get; init; } = 4;
 
+    public TimeSpan CodexTurnPollInterval { get; init; } = TimeSpan.FromSeconds(2);
+
+    public TimeSpan CodexTurnReadTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
+    public int CodexTurnReadFailuresBeforeRestart { get; init; } = 3;
+
+    public int CodexTurnRestartCycles { get; init; } = 2;
+
     public string? BridgePipe { get; init; }
 
     public int? ParentProcessId { get; init; }

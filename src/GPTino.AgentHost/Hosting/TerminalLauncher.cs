@@ -43,7 +43,7 @@ public sealed class TerminalLauncher
             }
             else if (File.Exists(assembly))
             {
-                startInfo = new ProcessStartInfo("dotnet") { UseShellExecute = false };
+                startInfo = new ProcessStartInfo(ResolveDotnetHost()) { UseShellExecute = false };
                 startInfo.ArgumentList.Add(assembly);
             }
             else
@@ -51,13 +51,14 @@ public sealed class TerminalLauncher
                 throw new FileNotFoundException("GPTino terminal client is not installed beside AgentHost.");
             }
             startInfo.ArgumentList.Add("attach");
+            startInfo.ArgumentList.Add("--new-console");
             startInfo.ArgumentList.Add("--endpoint");
             startInfo.ArgumentList.Add(baseUri.ToString().TrimEnd('/'));
             startInfo.ArgumentList.Add("--session");
             startInfo.ArgumentList.Add(session.Id.ToString("D"));
             startInfo.ArgumentList.Add("--title");
             startInfo.ArgumentList.Add(session.Name);
-            startInfo.Environment[ApiTokenEnvironmentVariable] = _options.ApiToken;
+            ConfigureChildEnvironment(startInfo, _options.ApiToken);
 
             Process process;
             try
@@ -85,6 +86,31 @@ public sealed class TerminalLauncher
         lock (_processGate)
         {
             return TryGetOpenProcessLocked(sessionId, out _);
+        }
+    }
+
+    public TerminalProcessStatus ReadStatus(Guid sessionId)
+    {
+        lock (_processGate)
+        {
+            if (!TryGetOpenProcessLocked(sessionId, out var process))
+            {
+                return new TerminalProcessStatus(sessionId, IsOpen: false, null, null);
+            }
+            try
+            {
+                process.Refresh();
+                return new TerminalProcessStatus(
+                    sessionId,
+                    IsOpen: true,
+                    process.Id,
+                    process.StartTime.ToUniversalTime());
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+            {
+                RemoveProcessLocked(sessionId, process);
+                return new TerminalProcessStatus(sessionId, IsOpen: false, null, null);
+            }
         }
     }
 
@@ -132,6 +158,54 @@ public sealed class TerminalLauncher
         }
     }
 
+    private static void ConfigureChildEnvironment(ProcessStartInfo startInfo, string apiToken)
+    {
+        foreach (var key in startInfo.Environment.Keys
+                     .Where(IsGptinoEnvironmentKey)
+                     .ToArray())
+        {
+            startInfo.Environment.Remove(key);
+        }
+
+        startInfo.Environment[ApiTokenEnvironmentVariable] = apiToken;
+    }
+
+    private static bool IsGptinoEnvironmentKey(string key) =>
+        key.StartsWith("GPTINO_", StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith("GPTINO:", StringComparison.OrdinalIgnoreCase);
+
+    private static string ResolveDotnetHost()
+    {
+        if (Environment.ProcessPath is { } processPath &&
+            string.Equals(Path.GetFileName(processPath), "dotnet.exe", StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(processPath))
+        {
+            return Path.GetFullPath(processPath);
+        }
+
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                     .Select(value => value.Trim().Trim('"')))
+        {
+            try
+            {
+                var candidate = Path.GetFullPath(Path.Combine(directory, "dotnet.exe"));
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                // Ignore malformed inherited PATH entries.
+            }
+        }
+
+        throw new FileNotFoundException(
+            "The dotnet host required by the framework-dependent terminal client was not found.");
+    }
+
     private static void TryFocus(Process process)
     {
         if (!OperatingSystem.IsWindows())
@@ -163,3 +237,9 @@ public sealed class TerminalLauncher
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShowWindowAsync(IntPtr window, int command);
 }
+
+public sealed record TerminalProcessStatus(
+    Guid SessionId,
+    bool IsOpen,
+    int? ProcessId,
+    DateTime? ProcessStartTimeUtc);

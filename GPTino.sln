@@ -22,6 +22,10 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Terminal", "src\GPTi
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.WireifyAdapter", "src\GPTino.WireifyAdapter\GPTino.WireifyAdapter.csproj", "{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.SmokeBridge", "tools\GPTino.SmokeBridge\GPTino.SmokeBridge.csproj", "{1F7F4CB6-A495-4D87-A132-21B9C48CC8DA}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.LiveE2E", "tools\GPTino.LiveE2E\GPTino.LiveE2E.csproj", "{B1D8AE96-71B7-4C71-96DF-1C737F2B1134}"
+EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.AgentHost.Tests", "tests\GPTino.AgentHost.Tests\GPTino.AgentHost.Tests.csproj", "{E0DC7C77-B949-433B-9D57-BB80A05C06D0}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.BridgeContract.Tests", "tests\GPTino.BridgeContract.Tests\GPTino.BridgeContract.Tests.csproj", "{2D6E8D54-2F21-43E3-8C42-A55C39D87B78}"
@@ -80,6 +84,14 @@ Global
 		{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1F7F4CB6-A495-4D87-A132-21B9C48CC8DA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1F7F4CB6-A495-4D87-A132-21B9C48CC8DA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1F7F4CB6-A495-4D87-A132-21B9C48CC8DA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1F7F4CB6-A495-4D87-A132-21B9C48CC8DA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B1D8AE96-71B7-4C71-96DF-1C737F2B1134}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B1D8AE96-71B7-4C71-96DF-1C737F2B1134}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B1D8AE96-71B7-4C71-96DF-1C737F2B1134}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B1D8AE96-71B7-4C71-96DF-1C737F2B1134}.Release|Any CPU.Build.0 = Release|Any CPU
 		{E0DC7C77-B949-433B-9D57-BB80A05C06D0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{E0DC7C77-B949-433B-9D57-BB80A05C06D0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E0DC7C77-B949-433B-9D57-BB80A05C06D0}.Release|Any CPU.ActiveCfg = Release|Any CPU
