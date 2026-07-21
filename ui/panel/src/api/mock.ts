@@ -12,7 +12,7 @@ const now = new Date();
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
 const delay = (ms = 120) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
-const initialState: RuntimeState = {
+const demoState: RuntimeState = {
   projectId: "prj-tower-a31f924c",
   projectName: "Tower study / Option A",
   rhinoFile: "Tower_Study_A.3dm",
@@ -161,6 +161,7 @@ const initialState: RuntimeState = {
       title: "Rebuild panel boundaries",
       state: "verifying",
       resource: "GH · 48 components",
+      target: "grasshopper",
     },
     {
       id: "job-185",
@@ -168,6 +169,7 @@ const initialState: RuntimeState = {
       title: "Connect staged sockets",
       state: "ready",
       resource: "GH · 3 wires",
+      target: "grasshopper",
     },
     {
       id: "job-187",
@@ -176,6 +178,7 @@ const initialState: RuntimeState = {
       state: "waiting",
       waitingFor: "Manual drift resolution",
       resource: "Rhino · object 7F2A",
+      target: "rhino",
     },
   ],
   conflicts: [
@@ -186,14 +189,25 @@ const initialState: RuntimeState = {
       sessionIds: ["option-b"],
       resource: "Rhino object · 7F2A",
     },
+    {
+      id: "conflict-8",
+      title: "Write overlap",
+      detail: "Facade rationalization and wire cleanup both stage GH group 'panel-grid'.",
+      sessionIds: ["facade", "wires"],
+      resource: "GH group · panel-grid",
+    },
   ],
   lastUpdatedAt: now.toISOString(),
 };
 
 const clone = <T,>(value: T): T => structuredClone(value);
 
+export function createDemoRuntimeState(): RuntimeState {
+  return clone(demoState);
+}
+
 export function createMockApiClient(): GptinoApiClient {
-  let state = clone(initialState);
+  let state = createDemoRuntimeState();
   const listeners = new Set<(next: RuntimeState) => void>();
 
   const emit = () => {

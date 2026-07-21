@@ -67,9 +67,13 @@ textarea:disabled {
 }
 
 .app-shell {
-  min-height: 100vh;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell > .workspace-grid {
+  flex: 1;
 }
 
 .document-header {
@@ -1060,7 +1064,171 @@ textarea:disabled {
 @keyframes boot { from { transform: translateX(-110%); } to { transform: translateX(240%); } }
 .error-screen .brand-mark { color: #2d1411; border-color: #82463e; background: var(--red); }
 
+/* Session canvas — node-and-wire view of sessions → single-writer broker → documents */
+
+.canvas-toggle {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.canvas-toggle svg { width: 15px; height: 15px; }
+.canvas-toggle:hover { color: var(--text); border-color: #353c3d; }
+.canvas-toggle.active {
+  color: var(--lime);
+  border-color: #526334;
+  background: rgb(183 225 102 / 0.07);
+}
+
+.canvas-row {
+  height: clamp(180px, 26vh, 300px);
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: #0c0e0f;
+}
+
+.session-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+.session-canvas.panning { cursor: grabbing; }
+.session-canvas .grid-dot { fill: #212726; }
+.session-canvas .canvas-backdrop { fill-opacity: 1; }
+
+/* Wires: dark under-stroke + kind color + optional animated flow overlay */
+
+.wire-under {
+  fill: none;
+  stroke: #0c0e0f;
+  stroke-width: 4.5;
+}
+
+.wire-color {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.wire-flow {
+  fill: none;
+  stroke: var(--lime-strong);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-dasharray: 6 12;
+  animation: wire-flow 900ms linear infinite;
+}
+
+@keyframes wire-flow {
+  to { stroke-dashoffset: -18; }
+}
+
+.wire-active .wire-color { stroke: var(--lime); stroke-width: 2.5; }
+.wire-queued .wire-color { stroke: var(--cyan); stroke-dasharray: 4 6; }
+.wire-paused .wire-color { stroke: var(--amber); stroke-dasharray: 2 7; opacity: 0.55; }
+.wire-blocked .wire-color { stroke: var(--red); stroke-dasharray: 4 6; }
+.wire-idle .wire-color { stroke: #3d4544; stroke-width: 1.2; }
+.wire-commit .wire-color { stroke: #4a5352; }
+.wire-conflict .wire-color { stroke: var(--red); stroke-dasharray: 3 5; opacity: 0.8; }
+.wire-conflict .wire-under { stroke-width: 3.5; }
+
+.wire-port { fill: #2c3233; stroke: #40484a; stroke-width: 1; }
+.wire-active .wire-port { fill: var(--lime); stroke: #536538; }
+.wire-queued .wire-port { fill: var(--cyan); stroke: #2e5a54; }
+.wire-conflict .wire-port { fill: var(--red); stroke: #6b3a35; }
+
+.wire-chip rect {
+  fill: var(--surface-3);
+  stroke: rgb(111 211 199 / 0.4);
+  stroke-width: 1;
+}
+
+.wire-chip text {
+  fill: var(--cyan);
+  font-family: "DM Mono", monospace;
+  font-size: 9px;
+  text-anchor: middle;
+}
+
+/* Nodes */
+
+.gnode .gnode-box {
+  fill: var(--surface);
+  stroke: var(--border-soft);
+  stroke-width: 1;
+}
+
+.gnode-session { cursor: pointer; }
+.gnode-session:hover .gnode-box { stroke: #353c3d; fill: #161a1b; }
+.gnode-session:focus-visible { outline: none; }
+.gnode-session:focus-visible .gnode-box { stroke: var(--lime); stroke-width: 1.6; }
+.gnode-session.selected .gnode-box {
+  stroke: var(--lime);
+  stroke-width: 1.4;
+  fill: #171b17;
+}
+.gnode-session.paused .gnode-box { stroke: rgb(230 184 92 / 0.45); }
+.gnode-session.paused { opacity: 0.78; }
+.gnode-session.warning .gnode-box { stroke: rgb(225 111 98 / 0.55); }
+
+.gnode text { user-select: none; pointer-events: none; }
+.gnode-rank { fill: var(--dim); font-family: "DM Mono", monospace; font-size: 9px; }
+.gnode-title { fill: #eff1f0; font-size: 10.5px; font-weight: 600; }
+.gnode-terminal { fill: var(--lime); font-family: "DM Mono", monospace; font-size: 8px; }
+.gnode-warning { fill: var(--red); font-size: 11px; font-weight: 800; }
+.gnode-status { fill: var(--muted); font-family: "DM Mono", monospace; font-size: 7.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+.gnode-status-dot { fill: var(--dim); }
+.gnode-session.status-working .gnode-status-dot,
+.gnode-session.status-drafting .gnode-status-dot,
+.gnode-session.status-verifying .gnode-status-dot { fill: var(--lime); }
+.gnode-session.status-queued .gnode-status-dot { fill: var(--cyan); }
+.gnode-session.status-paused .gnode-status-dot { fill: var(--amber); }
+.gnode-session.status-blocked .gnode-status-dot { fill: var(--red); }
+.gnode-chips { fill: var(--muted); font-family: "DM Mono", monospace; font-size: 7.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.gnode-sub { fill: var(--dim); font-size: 8px; }
+
+.gnode-orchestrator .gnode-box {
+  fill: #14181a;
+  stroke: #3a4344;
+  stroke-width: 1.2;
+}
+.gnode-orchestrator.live .gnode-box { stroke: #536538; }
+.gnode-orchestrator.paused .gnode-box { stroke: rgb(230 184 92 / 0.6); }
+.gnode-lamp { fill: var(--dim); }
+.gnode-orchestrator.live .gnode-lamp { fill: var(--lime); animation: lamp-pulse 1.6s ease-in-out infinite; }
+.gnode-orchestrator.paused .gnode-lamp { fill: var(--amber); animation: none; }
+
+@keyframes lamp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.gnode-heading { fill: #eff1f0; font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; }
+.gnode-subheading { fill: var(--dim); font-family: "DM Mono", monospace; font-size: 7.5px; text-transform: uppercase; letter-spacing: 0.07em; }
+.gnode-writer { fill: var(--lime); font-size: 9.5px; font-weight: 600; }
+.gnode-writer.idle { fill: var(--dim); font-weight: 400; }
+.gnode-orchestrator.paused .gnode-writer { fill: var(--amber); }
+.gnode-phase { fill: var(--muted); font-size: 8px; }
+.gnode-footer { fill: var(--dim); font-family: "DM Mono", monospace; font-size: 7.5px; letter-spacing: 0.05em; }
+
+.gnode-doc .gnode-box { fill: #121516; }
+.gnode-doc-mark { fill: var(--surface-3); stroke: var(--border); stroke-width: 1; }
+.gnode-doc-glyph { fill: var(--muted); font-family: "DM Mono", monospace; font-size: 9px; font-weight: 700; text-anchor: middle; }
+.session-canvas.health-degraded .gnode-doc .gnode-box { stroke: rgb(230 184 92 / 0.5); }
+.session-canvas.health-disconnected .gnode-doc .gnode-box { stroke: rgb(225 111 98 / 0.55); }
+
 @media (max-width: 1120px) {
+  .canvas-row { height: clamp(150px, 22vh, 220px); }
   .workspace-grid { grid-template-columns: minmax(270px, 0.78fr) minmax(380px, 1.4fr); }
   .operations-pane {
     grid-column: 1 / -1;
@@ -1080,7 +1248,8 @@ textarea:disabled {
 
 @media (max-width: 760px) {
   body { overflow: auto; }
-  .app-shell { min-height: 100vh; display: block; }
+  .app-shell { height: auto; min-height: 100vh; display: block; }
+  .canvas-row { height: 190px; }
   .document-header {
     position: sticky;
     top: 0;

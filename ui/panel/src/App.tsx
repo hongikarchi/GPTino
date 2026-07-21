@@ -2,15 +2,39 @@ import { useEffect, useState } from "react";
 import { ChatPane } from "./components/ChatPane";
 import { Icon } from "./components/Icons";
 import { OperationsPane } from "./components/OperationsPane";
+import { SessionCanvas } from "./components/SessionCanvas";
 import { SessionList } from "./components/SessionList";
 import { useRuntime } from "./hooks/useRuntime";
 import "./styles.css";
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
+const CANVAS_OPEN_KEY = "gptino.canvasOpen";
+
+function readCanvasOpen(): boolean {
+  try {
+    return window.localStorage.getItem(CANVAS_OPEN_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 export default function App() {
   const { runtime, loading, error, demo, busyActions, actions } = useRuntime();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [canvasOpen, setCanvasOpen] = useState(readCanvasOpen);
+
+  const toggleCanvas = () => {
+    setCanvasOpen((open) => {
+      const next = !open;
+      try {
+        window.localStorage.setItem(CANVAS_OPEN_KEY, next ? "1" : "0");
+      } catch {
+        // localStorage can be unavailable inside restrictive webviews.
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!runtime?.sessions.length) return;
@@ -73,6 +97,15 @@ export default function App() {
         </div>
 
         <div className="runtime-summary">
+          <button
+            type="button"
+            className={`canvas-toggle${canvasOpen ? " active" : ""}`}
+            aria-pressed={canvasOpen}
+            title={canvasOpen ? "Hide session canvas" : "Show session canvas"}
+            onClick={toggleCanvas}
+          >
+            <Icon name="graph" />
+          </button>
           <div className="revision-block">
             <span>Live</span>
             <strong>r{runtime.revision}</strong>
@@ -105,6 +138,12 @@ export default function App() {
           <span>Executor paused — active transaction will stop at its next safe boundary.</span>
           <button type="button" onClick={() => void actions.pauseRuntime(false)}>Resume all</button>
         </div>
+      ) : null}
+
+      {canvasOpen ? (
+        <section className="canvas-row" aria-label="Session graph">
+          <SessionCanvas runtime={runtime} selectedId={selectedId} onSelect={setSelectedId} />
+        </section>
       ) : null}
 
       <main className="workspace-grid">

@@ -56,6 +56,7 @@ export interface QueueItem {
   state: QueueItemState;
   resource?: string;
   waitingFor?: string;
+  target?: "rhino" | "grasshopper" | "both";
 }
 
 export interface RuntimeConflict {
