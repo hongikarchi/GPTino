@@ -62,9 +62,16 @@ public static class HouseRules
           instead of calling snapshot_read again.
         - If a submit is rejected or blocked as stale, the error message carries the current fingerprint or current
           snapshotId. Correct only those values and resubmit immediately; do not restart discovery.
-        - Before setComponentIo on a Python component, read its current sockets with one scoped snapshot_read
-          (scope wireify:<component-guid>) and preserve every existing socket UUID and order exactly; only appended
-          sockets get new UUIDs. Prefer accepting the default sockets and wiring into them over reshaping IO.
+        - Python component IO, in this exact order within one contiguous ChangeSet:
+          1) updatePythonSource first — the script text must reference every input variable by name.
+          2) setComponentIo second — appending sockets whose names exactly match those input variables. Never run
+             setComponentIo before the source declares the variables: RhinoCode rejects it with "Developer must be
+             specific" because the socket type is ambiguous.
+          3) setTyping for each appended input to a concrete type hint (e.g. float, int, str) — an untyped script
+             input is ambiguous and also triggers "Developer must be specific".
+          4) executePython last.
+          Read current sockets first with one scoped snapshot_read (scope wireify:<component-guid>); preserve every
+          existing socket UUID and order; only appended sockets get new UUIDs.
         - Acceptance predicate kinds are exactly: fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent |
           objectExists | objectAbsent. No other spelling parses. For updatePythonSource/executePython use
           {"name":"no runtime errors","kind":"runtimeErrorAbsent","resource":null,"expectedValue":null}.
