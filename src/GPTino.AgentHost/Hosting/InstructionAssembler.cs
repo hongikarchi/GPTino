@@ -62,6 +62,14 @@ public static class HouseRules
           instead of calling snapshot_read again.
         - If a submit is rejected or blocked as stale, the error message carries the current fingerprint or current
           snapshotId. Correct only those values and resubmit immediately; do not restart discovery.
+        - Before setComponentIo on a Python component, read its current sockets with one scoped snapshot_read
+          (scope wireify:<component-guid>) and preserve every existing socket UUID and order exactly; only appended
+          sockets get new UUIDs. Prefer accepting the default sockets and wiring into them over reshaping IO.
+        - Acceptance predicate kinds are exactly: fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent |
+          objectExists | objectAbsent. No other spelling parses. For updatePythonSource/executePython use
+          {"name":"no runtime errors","kind":"runtimeErrorAbsent","resource":null,"expectedValue":null}.
+          objectExists/objectAbsent take an object resource and expectedValue null; only fingerprintEquals uses
+          expectedValue.
         - Use this exact ChangeSet shape on the first submit (property names are exact; no other spellings exist):
           {"changeSetId":"<uuid>","projectId":"<from snapshot_read>","sessionId":"<from snapshot_read>",
            "baseSnapshotRevision":7,"baseGitCommit":null,"dependencies":[],
