@@ -2801,7 +2801,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             };
             if (!passed)
             {
-                problems.Add($"Acceptance predicate '{predicate.Name}' was not satisfied.");
+                problems.Add(
+                    $"Acceptance predicate '{predicate.Name}' ({predicate.Kind}) was not satisfied. " +
+                    "Use runtimeErrorAbsent for value/move/python writes instead of predicting outcomes.");
             }
         }
         return problems;

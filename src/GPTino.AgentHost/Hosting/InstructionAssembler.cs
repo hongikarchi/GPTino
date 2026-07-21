@@ -69,7 +69,10 @@ public static class HouseRules
           objectExists | objectAbsent. No other spelling parses. For updatePythonSource/executePython use
           {"name":"no runtime errors","kind":"runtimeErrorAbsent","resource":null,"expectedValue":null}.
           objectExists/objectAbsent take an object resource and expectedValue null; only fingerprintEquals uses
-          expectedValue.
+          expectedValue. Never predict a future fingerprint with fingerprintEquals. The standard predicate set is:
+          creates → one objectExists per created component; wires → wireExists/wireAbsent; everything else
+          (setValue, moveComponent, setGroup, python source/schema/execute) → the single runtimeErrorAbsent example.
+          Do not invent per-operation "value updated" predicates.
         - Use this exact ChangeSet shape on the first submit (property names are exact; no other spellings exist):
           {"changeSetId":"<uuid>","projectId":"<from snapshot_read>","sessionId":"<from snapshot_read>",
            "baseSnapshotRevision":7,"baseGitCommit":null,"dependencies":[],
