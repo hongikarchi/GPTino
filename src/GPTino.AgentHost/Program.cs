@@ -56,6 +56,8 @@ builder.Services.AddSingleton<ILiveDocumentBackend>(services =>
     services.GetRequiredService<LiveDocumentBackend>());
 builder.Services.AddSingleton<ILiveDocumentQueueControl>(services =>
     services.GetRequiredService<LiveDocumentBackend>());
+builder.Services.AddSingleton<ISelectionContextSource>(services =>
+    services.GetRequiredService<LiveDocumentBackend>());
 builder.Services.AddHostedService(services => services.GetRequiredService<LiveDocumentBackend>());
 builder.Services.AddSingleton<CodexAppServerClient>();
 builder.Services.AddSingleton<ICodexSessionClient>(services => services.GetRequiredService<CodexAppServerClient>());

@@ -1222,6 +1222,7 @@ textarea:disabled {
 .gnode-footer { fill: var(--dim); font-family: "DM Mono", monospace; font-size: 7.5px; letter-spacing: 0.05em; }
 
 .gnode-doc .gnode-box { fill: #121516; }
+.gnode-detail { fill: var(--lime); font-family: "DM Mono", monospace; font-size: 7px; }
 .gnode-doc-mark { fill: var(--surface-3); stroke: var(--border); stroke-width: 1; }
 .gnode-doc-glyph { fill: var(--muted); font-family: "DM Mono", monospace; font-size: 9px; font-weight: 700; text-anchor: middle; }
 .session-canvas.health-degraded .gnode-doc .gnode-box { stroke: rgb(230 184 92 / 0.5); }

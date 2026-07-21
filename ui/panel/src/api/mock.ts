@@ -197,6 +197,15 @@ const demoState: RuntimeState = {
       resource: "GH group · panel-grid",
     },
   ],
+  currentSelection: {
+    rhinoObjectCount: 2,
+    rhinoObjectIds: [
+      "7f2a4c31-9a41-4c8e-b6a1-2f6d3a5e9c01",
+      "b2416cd8-55f7-4f39-a9d3-08a1c4e7d992",
+    ],
+    activeLayer: "Facade::Panels",
+    observedAt: minutesAgo(0),
+  },
   lastUpdatedAt: now.toISOString(),
 };
 

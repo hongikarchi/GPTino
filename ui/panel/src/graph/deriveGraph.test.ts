@@ -102,6 +102,16 @@ describe("deriveGraph", () => {
     expect(edge(idleModel, "commit:rhino").animated).toBe(false);
   });
 
+  it("surfaces the pushed Rhino selection on the Rhino doc node", () => {
+    const model = deriveGraph(createDemoRuntimeState());
+    expect(node(model, "doc:rhino").detail).toBe("2 selected · Facade::Panels");
+    expect(node(model, "doc:gh").detail).toBeUndefined();
+
+    const cleared = createDemoRuntimeState();
+    cleared.currentSelection = null;
+    expect(node(deriveGraph(cleared), "doc:rhino").detail).toBeUndefined();
+  });
+
   it("is deterministic and keeps every node inside the canvas bounds", () => {
     const state = createDemoRuntimeState();
     const first = deriveGraph(state);

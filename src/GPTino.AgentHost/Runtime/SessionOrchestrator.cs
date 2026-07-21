@@ -37,6 +37,7 @@ public sealed class SessionOrchestrator : IDisposable
     private readonly ConcurrentDictionary<string, TurnCompletionSignal> _earlyTurnCompletions = new();
     private readonly ConcurrentDictionary<string, byte> _assistantTurns = new();
     private readonly ConcurrentDictionary<Guid, ActiveTurn> _activeTurns = new();
+    private readonly ISelectionContextSource? _selectionContext;
     private readonly CancellationToken _shutdown;
     private readonly TimeSpan _turnPollInterval;
     private readonly TimeSpan _turnReadTimeout;
@@ -54,8 +55,10 @@ public sealed class SessionOrchestrator : IDisposable
         RuntimeControl runtime,
         EventHub events,
         IHostApplicationLifetime lifetime,
-        ILogger<SessionOrchestrator> logger)
+        ILogger<SessionOrchestrator> logger,
+        ISelectionContextSource? selectionContext = null)
     {
+        _selectionContext = selectionContext;
         _store = store;
         _codex = codex;
         _models = models;
@@ -258,7 +261,7 @@ public sealed class SessionOrchestrator : IDisposable
                 {
                     turnId = await _codex.StartTurnAsync(
                         threadId,
-                        content,
+                        ComposeTurnInput(content),
                         selection.Model,
                         selection.Effort,
                         cancellationToken).ConfigureAwait(false);
@@ -276,7 +279,7 @@ public sealed class SessionOrchestrator : IDisposable
                         cancellationToken).ConfigureAwait(false);
                     turnId = await _codex.StartTurnAsync(
                         threadId,
-                        content,
+                        ComposeTurnInput(content),
                         selection.Model,
                         selection.Effort,
                         cancellationToken).ConfigureAwait(false);
@@ -422,6 +425,48 @@ public sealed class SessionOrchestrator : IDisposable
             Current user request:
             {{currentMessage}}
             """;
+    }
+
+    private const int MaximumContextSelectionIds = 32;
+
+    /// <summary>
+    /// Prepends the user's live Rhino selection as a tagged, one-line context hint. Applied
+    /// only to the Codex turn input — after routing, so context wording never influences
+    /// model escalation — and only when a selection exists. Ids are hints, not fingerprints:
+    /// writes still require snapshot_read fingerprints.
+    /// </summary>
+    private string ComposeTurnInput(string content)
+    {
+        var selection = _selectionContext?.CurrentSelection;
+        if (selection is null ||
+            selection.RhinoObjectIds.Count == 0 && string.IsNullOrWhiteSpace(selection.ActiveLayerName))
+        {
+            return content;
+        }
+        var builder = new StringBuilder();
+        builder.Append("<gptino_context>Current Rhino selection (discovery hint, not fingerprints): ");
+        if (selection.RhinoObjectIds.Count == 0)
+        {
+            builder.Append("none");
+        }
+        else
+        {
+            builder.Append(selection.RhinoObjectIds.Count).Append(" object(s): ");
+            builder.AppendJoin(
+                ',',
+                selection.RhinoObjectIds.Take(MaximumContextSelectionIds).Select(id => id.ToString("D")));
+            if (selection.RhinoObjectIds.Count > MaximumContextSelectionIds)
+            {
+                builder.Append(",...");
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(selection.ActiveLayerName))
+        {
+            builder.Append("; active layer: ").Append(selection.ActiveLayerName);
+        }
+        builder.Append("</gptino_context>").Append('\n');
+        builder.Append(content);
+        return builder.ToString();
     }
 
     private static bool IsUnsupportedPaginatedThread(CodexProtocolException exception)

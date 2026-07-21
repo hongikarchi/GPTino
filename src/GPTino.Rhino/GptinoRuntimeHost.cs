@@ -15,6 +15,8 @@ public sealed class GptinoRuntimeHost : IDisposable
 {
     private static readonly TimeSpan AgentHostReadyTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan BootstrapMonitorInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan SelectionDebounceInterval = TimeSpan.FromMilliseconds(250);
+    private const int MaximumSelectionIds = 512;
 
     private readonly object _gate = new();
     private readonly object _observationGate = new();
@@ -25,6 +27,8 @@ public sealed class GptinoRuntimeHost : IDisposable
     private readonly Dictionary<Guid, string> _observedGrasshopperDocuments = [];
     private readonly ConcurrentDictionary<BridgeAdapterOwner, IBridgeOperationHandler> _handlers = new();
     private AgentHostBootstrapper? _bootstrapper;
+    private Timer? _selectionDebounceTimer;
+    private uint _pendingSelectionSerial;
     private string? _plugInAssemblyPath;
     private Guid? _bootstrapProjectId;
     private DocumentPipeConnection? _connection;
@@ -328,6 +332,7 @@ public sealed class GptinoRuntimeHost : IDisposable
         {
             CancelSafely(_lifetime, "runtime-cancellation-failed");
             StopDetachedRuntime(detached);
+            _selectionDebounceTimer?.Dispose();
         }
         finally
         {
@@ -1142,6 +1147,126 @@ public sealed class GptinoRuntimeHost : IDisposable
                 "document-bridge-dispose-failed",
                 exception);
         }
+    }
+
+    /// <summary>
+    /// Debounced Rhino selection push. Rubber-band selection fires many events per second, so
+    /// only the settled selection is captured (on the UI thread) and sent over the pipe.
+    /// Selection ids are a discovery hint for agent sessions, never concurrency control.
+    /// </summary>
+    public void NotifySelectionChanged(uint documentSerial)
+    {
+        if (documentSerial == 0)
+        {
+            return;
+        }
+        lock (_gate)
+        {
+            if (_disposed ||
+                _connection is null ||
+                !_targets.Values.Any(target => target.RhinoDocumentSerial == documentSerial))
+            {
+                return;
+            }
+            _pendingSelectionSerial = documentSerial;
+            _selectionDebounceTimer ??= new Timer(
+                _ => OnSelectionDebounceElapsed(),
+                null,
+                Timeout.InfiniteTimeSpan,
+                Timeout.InfiniteTimeSpan);
+            _selectionDebounceTimer.Change(SelectionDebounceInterval, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    private void OnSelectionDebounceElapsed()
+    {
+        DocumentPipeConnection? connection;
+        DocumentTarget? target;
+        long generation;
+        CancellationToken cancellationToken;
+        lock (_gate)
+        {
+            if (_disposed || _connection is null)
+            {
+                return;
+            }
+            var serial = _pendingSelectionSerial;
+            connection = _connection;
+            generation = _runtimeGeneration;
+            target = _targets.Values.FirstOrDefault(candidate => candidate.RhinoDocumentSerial == serial);
+            cancellationToken = _lifetime.Token;
+        }
+        if (target is null)
+        {
+            return;
+        }
+        _ = SendSelectionChangedSafelyAsync(connection, target, generation, cancellationToken);
+    }
+
+    private async Task SendSelectionChangedSafelyAsync(
+        DocumentPipeConnection connection,
+        DocumentTarget target,
+        long generation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var payload = await RhinoUiThreadDispatcher.InvokeAsync(
+                () => Task.FromResult(CaptureSelection(target)),
+                cancellationToken).ConfigureAwait(false);
+            if (payload is null)
+            {
+                return;
+            }
+            lock (_gate)
+            {
+                if (_disposed ||
+                    _runtimeGeneration != generation ||
+                    !ReferenceEquals(_connection, connection))
+                {
+                    return;
+                }
+            }
+            await connection.SendAsync(
+                BridgeFrame.Create(
+                    BridgeMessageKind.Event,
+                    BridgeMessageTypes.SelectionChanged,
+                    payload,
+                    target),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or OperationCanceledException
+                or ObjectDisposedException
+                or InvalidOperationException)
+        {
+            // Selection context is best-effort; it must never disturb the bridge.
+        }
+    }
+
+    private static SelectionChangedEvent? CaptureSelection(DocumentTarget target)
+    {
+        var document = global::Rhino.RhinoDoc.FromRuntimeSerialNumber(target.RhinoDocumentSerial);
+        if (document is null)
+        {
+            return null;
+        }
+        var ids = new List<Guid>();
+        foreach (var rhinoObject in document.Objects.GetSelectedObjects(
+            includeLights: false,
+            includeGrips: false))
+        {
+            ids.Add(rhinoObject.Id);
+            if (ids.Count >= MaximumSelectionIds)
+            {
+                break;
+            }
+        }
+        return new SelectionChangedEvent(
+            ids,
+            document.Layers.CurrentLayer?.FullPath,
+            DateTimeOffset.UtcNow);
     }
 
     private async Task SendDocumentClosedSafelyAsync(

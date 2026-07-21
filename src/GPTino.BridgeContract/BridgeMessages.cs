@@ -7,6 +7,7 @@ public static class BridgeMessageTypes
     public const string RegisterDocument = "document.register";
     public const string DocumentRegistered = "document.registered";
     public const string DocumentClosed = "document.closed";
+    public const string SelectionChanged = "selection.changed";
     public const string HealthRequest = "bridge.health.request";
     public const string HealthResponse = "bridge.health.response";
     public const string OperationRequest = "operation.request";
@@ -38,6 +39,16 @@ public sealed record DocumentRegisteredResponse(
     IReadOnlyList<BridgeAdapterOwner> AvailableAdapters);
 
 public sealed record DocumentClosedEvent(string Reason, long LastGeneration);
+
+/// <summary>
+/// Rhino-to-AgentHost push describing the user's current Rhino selection. Ids only —
+/// no geometry — so the event stays cheap under rapid selection changes. Selection ids
+/// are a discovery hint, never a snapshot fingerprint substitute.
+/// </summary>
+public sealed record SelectionChangedEvent(
+    IReadOnlyList<Guid> RhinoObjectIds,
+    string? ActiveLayerName,
+    DateTimeOffset ObservedAt);
 
 public sealed record BridgeHealthRequest(string ProbeId);
 

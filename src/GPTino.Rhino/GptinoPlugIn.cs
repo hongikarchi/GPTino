@@ -11,6 +11,7 @@ public sealed class GptinoPlugIn : PlugIn
     private bool _closeDocumentSubscribed;
     private bool _endOpenDocumentSubscribed;
     private bool _endSaveDocumentSubscribed;
+    private bool _selectionEventsSubscribed;
 
     public static GptinoPlugIn? Instance { get; private set; }
 
@@ -90,6 +91,13 @@ public sealed class GptinoPlugIn : PlugIn
             global::Rhino.RhinoDoc.EndOpenDocument += OnEndOpenDocument;
             _endOpenDocumentSubscribed = true;
         }
+        if (!_selectionEventsSubscribed)
+        {
+            global::Rhino.RhinoDoc.SelectObjects += OnSelectObjects;
+            global::Rhino.RhinoDoc.DeselectObjects += OnDeselectObjects;
+            global::Rhino.RhinoDoc.DeselectAllObjects += OnDeselectAllObjects;
+            _selectionEventsSubscribed = true;
+        }
     }
 
     private void UnsubscribeDocumentEvents()
@@ -139,6 +147,23 @@ public sealed class GptinoPlugIn : PlugIn
                     exception);
             }
         }
+        if (_selectionEventsSubscribed)
+        {
+            try
+            {
+                global::Rhino.RhinoDoc.SelectObjects -= OnSelectObjects;
+                global::Rhino.RhinoDoc.DeselectObjects -= OnDeselectObjects;
+                global::Rhino.RhinoDoc.DeselectAllObjects -= OnDeselectAllObjects;
+                _selectionEventsSubscribed = false;
+            }
+            catch (Exception exception)
+            {
+                DevelopmentDiagnosticTrace.TryWriteException(
+                    "Rhino",
+                    "selection-events-unsubscribe-failed",
+                    exception);
+            }
+        }
     }
 
     private static void TryDisposeRuntime(string failureEvent)
@@ -172,6 +197,21 @@ public sealed class GptinoPlugIn : PlugIn
         {
             GptinoRuntimeHost.Instance.ObserveRhinoDocument(args.DocumentSerialNumber);
         }
+    }
+
+    private static void OnSelectObjects(object? sender, global::Rhino.DocObjects.RhinoObjectSelectionEventArgs args)
+    {
+        GptinoRuntimeHost.Instance.NotifySelectionChanged(args.Document.RuntimeSerialNumber);
+    }
+
+    private static void OnDeselectObjects(object? sender, global::Rhino.DocObjects.RhinoObjectSelectionEventArgs args)
+    {
+        GptinoRuntimeHost.Instance.NotifySelectionChanged(args.Document.RuntimeSerialNumber);
+    }
+
+    private static void OnDeselectAllObjects(object? sender, global::Rhino.DocObjects.RhinoDeselectAllObjectsEventArgs args)
+    {
+        GptinoRuntimeHost.Instance.NotifySelectionChanged(args.Document.RuntimeSerialNumber);
     }
 
     private static void ObserveOpenDocuments()

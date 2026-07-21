@@ -38,6 +38,43 @@ public sealed class SessionOrchestratorTests
     }
 
     [Fact]
+    public async Task TurnInputCarriesSelectionContextHintWithoutAlteringTheStoredMessage()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient
+        {
+            ReadTurn = (_, _, _) => Task.FromResult<CodexTurnReadResult?>(Completed("done"))
+        };
+        var selectionContext = new StaticSelectionContext(new GPTino.BridgeContract.SelectionChangedEvent(
+            [Guid.Parse("7f2a4c31-9a41-4c8e-b6a1-2f6d3a5e9c01")],
+            "Facade::Panels",
+            DateTimeOffset.UtcNow));
+        using var harness = await CreateHarnessAsync(directory, client, selectionContext: selectionContext);
+
+        await harness.Orchestrator.SubmitMessageAsync(
+            harness.Session.Id,
+            new SendMessageRequest("선택한 객체를 위로 이동해줘", "selection-1"),
+            CancellationToken.None);
+
+        await WaitForStateAsync(harness.Store, harness.Session.Id, SessionStates.Idle);
+        var startedTurn = Assert.Single(client.StartedTurns);
+        Assert.StartsWith("<gptino_context>", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("7f2a4c31-9a41-4c8e-b6a1-2f6d3a5e9c01", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("Facade::Panels", startedTurn.Message, StringComparison.Ordinal);
+        Assert.EndsWith("선택한 객체를 위로 이동해줘", startedTurn.Message, StringComparison.Ordinal);
+
+        var messages = await harness.Store.ReadMessagesAsync(harness.Session.Id);
+        var user = Assert.Single(messages, message => message.Role == "user");
+        Assert.Equal("선택한 객체를 위로 이동해줘", user.Content);
+    }
+
+    private sealed class StaticSelectionContext(GPTino.BridgeContract.SelectionChangedEvent? selection)
+        : ISelectionContextSource
+    {
+        public GPTino.BridgeContract.SelectionChangedEvent? CurrentSelection { get; } = selection;
+    }
+
+    [Fact]
     public async Task CompletionNotificationStillPerformsFinalReadAndDeduplicatesItsItem()
     {
         using var directory = new TestDirectory();
@@ -538,7 +575,8 @@ public sealed class SessionOrchestratorTests
         int failuresBeforeRestart = 3,
         int restartCycles = 2,
         TimeSpan? readTimeout = null,
-        int maxParallelTurns = 1)
+        int maxParallelTurns = 1,
+        ISelectionContextSource? selectionContext = null)
     {
         var databasePath = directory.GetPath("runtime.db");
         var store = new SessionStore(databasePath);
@@ -568,7 +606,8 @@ public sealed class SessionOrchestratorTests
             new RuntimeControl(),
             new EventHub(),
             lifetime,
-            NullLogger<SessionOrchestrator>.Instance);
+            NullLogger<SessionOrchestrator>.Instance,
+            selectionContext);
         return new OrchestratorHarness(databasePath, store, session, orchestrator, lifetime);
     }
 

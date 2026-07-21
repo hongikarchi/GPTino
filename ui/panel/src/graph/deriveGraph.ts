@@ -27,6 +27,7 @@ export interface GraphNode {
   session?: GptinoSession;
   warning?: string;
   docTarget?: DocTarget;
+  detail?: string;
   orchestrator?: OrchestratorInfo;
 }
 
@@ -156,6 +157,7 @@ export function deriveGraph(state: RuntimeState): GraphModel {
     },
   });
 
+  const selection = state.currentSelection;
   const rhinoDoc: GraphNode = {
     id: "doc:rhino",
     kind: "doc",
@@ -165,6 +167,9 @@ export function deriveGraph(state: RuntimeState): GraphModel {
     h: DOC_H,
     label: "Rhino",
     sublabel: shortFile(state.rhinoFile),
+    detail: selection
+      ? `${selection.rhinoObjectCount} selected${selection.activeLayer ? ` · ${selection.activeLayer}` : ""}`
+      : undefined,
     docTarget: "rhino",
   };
   const ghDoc: GraphNode = {

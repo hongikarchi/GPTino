@@ -167,10 +167,13 @@ function DocNode({ node }: { node: GraphNode }) {
       <text className="gnode-doc-glyph" x={23} y={node.h / 2 + 4}>
         {node.docTarget === "rhino" ? "R" : "GH"}
       </text>
-      <text className="gnode-title" x={46} y={node.h / 2 - 3}>{node.label}</text>
-      <text className="gnode-sub" x={46} y={node.h / 2 + 12}>
+      <text className="gnode-title" x={46} y={node.h / 2 - (node.detail ? 10 : 3)}>{node.label}</text>
+      <text className="gnode-sub" x={46} y={node.h / 2 + (node.detail ? 3 : 12)}>
         {truncate(node.sublabel ?? "", 15)}
       </text>
+      {node.detail ? (
+        <text className="gnode-detail" x={46} y={node.h / 2 + 16}>{truncate(node.detail, 18)}</text>
+      ) : null}
     </g>
   );
 }

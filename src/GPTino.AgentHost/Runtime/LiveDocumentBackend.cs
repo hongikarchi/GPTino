@@ -60,7 +60,7 @@ public sealed record LiveProblemItem(
 /// Model turns may run concurrently, but every submitted ChangeSet crosses this broker.
 /// </summary>
 public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBackend,
-    ILiveDocumentQueueControl, IJobExecutor
+    ILiveDocumentQueueControl, IJobExecutor, ISelectionContextSource
 {
     private static readonly TimeSpan BridgeRequestTimeout = TimeSpan.FromSeconds(45);
     private const int MaximumArtifactBytes = 2 * 1024 * 1024;
@@ -98,6 +98,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private Guid? _writerSessionId;
     private DateTimeOffset? _writerStartedAt;
     private long _enqueueSequence;
+    private SelectionChangedEvent? _currentSelection;
 
     public LiveDocumentBackend(
         SessionStore store,
@@ -947,8 +948,44 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 string.Equals(frame.PayloadType, BridgeMessageTypes.DocumentClosed, StringComparison.Ordinal))
             {
                 CloseTarget(frame);
+                continue;
+            }
+
+            if (frame.Kind == BridgeMessageKind.Event &&
+                string.Equals(frame.PayloadType, BridgeMessageTypes.SelectionChanged, StringComparison.Ordinal))
+            {
+                CacheSelection(frame);
             }
         }
+    }
+
+    /// <summary>
+    /// Latest Rhino selection pushed by the plugin, or null before the first push.
+    /// A discovery hint for turn context and the panel — never concurrency control.
+    /// </summary>
+    public SelectionChangedEvent? CurrentSelection => Volatile.Read(ref _currentSelection);
+
+    private void CacheSelection(BridgeFrame frame)
+    {
+        var target = frame.Target;
+        if (target is null)
+        {
+            return;
+        }
+        lock (_connectionGate)
+        {
+            if (_target is null ||
+                !string.Equals(
+                    _target.StableTargetKey(),
+                    target.StableTargetKey(),
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+        var selection = frame.DeserializePayload<SelectionChangedEvent>();
+        Volatile.Write(ref _currentSelection, selection);
+        _events.Publish();
     }
 
     private async Task RegisterTargetAsync(

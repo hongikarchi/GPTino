@@ -76,6 +76,13 @@ export interface CurrentWriter {
   progress?: number;
 }
 
+export interface CurrentSelection {
+  rhinoObjectCount: number;
+  rhinoObjectIds: string[];
+  activeLayer?: string | null;
+  observedAt: string;
+}
+
 export interface RuntimeState {
   projectId: string;
   projectName: string;
@@ -91,6 +98,7 @@ export interface RuntimeState {
   sessions: GptinoSession[];
   queue: QueueItem[];
   conflicts: RuntimeConflict[];
+  currentSelection?: CurrentSelection | null;
   lastUpdatedAt: string;
 }
 

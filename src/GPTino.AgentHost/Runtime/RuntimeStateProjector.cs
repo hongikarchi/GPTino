@@ -152,6 +152,18 @@ public sealed class RuntimeStateProjector
             sessions = projectedSessions,
             queue = projectedQueue,
             conflicts = projectedConflicts,
+            currentSelection = live?.CurrentSelection is { } selection
+                ? new
+                {
+                    rhinoObjectCount = selection.RhinoObjectIds.Count,
+                    rhinoObjectIds = selection.RhinoObjectIds
+                        .Take(32)
+                        .Select(id => id.ToString("D"))
+                        .ToArray(),
+                    activeLayer = selection.ActiveLayerName,
+                    observedAt = selection.ObservedAt
+                }
+                : null,
             lastUpdatedAt = DateTimeOffset.UtcNow
         };
     }
