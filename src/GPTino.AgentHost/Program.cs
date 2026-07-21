@@ -424,9 +424,6 @@ if (developmentDataDirectory is not null)
     });
 }
 
-app.MapGet("/api/state", async (RuntimeStateProjector projector, CancellationToken cancellationToken) =>
-    Results.Ok(await projector.BuildAsync(cancellationToken)));
-
 app.MapFallback(async context =>
 {
     var indexPath = Path.Combine(app.Environment.WebRootPath ?? Path.Combine(AppContext.BaseDirectory, "wwwroot"), "index.html");

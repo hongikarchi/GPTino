@@ -109,6 +109,7 @@ may cover only its write operations.
 |---|---|---|
 | `read` | owner-specific inspect | Canvas/Rhino: `{objectId}`; Wireify: `{componentId}` |
 | `moveComponent`, `setLayout` | Cordyceps / `canvas.move` | `{operationId,pivots:{guid:{x,y}},expectedFingerprints:{guid:sha256}}` |
+| `setValue` | Cordyceps / `canvas.setNumberSlider` | `{operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces}`; only Number Slider is supported |
 | `connectWire`, `disconnectWire` | Cordyceps / `canvas.setWire` | `{operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:"connect"|"disconnect",rejectCycles:true}` |
 | `createComponent` | Cordyceps / `canvas.create` | `{operationId,objectId,componentTypeId,pivot:{x,y},nickName}` |
 | `deleteComponent` | Cordyceps / `canvas.delete` | `{operationId,objectId,expectedFingerprint}` |
@@ -123,9 +124,11 @@ may cover only its write operations.
 | `createRhinoObject`, `modifyRhinoObject`, `bakeGeometry`, `updateRhinoAttributes` | Rhino / `rhino.upsert` | `{operationId,objectId,logicalEntityId,geometryType,geometryJson,attributesJson,expectedFingerprint}`; `createRhinoObject`/`bakeGeometry` require payload `null` plus writeSet `gptino:absent`, while modification/attribute updates require the same inspected fingerprint in both places |
 | `deleteRhinoObject` | Rhino / `rhino.delete` | `{operationId,objectId,expectedFingerprint}` |
 
-`SetValue`, `Rename`, `SetSolverState`, `DocumentGlobal`, and
-`UpdateRhinoLayer` are reserved enum values. Layer updates remain disabled
-until deterministic layer inspection can prove both presence and absence.
+`Rename`, `SetSolverState`, `DocumentGlobal`, and `UpdateRhinoLayer` are
+reserved backend enum values: they are not advertised in the model-facing tool
+schema and any ChangeSet that reaches the broker with one of them fails closed
+at submit. Layer updates remain disabled until deterministic layer inspection
+can prove both presence and absence.
 `geometryJson` must be RhinoCommon native JSON whose actual object type matches
 `geometryType`, and the decoded geometry must pass `IsValidWithLog`.
 `attributesJson` is RhinoCommon `ObjectAttributes` JSON and is type-checked; an

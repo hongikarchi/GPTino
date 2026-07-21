@@ -32,7 +32,6 @@ internal static class DynamicToolSpecs
         "for the exact new resource; all existing resources use the actual snapshot fingerprint. For CreateRhinoObject/BakeGeometry only, payload arguments.expectedFingerprint is null. " +
         "Rhino geometryJson must be native RhinoCommon JSON and match geometryType; attributesJson is native ObjectAttributes JSON, or an empty string for default/new attributes. Distinct Rhino object IDs in one ChangeSet must use distinct case-sensitive logicalEntityId values. " +
         "Payload fingerprints for existing canvas/Rhino resources must exactly match writeSet, and two operations in one ChangeSet cannot write overlapping domains. " +
-        "Rename, SetSolverState, DocumentGlobal, and UpdateRhinoLayer are reserved and rejected. " +
         "Every write needs an explicit supported acceptance predicate.";
 
     public static object[] Create() =>
@@ -185,10 +184,10 @@ internal static class DynamicToolSpecs
         {
             operationId = new { type = "string", minLength = 1 },
             kind = Enum(
-                "read", "moveComponent", "connectWire", "disconnectWire", "setValue", "rename",
+                "read", "moveComponent", "connectWire", "disconnectWire", "setValue",
                 "updatePythonSource", "setComponentIo", "convertSocket", "createComponent", "deleteComponent",
-                "setLayout", "setSolverState", "createRhinoObject", "modifyRhinoObject", "deleteRhinoObject",
-                "bakeGeometry", "updateRhinoAttributes", "documentGlobal", "setGroup",
+                "setLayout", "createRhinoObject", "modifyRhinoObject", "deleteRhinoObject",
+                "bakeGeometry", "updateRhinoAttributes", "setGroup",
                 "executePython", "readRuntimeMessages", "createRhinoPrimitive", "transformRhinoObject"),
             owner = Enum("wireify", "cordyceps", "rhinoBridge"),
             reads = new { type = "array", items = ResourceAddressSchema() },
@@ -225,8 +224,7 @@ internal static class DynamicToolSpecs
             kind = Enum(
                 "document", "grasshopperComponent", "grasshopperComponentSource", "grasshopperComponentIo",
                 "grasshopperComponentValue", "grasshopperComponentLayout", "grasshopperWire", "grasshopperGroup",
-                "grasshopperSolver", "rhinoObject", "rhinoObjectGeometry", "rhinoObjectAttributes", "rhinoLayer",
-                "rhinoGroup", "rhinoMaterial", "rhinoLinetype"),
+                "rhinoObject", "rhinoObjectGeometry", "rhinoObjectAttributes"),
             id = new { type = "string", minLength = 1 },
             field = new { type = "string", minLength = 1, description = "Use * for the whole conflict domain." }
         },

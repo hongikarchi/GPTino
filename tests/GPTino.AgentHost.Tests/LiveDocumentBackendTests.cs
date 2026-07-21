@@ -935,6 +935,50 @@ public sealed class LiveDocumentBackendTests
         Assert.Empty(responder.WriteOperationIds);
     }
 
+    [Theory]
+    [InlineData(OperationKind.Rename)]
+    [InlineData(OperationKind.SetSolverState)]
+    [InlineData(OperationKind.DocumentGlobal)]
+    public async Task ReservedOperationKindsAreRejectedBeforeQueueing(OperationKind kind)
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        await using var responder = harness.StartResponder();
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Reserved"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var resource = new ResourceAddress(
+            ResourceKind.GrasshopperComponent,
+            harness.CanvasObjectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "reserved.json",
+            new
+            {
+                bridgeOperation = "canvas.reserved",
+                arguments = new { operationId = "reserved-op", objectId = harness.CanvasObjectId }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "reserved-op",
+                kind,
+                AdapterOwner.Cordyceps,
+                [],
+                [resource],
+                true,
+                artifact),
+            [new ResourceExpectation(resource, harness.ObjectFingerprint)]);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Backend.SubmitChangeAsync(
+                session,
+                Submission(changeSet, snapshot.Id, "reserved-op", "Reserved kind"),
+                CancellationToken.None));
+
+        Assert.Contains("no safe bridge mapping", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(responder.WriteOperationIds);
+    }
+
     [Fact]
     public async Task RestartMarksInterruptedJobRecoveryRequiredWithoutReplayingIt()
     {
