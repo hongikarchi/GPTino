@@ -72,6 +72,8 @@ public sealed class SessionOrchestratorTests
         : ISelectionContextSource
     {
         public GPTino.BridgeContract.SelectionChangedEvent? CurrentSelection { get; } = selection;
+
+        public CanvasDigest? CurrentCanvasDigest => null;
     }
 
     [Fact]

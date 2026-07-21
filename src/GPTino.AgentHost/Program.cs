@@ -48,8 +48,9 @@ builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(identity);
 builder.Services.AddSingleton(new SessionStore(Path.Combine(options.ResolveDataDirectory(), "runtime.db")));
 builder.Services.AddSingleton(new ProjectContextStore(options.ResolveDataDirectory()));
-builder.Services.AddSingleton<IThreadInstructionComposer>(services =>
-    services.GetRequiredService<ProjectContextStore>());
+builder.Services.AddSingleton<SkillLibrary>();
+builder.Services.AddSingleton<SessionActivityLog>();
+builder.Services.AddSingleton<IThreadInstructionComposer, InstructionAssembler>();
 builder.Services.AddSingleton<RuntimeControl>();
 builder.Services.AddSingleton<EventHub>();
 builder.Services.AddSingleton<EndpointRegistry>();

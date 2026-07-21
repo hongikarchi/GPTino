@@ -483,6 +483,17 @@ public sealed class LiveDocumentBackendTests
         Assert.Equal(0m, bridgeRequest.Arguments.GetProperty("minimum").GetDecimal());
         Assert.Equal(100m, bridgeRequest.Arguments.GetProperty("maximum").GetDecimal());
         Assert.Equal(0, bridgeRequest.Arguments.GetProperty("decimalPlaces").GetInt32());
+
+        // A committed job carries chaining data so the next ChangeSet needs no snapshot_read.
+        var committed = jobView.GetProperty("committed");
+        Assert.Equal(JsonValueKind.Object, committed.ValueKind);
+        Assert.False(string.IsNullOrWhiteSpace(committed.GetProperty("snapshotId").GetString()));
+        Assert.True(committed.GetProperty("revision").GetInt64() >= snapshot.Revision);
+        var committedResource = Assert.Single(committed.GetProperty("resources").EnumerateArray());
+        Assert.Equal(
+            harness.CanvasObjectId.ToString("D"),
+            committedResource.GetProperty("id").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(committedResource.GetProperty("fingerprint").GetString()));
     }
 
     [Fact]

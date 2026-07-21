@@ -137,12 +137,29 @@ internal static class DynamicToolSpecs
                     }),
                 Function(
                     "job_status",
-                    "Read queue, execution, verification, commit, recovery-required, or failure state for a submitted job.",
+                    "Read queue, execution, verification, commit, recovery-required, or failure state for a submitted job. " +
+                    "A committed job includes committed { snapshotId, revision, resources[].fingerprint }: base the next " +
+                    "ChangeSet on these values instead of calling snapshot_read again.",
                     new
                     {
                         type = "object",
                         properties = new { jobId = new { type = "string", format = "uuid" } },
                         required = new[] { "jobId" },
+                        additionalProperties = false
+                    }),
+                Function(
+                    "skill_read",
+                    "Read a built-in GPTino skill: vetted Python sources and reference notes shipped with the plugin. " +
+                    "The available skills are indexed in your instructions. Use skill code verbatim for conventional " +
+                    "plumbing such as baking; adapt reference notes freely.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            name = new { type = "string", description = "Skill file name from the index, for example bake_manager.py." }
+                        },
+                        required = new[] { "name" },
                         additionalProperties = false
                     })
             }

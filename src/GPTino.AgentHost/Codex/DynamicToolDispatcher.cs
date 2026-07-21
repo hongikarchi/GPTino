@@ -3,6 +3,7 @@ using System.Text.Json;
 using GPTino.AgentHost.Api;
 using GPTino.AgentHost.Data;
 using GPTino.AgentHost.Hosting;
+using GPTino.AgentHost.Runtime;
 using GPTino.AgentHost.Security;
 using GPTino.Contracts;
 
@@ -71,14 +72,20 @@ public sealed class DynamicToolDispatcher
     private readonly SessionStore _store;
     private readonly ILiveDocumentBackend _backend;
     private readonly string _artifactRoot;
+    private readonly SkillLibrary? _skills;
+    private readonly SessionActivityLog? _activity;
 
     public DynamicToolDispatcher(
         SessionStore store,
         ILiveDocumentBackend backend,
-        AgentHostOptions options)
+        AgentHostOptions options,
+        SkillLibrary? skills = null,
+        SessionActivityLog? activity = null)
     {
         _store = store;
         _backend = backend;
+        _skills = skills;
+        _activity = activity;
         _artifactRoot = Path.Combine(options.ResolveDataDirectory(), "artifacts");
         Directory.CreateDirectory(_artifactRoot);
     }
@@ -90,9 +97,10 @@ public sealed class DynamicToolDispatcher
             return DynamicToolResult.Fail($"Unsupported tool namespace: {call.Namespace ?? "<none>"}");
         }
 
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            return call.Tool switch
+            var result = call.Tool switch
             {
                 "snapshot_read" => DynamicToolResult.Ok(
                     await ReadSnapshotAsync(call, cancellationToken).ConfigureAwait(false)),
@@ -105,14 +113,90 @@ public sealed class DynamicToolDispatcher
                 "change_submit" => DynamicToolResult.Ok(await SubmitChangeAsync(call, cancellationToken).ConfigureAwait(false)),
                 "job_status" => DynamicToolResult.Ok(
                     await _backend.ReadJobAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
+                "skill_read" => DynamicToolResult.Ok(RequireSkills().Read(TryString(call.Arguments, "name"))),
                 _ => DynamicToolResult.Fail($"Unsupported GPTino tool: {call.Tool}")
             };
+            await RecordActivityAsync(call, ok: true, stopwatch.ElapsedMilliseconds, cancellationToken)
+                .ConfigureAwait(false);
+            return result;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            await RecordActivityAsync(
+                call,
+                ok: false,
+                stopwatch.ElapsedMilliseconds,
+                cancellationToken,
+                exception.Message).ConfigureAwait(false);
             return DynamicToolResult.Fail(exception.Message);
         }
     }
+
+    private SkillLibrary RequireSkills() =>
+        _skills ?? throw new InvalidOperationException("The skill library is not available in this runtime.");
+
+    private async Task RecordActivityAsync(
+        DynamicToolCall call,
+        bool ok,
+        long durationMs,
+        CancellationToken cancellationToken,
+        string? error = null)
+    {
+        if (_activity is null)
+        {
+            return;
+        }
+        // Successful job_status polls arrive every few seconds and carry no new intent;
+        // the writer/queue projections already cover them. Failures always surface.
+        if (ok && string.Equals(call.Tool, "job_status", StringComparison.Ordinal))
+        {
+            return;
+        }
+        try
+        {
+            var session = await _store.FindSessionByThreadAsync(call.ThreadId, cancellationToken)
+                .ConfigureAwait(false);
+            if (session is null)
+            {
+                return;
+            }
+            var summary = ActivitySummary(call);
+            _activity.Record(
+                session.Id,
+                call.Tool,
+                error is null ? summary : $"{summary} — {error}",
+                ok,
+                durationMs);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Activity is observability sugar; it must never fail a tool call.
+        }
+    }
+
+    private static string ActivitySummary(DynamicToolCall call) => call.Tool switch
+    {
+        "snapshot_read" => call.Arguments.TryGetProperty("scopes", out var scopes) &&
+            scopes.ValueKind == JsonValueKind.Array &&
+            scopes.GetArrayLength() > 0
+                ? $"Reading {scopes.GetArrayLength()} snapshot scope(s)"
+                : "Reading the canvas snapshot",
+        "component_catalog" => $"Searching components: {TryString(call.Arguments, "query")}",
+        "rhino_list" => "Listing Rhino objects",
+        "artifact_read" => $"Reading draft {TryString(call.Arguments, "path")}",
+        "artifact_write" => $"Drafting {TryString(call.Arguments, "path")}",
+        "change_submit" => $"Submitting: {TryString(call.Arguments, "summary")}",
+        "job_status" => "Polling job status",
+        "skill_read" => $"Reading skill {TryString(call.Arguments, "name")}",
+        _ => call.Tool
+    };
+
+    private static string? TryString(JsonElement arguments, string property) =>
+        arguments.ValueKind == JsonValueKind.Object &&
+        arguments.TryGetProperty(property, out var value) &&
+        value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private async Task<object> SubmitChangeAsync(DynamicToolCall call, CancellationToken cancellationToken)
     {

@@ -792,6 +792,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 return new JobExecutionResult(job.JobId, JobState.RecoveryRequired, message);
             }
 
+            entry.Committed = BuildCommittedJobView(job.ChangeSet, after);
             await SetJobPhaseAsync(
                 entry,
                 JobState.Committed,
@@ -964,6 +965,20 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     /// A discovery hint for turn context and the panel — never concurrency control.
     /// </summary>
     public SelectionChangedEvent? CurrentSelection => Volatile.Read(ref _currentSelection);
+
+    /// <summary>Digest of the last captured snapshot; null before the first capture.</summary>
+    public CanvasDigest? CurrentCanvasDigest
+    {
+        get
+        {
+            lock (_connectionGate)
+            {
+                return _snapshot is null
+                    ? null
+                    : new CanvasDigest(_snapshot.State.Revision, _snapshot.Canvas.Objects.Count);
+            }
+        }
+    }
 
     private void CacheSelection(BridgeFrame frame)
     {
@@ -2928,6 +2943,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private object ProjectJob(LiveJobEntry entry, bool duplicate)
     {
+        var committed = entry.Committed;
         return new
         {
             jobId = entry.Job.JobId,
@@ -2938,6 +2954,20 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             message = entry.Message,
             duplicate,
             enqueueSequence = entry.Job.EnqueueSequence,
+            committed = committed is null
+                ? null
+                : new
+                {
+                    snapshotId = committed.SnapshotId,
+                    revision = committed.Revision,
+                    resources = committed.Resources.Select(item => new
+                    {
+                        kind = item.Resource.Kind,
+                        id = item.Resource.Id,
+                        field = item.Resource.Field,
+                        fingerprint = item.Fingerprint
+                    }).ToArray()
+                },
             conflictsWith = entry.Conflicts.Select(item => new
             {
                 jobId = item.OtherJobId,
@@ -2946,6 +2976,24 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 item.Conflict.Message
             }).ToArray()
         };
+    }
+
+    private static CommittedJobView BuildCommittedJobView(ChangeSet changeSet, SnapshotEnvelope after)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var resources = new List<CommittedResourceFingerprint>();
+        foreach (var expectation in changeSet.WriteSet)
+        {
+            var key = $"{expectation.Resource.Kind}:{expectation.Resource.Id}:{expectation.Resource.Field}";
+            if (!seen.Add(key))
+            {
+                continue;
+            }
+            var current = after.State.Resources.FirstOrDefault(item =>
+                ExactDomainOverlaps(item.Resource, expectation.Resource));
+            resources.Add(new CommittedResourceFingerprint(expectation.Resource, current?.Fingerprint));
+        }
+        return new CommittedJobView(after.SnapshotId, after.State.Revision, resources);
     }
 
     private void ValidateChangeSet(ChangeSet changeSet, SessionRecord session)
@@ -3697,6 +3745,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private sealed record ResourceObservation(ResourceAddress Resource, string? Fingerprint);
 
+    /// <summary>
+    /// Post-commit chaining data: the fresh snapshot identity plus the committed write
+    /// resources' fingerprints, so a session can base its next ChangeSet on job_status
+    /// instead of paying another full snapshot_read.
+    /// </summary>
+    private sealed record CommittedJobView(
+        string SnapshotId,
+        long Revision,
+        IReadOnlyList<CommittedResourceFingerprint> Resources);
+
+    private sealed record CommittedResourceFingerprint(ResourceAddress Resource, string? Fingerprint);
+
     private sealed record PreparedOperation(
         TypedOperation Operation,
         BridgeAdapterOwner Owner,
@@ -3740,6 +3800,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         public string IdempotencyKey { get; } = idempotencyKey;
         public string RequestHash { get; } = requestHash;
         public IReadOnlyList<QueuedConflict> Conflicts { get; } = conflicts;
+
+        /// <summary>Written once by the single-writer executor just before Committed.</summary>
+        public CommittedJobView? Committed { get; set; }
 
         public JobState State
         {

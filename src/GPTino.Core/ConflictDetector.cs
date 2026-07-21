@@ -185,7 +185,9 @@ public sealed class ConflictDetector
                     changeSet.ChangeSetId,
                     null,
                     expectation.Resource,
-                    "The resource fingerprint changed after the base snapshot."));
+                    "The resource fingerprint changed after the base snapshot. " +
+                    $"Current fingerprint: {actual.Fingerprint}. Resubmit with this value " +
+                    "instead of re-reading the whole snapshot."));
             }
         }
 

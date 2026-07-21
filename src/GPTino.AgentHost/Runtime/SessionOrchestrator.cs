@@ -38,6 +38,7 @@ public sealed class SessionOrchestrator : IDisposable
     private readonly ConcurrentDictionary<string, byte> _assistantTurns = new();
     private readonly ConcurrentDictionary<Guid, ActiveTurn> _activeTurns = new();
     private readonly ISelectionContextSource? _selectionContext;
+    private readonly SessionActivityLog? _activity;
     private readonly CancellationToken _shutdown;
     private readonly TimeSpan _turnPollInterval;
     private readonly TimeSpan _turnReadTimeout;
@@ -56,9 +57,11 @@ public sealed class SessionOrchestrator : IDisposable
         EventHub events,
         IHostApplicationLifetime lifetime,
         ILogger<SessionOrchestrator> logger,
-        ISelectionContextSource? selectionContext = null)
+        ISelectionContextSource? selectionContext = null,
+        SessionActivityLog? activity = null)
     {
         _selectionContext = selectionContext;
+        _activity = activity;
         _store = store;
         _codex = codex;
         _models = models;
@@ -284,6 +287,12 @@ public sealed class SessionOrchestrator : IDisposable
                         selection.Effort,
                         cancellationToken).ConfigureAwait(false);
                 }
+                _activity?.Record(
+                    sessionId,
+                    "turn",
+                    $"Turn started — {selection.Model ?? "default model"} ({selection.Effort ?? "default effort"})",
+                    ok: true,
+                    durationMs: 0);
                 var completion = new TaskCompletionSource<TurnCompletionSignal>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _turnCompletions[turnId] = completion;
                 if (_earlyTurnCompletions.TryRemove(turnId, out var earlyCompletion))
@@ -438,31 +447,45 @@ public sealed class SessionOrchestrator : IDisposable
     private string ComposeTurnInput(string content)
     {
         var selection = _selectionContext?.CurrentSelection;
-        if (selection is null ||
-            selection.RhinoObjectIds.Count == 0 && string.IsNullOrWhiteSpace(selection.ActiveLayerName))
+        var digest = _selectionContext?.CurrentCanvasDigest;
+        var hasSelection = selection is not null &&
+            (selection.RhinoObjectIds.Count > 0 || !string.IsNullOrWhiteSpace(selection.ActiveLayerName));
+        if (!hasSelection && digest is null)
         {
             return content;
         }
         var builder = new StringBuilder();
-        builder.Append("<gptino_context>Current Rhino selection (discovery hint, not fingerprints): ");
-        if (selection.RhinoObjectIds.Count == 0)
+        builder.Append("<gptino_context>");
+        if (digest is not null)
         {
-            builder.Append("none");
+            builder.Append("Canvas: ")
+                .Append(digest.ComponentCount)
+                .Append(" component(s) @ r")
+                .Append(digest.Revision)
+                .Append(". ");
         }
-        else
+        if (hasSelection && selection is not null)
         {
-            builder.Append(selection.RhinoObjectIds.Count).Append(" object(s): ");
-            builder.AppendJoin(
-                ',',
-                selection.RhinoObjectIds.Take(MaximumContextSelectionIds).Select(id => id.ToString("D")));
-            if (selection.RhinoObjectIds.Count > MaximumContextSelectionIds)
+            builder.Append("Current Rhino selection (discovery hint, not fingerprints): ");
+            if (selection.RhinoObjectIds.Count == 0)
             {
-                builder.Append(",...");
+                builder.Append("none");
             }
-        }
-        if (!string.IsNullOrWhiteSpace(selection.ActiveLayerName))
-        {
-            builder.Append("; active layer: ").Append(selection.ActiveLayerName);
+            else
+            {
+                builder.Append(selection.RhinoObjectIds.Count).Append(" object(s): ");
+                builder.AppendJoin(
+                    ',',
+                    selection.RhinoObjectIds.Take(MaximumContextSelectionIds).Select(id => id.ToString("D")));
+                if (selection.RhinoObjectIds.Count > MaximumContextSelectionIds)
+                {
+                    builder.Append(",...");
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(selection.ActiveLayerName))
+            {
+                builder.Append("; active layer: ").Append(selection.ActiveLayerName);
+            }
         }
         builder.Append("</gptino_context>").Append('\n');
         builder.Append(content);

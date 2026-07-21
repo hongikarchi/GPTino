@@ -16,6 +16,7 @@ public sealed class RuntimeStateProjector
     private readonly EventHub _events;
     private readonly TerminalLauncher? _terminals;
     private readonly ProjectContextStore? _contextStore;
+    private readonly SessionActivityLog? _activity;
 
     public RuntimeStateProjector(
         SessionStore store,
@@ -26,7 +27,8 @@ public sealed class RuntimeStateProjector
         EffectiveModelState effectiveModels,
         EventHub events,
         TerminalLauncher? terminals = null,
-        ProjectContextStore? contextStore = null)
+        ProjectContextStore? contextStore = null,
+        SessionActivityLog? activity = null)
     {
         _store = store;
         _options = options;
@@ -37,6 +39,7 @@ public sealed class RuntimeStateProjector
         _events = events;
         _terminals = terminals;
         _contextStore = contextStore;
+        _activity = activity;
     }
 
     public async Task<object> BuildAsync(CancellationToken cancellationToken = default)
@@ -72,6 +75,17 @@ public sealed class RuntimeStateProjector
                 paused = session.State == Api.SessionStates.Paused,
                 terminalOpen = _terminals?.IsOpen(session.Id) ?? false,
                 unread = 0,
+                currentActivity = session.State == Api.SessionStates.Running
+                    ? _activity?.Latest(session.Id)?.Summary
+                    : null,
+                activity = _activity?.Read(session.Id).Select(entry => new
+                {
+                    at = entry.At,
+                    kind = entry.Kind,
+                    summary = entry.Summary,
+                    ok = entry.Ok,
+                    durationMs = entry.DurationMs
+                }).ToArray() ?? [],
                 messages,
                 job = queueBySession.TryGetValue(session.Id, out var sessionJob)
                     ? new
