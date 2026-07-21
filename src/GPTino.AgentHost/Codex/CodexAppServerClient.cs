@@ -257,7 +257,13 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
             await StopProcessAsync().ConfigureAwait(false);
 
             var executable = ResolveCodexExecutable();
-            var mcpListStartInfo = CreateMcpListProcessStartInfo(executable, _options.ProjectDirectory);
+            // The codex child processes must NOT use the user's project folder as their OS
+            // working directory: a Windows process holds a current-directory handle on its
+            // cwd, which blocks Rhino from renaming its temp save file over a .3dm sitting in
+            // that folder ("The temporary file could not be renamed"). The project folder is
+            // still passed to codex as the per-thread cwd parameter (SessionOrchestrator), which
+            // is orthogonal to the process cwd and does not take a directory handle.
+            var mcpListStartInfo = CreateMcpListProcessStartInfo(executable, _options.ResolveDataDirectory());
             var effectiveMcpNames = await EnumerateEffectiveMcpNamesAsync(
                     mcpListStartInfo,
                     McpDiscoveryTimeout,
@@ -764,11 +770,11 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         }
     }
 
-    private static ProcessStartInfo CreateMcpListProcessStartInfo(string executable, string projectDirectory)
+    private static ProcessStartInfo CreateMcpListProcessStartInfo(string executable, string workingDirectory)
     {
         var startInfo = CreateBaseProcessStartInfo(
             executable,
-            projectDirectory,
+            workingDirectory,
             redirectStandardInput: true,
             environment: null);
         AddIsolationFeatureOverrides(startInfo);
@@ -816,7 +822,7 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
 
     private static ProcessStartInfo CreateBaseProcessStartInfo(
         string executable,
-        string projectDirectory,
+        string workingDirectory,
         bool redirectStandardInput,
         IEnumerable<KeyValuePair<string, string?>>? environment)
     {
@@ -830,7 +836,7 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
             CreateNoWindow = true,
-            WorkingDirectory = Path.GetFullPath(projectDirectory)
+            WorkingDirectory = Path.GetFullPath(workingDirectory)
         };
 
         if (environment is not null)

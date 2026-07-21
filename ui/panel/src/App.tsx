@@ -8,32 +8,9 @@ import "./styles.css";
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-const CANVAS_OPEN_KEY = "gptino.canvasOpen";
-
-function readCanvasOpen(): boolean {
-  try {
-    return window.localStorage.getItem(CANVAS_OPEN_KEY) !== "0";
-  } catch {
-    return true;
-  }
-}
-
 export default function App() {
   const { runtime, models, loading, error, demo, busyActions, actions } = useRuntime();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [canvasOpen, setCanvasOpen] = useState(readCanvasOpen);
-
-  const toggleCanvas = () => {
-    setCanvasOpen((open) => {
-      const next = !open;
-      try {
-        window.localStorage.setItem(CANVAS_OPEN_KEY, next ? "1" : "0");
-      } catch {
-        // localStorage can be unavailable inside restrictive webviews.
-      }
-      return next;
-    });
-  };
 
   useEffect(() => {
     if (!runtime?.sessions.length) return;
@@ -108,20 +85,17 @@ export default function App() {
         </div>
 
         <div className="runtime-summary">
-          <button
-            type="button"
-            className={`canvas-toggle${canvasOpen ? " active" : ""}`}
-            aria-pressed={canvasOpen}
-            title={canvasOpen ? "Hide session canvas" : "Show session canvas"}
-            onClick={toggleCanvas}
+          <div
+            className="revision-block"
+            title="Live document revision — increments each time a committed change is applied to the live Rhino/Grasshopper document."
           >
-            <Icon name="graph" />
-          </button>
-          <div className="revision-block">
             <span>Live</span>
             <strong>r{runtime.revision}</strong>
           </div>
-          <div className="revision-block">
+          <div
+            className="revision-block"
+            title="Managed history commit — GPTino keeps a git-backed provenance trail of every verified change so it can be reviewed or rolled back."
+          >
             <span>Git</span>
             <strong>{runtime.gitRevision === undefined ? "—" : `#${runtime.gitRevision}`}</strong>
           </div>
@@ -151,32 +125,29 @@ export default function App() {
         </div>
       ) : null}
 
-      {canvasOpen ? (
-        <section className="canvas-row" aria-label="Session graph">
-          <SessionCanvas
-            runtime={runtime}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onReorder={actions.reorder}
-            onPauseToggle={(id, paused) => void actions.pauseSession(id, paused)}
-            onTerminal={(id) => void actions.openTerminal(id)}
-          />
-          <div className="canvas-toolbar">
-            <button
-              type="button"
-              className="new-session-button"
-              onClick={() => {
-                const suggested = `Session ${runtime.sessions.length + 1}`;
-                const name = window.prompt("Name this GPTino session", suggested)?.trim();
-                if (name) void actions.createSession(name);
-              }}
-              disabled={busyActions.has("create-session")}
-            >
-              <span>+</span> Session
-            </button>
-          </div>
-        </section>
-      ) : null}
+      <section className="canvas-row" aria-label="Session graph">
+        <SessionCanvas
+          runtime={runtime}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onReorder={actions.reorder}
+          onPauseToggle={(id, paused) => void actions.pauseSession(id, paused)}
+        />
+        <div className="canvas-toolbar">
+          <button
+            type="button"
+            className="new-session-button"
+            onClick={() => {
+              const suggested = `Session ${runtime.sessions.length + 1}`;
+              const name = window.prompt("Name this GPTino session", suggested)?.trim();
+              if (name) void actions.createSession(name);
+            }}
+            disabled={busyActions.has("create-session")}
+          >
+            <span>+</span> Session
+          </button>
+        </div>
+      </section>
 
       <main className="workspace-grid">
         <ChatPane

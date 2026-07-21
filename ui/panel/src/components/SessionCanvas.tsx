@@ -10,7 +10,6 @@ interface SessionCanvasProps {
   onSelect(id: string): void;
   onReorder(sourceId: string, targetId: string): void;
   onPauseToggle(id: string, paused: boolean): void;
-  onTerminal(id: string): void;
 }
 
 interface ViewBox {
@@ -87,8 +86,6 @@ function SessionNode({
   onSelect,
   onNodePointerDown,
   onPauseToggle,
-  onTerminal,
-  suppressClick,
 }: {
   node: GraphNode;
   selected: boolean;
@@ -96,8 +93,6 @@ function SessionNode({
   onSelect(id: string): void;
   onNodePointerDown(event: ReactPointerEvent<SVGGElement>, sessionId: string): void;
   onPauseToggle(id: string, paused: boolean): void;
-  onTerminal(id: string): void;
-  suppressClick(): boolean;
 }) {
   const session = node.session;
   if (!session) return null;
@@ -109,10 +104,6 @@ function SessionNode({
     }
   };
 
-  const handleClick = () => {
-    if (!suppressClick()) onSelect(session.id);
-  };
-
   return (
     <g
       className={`gnode gnode-session status-${session.status}${selected ? " selected" : ""}${session.paused ? " paused" : ""}${node.warning ? " warning" : ""}${dragOffset !== 0 ? " dragging" : ""}`}
@@ -120,7 +111,6 @@ function SessionNode({
       role="button"
       tabIndex={0}
       aria-label={`Session ${session.title}`}
-      onClick={handleClick}
       onKeyDown={handleKeyDown}
       onPointerDown={(event) => onNodePointerDown(event, session.id)}
     >
@@ -143,42 +133,26 @@ function SessionNode({
         <text className="gnode-sub" x={10} y={65}>{truncate(node.sublabel, 30)}</text>
       ) : null}
       {selected ? (
-        <g className="gnode-actions">
-          <g
-            className="gnode-action"
-            role="button"
-            aria-label={session.paused ? "Resume session" : "Pause session"}
-            onClick={(event) => {
-              event.stopPropagation();
-              onPauseToggle(session.id, !session.paused);
-            }}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <title>{session.paused ? "Resume" : "Pause"}</title>
-            <circle cx={node.w - 40} cy={node.h - 12} r={8} />
-            {session.paused ? (
-              <path className="gnode-action-glyph" d={`M ${node.w - 43} ${node.h - 16} l 6 4 l -6 4 Z`} />
-            ) : (
-              <>
-                <line className="gnode-action-glyph" x1={node.w - 42.5} y1={node.h - 15} x2={node.w - 42.5} y2={node.h - 9} />
-                <line className="gnode-action-glyph" x1={node.w - 37.5} y1={node.h - 15} x2={node.w - 37.5} y2={node.h - 9} />
-              </>
-            )}
-          </g>
-          <g
-            className="gnode-action"
-            role="button"
-            aria-label="Open session terminal"
-            onClick={(event) => {
-              event.stopPropagation();
-              onTerminal(session.id);
-            }}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <title>Open terminal window</title>
-            <circle cx={node.w - 18} cy={node.h - 12} r={8} />
-            <text className="gnode-action-text" x={node.w - 18} y={node.h - 9}>{"❯_"}</text>
-          </g>
+        <g
+          className="gnode-action"
+          role="button"
+          aria-label={session.paused ? "Resume session" : "Pause session"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onPauseToggle(session.id, !session.paused);
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <title>{session.paused ? "Resume" : "Pause"}</title>
+          <circle cx={node.w - 18} cy={node.h - 12} r={8} />
+          {session.paused ? (
+            <path className="gnode-action-glyph" d={`M ${node.w - 21} ${node.h - 16} l 6 4 l -6 4 Z`} />
+          ) : (
+            <>
+              <line className="gnode-action-glyph" x1={node.w - 20.5} y1={node.h - 15} x2={node.w - 20.5} y2={node.h - 9} />
+              <line className="gnode-action-glyph" x1={node.w - 15.5} y1={node.h - 15} x2={node.w - 15.5} y2={node.h - 9} />
+            </>
+          )}
         </g>
       ) : null}
     </g>
@@ -253,7 +227,6 @@ export function SessionCanvas({
   onSelect,
   onReorder,
   onPauseToggle,
-  onTerminal,
 }: SessionCanvasProps) {
   const model = useMemo(() => deriveGraph(runtime), [runtime]);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -261,7 +234,7 @@ export function SessionCanvas({
   const panState = useRef<{ pointerId: number; startX: number; startY: number; origin: ViewBox } | null>(null);
   const nodeDrag = useRef<NodeDrag | null>(null);
   const [dragState, setDragState] = useState<{ sessionId: string; dy: number } | null>(null);
-  const suppressClickRef = useRef(false);
+  const draggedRef = useRef(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const fit: ViewBox = { x: 0, y: 0, w: model.width, h: model.height };
@@ -318,7 +291,7 @@ export function SessionCanvas({
       startClientY: event.clientY,
       nodeCenterY: node.y + node.h / 2,
     };
-    suppressClickRef.current = false;
+    draggedRef.current = false;
     svg.setPointerCapture(event.pointerId);
   };
 
@@ -340,7 +313,7 @@ export function SessionCanvas({
     const drag = nodeDrag.current;
     if (drag && drag.pointerId === event.pointerId) {
       const dy = clientDyToView(event.clientY - drag.startClientY);
-      if (Math.abs(dy) > DRAG_THRESHOLD) suppressClickRef.current = true;
+      if (Math.abs(dy) > DRAG_THRESHOLD) draggedRef.current = true;
       setDragState({ sessionId: drag.sessionId, dy });
       return;
     }
@@ -364,10 +337,11 @@ export function SessionCanvas({
     const drag = nodeDrag.current;
     if (drag && drag.pointerId === event.pointerId) {
       const dy = clientDyToView(event.clientY - drag.startClientY);
+      const dragged = draggedRef.current;
       nodeDrag.current = null;
       setDragState(null);
       svg?.releasePointerCapture(event.pointerId);
-      if (Math.abs(dy) > DRAG_THRESHOLD) {
+      if (dragged && Math.abs(dy) > DRAG_THRESHOLD) {
         const droppedCenter = drag.nodeCenterY + dy;
         const candidates = model.nodes.filter(
           (node) => node.kind === "session" && node.session && node.session.id !== drag.sessionId,
@@ -384,6 +358,10 @@ export function SessionCanvas({
         if (target?.session && best < target.h) {
           onReorder(drag.sessionId, target.session.id);
         }
+      } else {
+        // A press without meaningful movement is a selection. Pointer capture on the
+        // SVG swallows the synthesized click, so selection is handled here directly.
+        onSelect(drag.sessionId);
       }
       return;
     }
@@ -437,12 +415,6 @@ export function SessionCanvas({
           onSelect={onSelect}
           onNodePointerDown={handleNodePointerDown}
           onPauseToggle={onPauseToggle}
-          onTerminal={onTerminal}
-          suppressClick={() => {
-            const suppressed = suppressClickRef.current;
-            suppressClickRef.current = false;
-            return suppressed;
-          }}
         />
       ))}
       {sessionNodes.length === 0 ? (

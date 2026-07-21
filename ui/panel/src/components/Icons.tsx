@@ -7,7 +7,6 @@ export type IconName =
   | "chevron"
   | "drag"
   | "expand"
-  | "graph"
   | "pause"
   | "play"
   | "send"
@@ -31,14 +30,6 @@ const paths: Record<IconName, ReactNode> = {
     </>
   ),
   expand: <path d="M8 3H3v5m13-5h5v5M8 21H3v-5m18 0v5h-5" />,
-  graph: (
-    <>
-      <circle cx="5" cy="7" r="2.2" />
-      <circle cx="5" cy="17" r="2.2" />
-      <circle cx="18" cy="12" r="2.6" />
-      <path d="M7.2 7.6c3.5.6 5 1.8 8.2 3.4M7.2 16.4c3.5-.6 5-1.8 8.2-3.4" />
-    </>
-  ),
   pause: (
     <>
       <path d="M8 5v14" />

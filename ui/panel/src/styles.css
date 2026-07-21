@@ -1082,27 +1082,6 @@ textarea:disabled {
 
 /* Session canvas — node-and-wire view of sessions → single-writer broker → documents */
 
-.canvas-toggle {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--muted);
-  background: var(--surface-2);
-  cursor: pointer;
-}
-
-.canvas-toggle svg { width: 15px; height: 15px; }
-.canvas-toggle:hover { color: var(--text); border-color: #353c3d; }
-.canvas-toggle.active {
-  color: var(--lime);
-  border-color: #526334;
-  background: rgb(183 225 102 / 0.07);
-}
-
 .canvas-row {
   position: relative;
   height: clamp(200px, 30vh, 340px);
