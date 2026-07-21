@@ -20,7 +20,7 @@ function readCanvasOpen(): boolean {
 }
 
 export default function App() {
-  const { runtime, loading, error, demo, busyActions, actions } = useRuntime();
+  const { runtime, models, loading, error, demo, busyActions, actions } = useRuntime();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [canvasOpen, setCanvasOpen] = useState(readCanvasOpen);
 
@@ -164,9 +164,11 @@ export default function App() {
         />
         <ChatPane
           session={selected}
+          models={models}
           busyActions={busyActions}
           onMode={(mode) => selected && void actions.setMode(selected.id, mode)}
-          onModel={(profile) => selected && void actions.setModel(selected.id, profile)}
+          onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
+          onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
           onSend={(content) => selected ? actions.sendMessage(selected.id, content) : undefined}
           onTerminal={() => selected && void actions.openTerminal(selected.id)}
         />

@@ -58,6 +58,8 @@ public sealed class RuntimeStateProjector
                 status = ProjectStatus(session.State),
                 mode = ProjectMode(session.Role),
                 modelProfile = ProjectModelProfile(session.ModelProfile),
+                pinnedModel = session.Model,
+                backend = "codex",
                 effectiveModel = hasEffectiveModel ? effectiveModel.Model : null,
                 reasoning = hasEffectiveModel ? effectiveModel.Reasoning : null,
                 effectiveProfile = hasEffectiveModel ? effectiveModel.EffectiveProfile.ToString() : null,

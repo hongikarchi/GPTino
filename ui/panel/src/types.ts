@@ -27,6 +27,15 @@ export interface SessionJob {
   baseRevision?: number;
 }
 
+export interface ModelInfo {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  isDefault: boolean;
+  reasoningEfforts: string[];
+}
+
 export interface GptinoSession {
   id: string;
   title: string;
@@ -34,6 +43,8 @@ export interface GptinoSession {
   status: SessionStatus;
   mode: SessionMode;
   modelProfile: ModelProfile;
+  pinnedModel?: string | null;
+  backend?: string;
   effectiveModel?: string;
   reasoning?: string;
   effectiveProfile?: string;

@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { GptinoSession, ModelProfile, SessionMode } from "../types";
+import type { GptinoSession, ModelInfo, ModelProfile, SessionMode } from "../types";
 import { Icon } from "./Icons";
 import { StatusBadge } from "./StatusBadge";
 
 interface ChatPaneProps {
   session: GptinoSession | undefined;
+  models: ModelInfo[];
   busyActions: Set<string>;
   onMode(mode: SessionMode): void;
   onModel(profile: ModelProfile): void;
+  onPinModel(model: string | null): void;
   onSend(content: string): Promise<void> | void;
   onTerminal(): void;
 }
@@ -22,7 +24,7 @@ const profiles: { value: ModelProfile; label: string; description: string }[] = 
 const formatTime = (value: string) =>
   new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 
-export function ChatPane({ session, busyActions, onMode, onModel, onSend, onTerminal }: ChatPaneProps) {
+export function ChatPane({ session, models, busyActions, onMode, onModel, onPinModel, onSend, onTerminal }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   const streamRef = useRef<HTMLDivElement>(null);
 
@@ -129,6 +131,25 @@ export function ChatPane({ session, busyActions, onMode, onModel, onSend, onTerm
               ))}
             </select>
           </div>
+          {models.length > 0 ? (
+            <div className="quality-control">
+              <label htmlFor="model-pin">Model</label>
+              <select
+                id="model-pin"
+                value={session.pinnedModel ?? ""}
+                onChange={(event) => onPinModel(event.target.value || null)}
+                disabled={busyActions.has(`model:${session.id}`)}
+                title="Pin a Codex model for this session. Quality still sets the capability floor and reasoning effort."
+              >
+                <option value="">Auto (routed)</option>
+                {models.map((model) => (
+                  <option value={model.model} key={model.id} title={model.description}>
+                    {model.displayName || model.model}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           <span
             className="effective-model"
             title={session.routingError ?? session.routingReason ?? "Effective model and reasoning"}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient, createMockApiClient, type GptinoApiClient } from "../api/client";
 import { moveById, shiftById } from "../order";
-import type { ModelProfile, RuntimeState, SessionMode } from "../types";
+import type { ModelInfo, ModelProfile, RuntimeState, SessionMode } from "../types";
 
 type OptimisticUpdate = (current: RuntimeState) => RuntimeState;
 
@@ -11,6 +11,7 @@ export function useRuntime() {
   const client = clientRef.current;
 
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyActions, setBusyActions] = useState<Set<string>>(() => new Set());
@@ -30,6 +31,14 @@ export function useRuntime() {
         setRuntime(initial);
         setLoading(false);
         setError(null);
+        void activeClient
+          .listModels()
+          .then((catalog) => {
+            if (!disposed) setModels(catalog);
+          })
+          .catch(() => {
+            // The model catalog is optional UI sugar; routing still works without it.
+          });
         unsubscribe = activeClient.subscribe(
           (next) => {
             if (!disposed) setRuntime(next);
@@ -146,11 +155,11 @@ export function useRuntime() {
           (activeClient) => activeClient.setSessionMode(sessionId, mode),
         );
       },
-      setModel(sessionId: string, modelProfile: ModelProfile) {
+      setModel(sessionId: string, modelProfile: ModelProfile, model?: string | null) {
         return runAction(
           `model:${sessionId}`,
-          updateSession(sessionId, (session) => ({ ...session, modelProfile })),
-          (activeClient) => activeClient.setSessionModel(sessionId, modelProfile),
+          updateSession(sessionId, (session) => ({ ...session, modelProfile, pinnedModel: model ?? null })),
+          (activeClient) => activeClient.setSessionModel(sessionId, modelProfile, model),
         );
       },
       async sendMessage(sessionId: string, content: string) {
@@ -192,6 +201,7 @@ export function useRuntime() {
 
   return {
     runtime,
+    models,
     loading,
     error,
     demo: clientRef.current.demo,

@@ -1,5 +1,6 @@
 import type {
   MessageRequest,
+  ModelInfo,
   ModelProfile,
   RuntimeState,
   SessionMode,
@@ -14,11 +15,12 @@ export interface GptinoApiClient {
     onState: (state: RuntimeState) => void,
     onError?: (error: Error) => void,
   ): () => void;
+  listModels(): Promise<ModelInfo[]>;
   createSession(name: string): Promise<void>;
   reorderSessions(request: SessionOrderRequest): Promise<void>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   setSessionMode(sessionId: string, mode: SessionMode): Promise<void>;
-  setSessionModel(sessionId: string, modelProfile: ModelProfile): Promise<void>;
+  setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
   sendMessage(sessionId: string, request: MessageRequest): Promise<void>;
   openTerminal(sessionId: string): Promise<void>;
   setRuntimePaused(paused: boolean): Promise<void>;
@@ -70,6 +72,10 @@ class HttpApiClient implements GptinoApiClient {
 
   getRuntime(): Promise<RuntimeState> {
     return this.request<RuntimeState>("/runtime");
+  }
+
+  listModels(): Promise<ModelInfo[]> {
+    return this.request<ModelInfo[]>("/models");
   }
 
   subscribe(
@@ -153,10 +159,10 @@ class HttpApiClient implements GptinoApiClient {
     });
   }
 
-  setSessionModel(sessionId: string, modelProfile: ModelProfile): Promise<void> {
+  setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void> {
     return this.request(`/sessions/${encodeURIComponent(sessionId)}/model`, {
       method: "PUT",
-      body: JSON.stringify({ modelProfile }),
+      body: JSON.stringify({ modelProfile, model: model ?? null }),
     });
   }
 

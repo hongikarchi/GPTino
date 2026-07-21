@@ -2,11 +2,39 @@ import type { GptinoApiClient } from "./client";
 import type {
   ChatMessage,
   MessageRequest,
+  ModelInfo,
   ModelProfile,
   RuntimeState,
   SessionMode,
   SessionOrderRequest,
 } from "../types";
+
+const demoModels: ModelInfo[] = [
+  {
+    id: "gpt-5.6-sol",
+    model: "gpt-5.6-sol",
+    displayName: "GPT-5.6 Sol",
+    description: "Strongest reasoning for geometry and recovery work",
+    isDefault: true,
+    reasoningEfforts: ["low", "medium", "high", "xhigh"],
+  },
+  {
+    id: "gpt-5.6-terra",
+    model: "gpt-5.6-terra",
+    displayName: "GPT-5.6 Terra",
+    description: "Balanced general modeling",
+    isDefault: false,
+    reasoningEfforts: ["low", "medium", "high"],
+  },
+  {
+    id: "gpt-5.6-luna",
+    model: "gpt-5.6-luna",
+    displayName: "GPT-5.6 Luna",
+    description: "Fast reads and simple typed operations",
+    isDefault: false,
+    reasoningEfforts: ["minimal", "low", "medium"],
+  },
+];
 
 const now = new Date();
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
@@ -39,6 +67,8 @@ const demoState: RuntimeState = {
       status: "verifying",
       mode: "auto",
       modelProfile: "deep",
+      pinnedModel: "gpt-5.6-sol",
+      backend: "codex",
       effectiveModel: "gpt-5.6-sol",
       reasoning: "xhigh",
       paused: false,
@@ -237,6 +267,10 @@ export function createMockApiClient(): GptinoApiClient {
       await delay(80);
       return clone(state);
     },
+    async listModels() {
+      await delay(60);
+      return clone(demoModels);
+    },
     subscribe(onState) {
       listeners.add(onState);
       return () => listeners.delete(onState);
@@ -279,10 +313,12 @@ export function createMockApiClient(): GptinoApiClient {
         state.sessions[index].mode = mode;
       });
     },
-    async setSessionModel(sessionId, modelProfile: ModelProfile) {
+    async setSessionModel(sessionId, modelProfile: ModelProfile, model?: string | null) {
       await delay();
       mutateSession(sessionId, (index) => {
         state.sessions[index].modelProfile = modelProfile;
+        state.sessions[index].pinnedModel = model ?? null;
+        if (model) state.sessions[index].effectiveModel = model;
       });
     },
     async sendMessage(sessionId, request: MessageRequest) {

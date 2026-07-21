@@ -41,6 +41,8 @@ function sessionTooltip(node: GraphNode): string {
   if (session.effectiveModel) {
     lines.push(`Model: ${session.effectiveModel}${session.reasoning ? ` (${session.reasoning})` : ""}`);
   }
+  if (session.pinnedModel) lines.push(`Pinned: ${session.pinnedModel}`);
+  if (session.backend) lines.push(`Backend: ${session.backend}`);
   if (session.routingReason) lines.push(`Routing: ${session.routingReason}`);
   if (node.warning) lines.push(node.warning);
   return lines.join("\n");
@@ -107,7 +109,7 @@ function SessionNode({
       <circle className="gnode-status-dot" cx={13} cy={33} r={3} />
       <text className="gnode-status" x={22} y={36}>{session.status}</text>
       <text className="gnode-chips" x={10} y={53}>
-        {`${session.modelProfile} · ${session.mode}`}
+        {truncate(`${session.pinnedModel ?? session.modelProfile} · ${session.mode}`, 26)}
       </text>
       {node.sublabel ? (
         <text className="gnode-sub" x={10} y={65}>{truncate(node.sublabel, 30)}</text>
