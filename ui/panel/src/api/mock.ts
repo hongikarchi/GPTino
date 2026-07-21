@@ -227,6 +227,7 @@ const demoState: RuntimeState = {
       resource: "GH group · panel-grid",
     },
   ],
+  contextFolder: "C:\\Users\\user\\AppData\\Local\\GPTino\\projects\\a31f924c\\context",
   currentSelection: {
     rhinoObjectCount: 2,
     rhinoObjectIds: [

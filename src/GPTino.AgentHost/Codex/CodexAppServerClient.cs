@@ -49,11 +49,18 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
 
     public CodexAppServerClient(
         AgentHostOptions options,
-        ILogger<CodexAppServerClient> logger)
+        ILogger<CodexAppServerClient> logger,
+        IThreadInstructionComposer? instructionComposer = null)
     {
         _options = options;
         _logger = logger;
+        _instructionComposer = instructionComposer;
     }
+
+    private readonly IThreadInstructionComposer? _instructionComposer;
+
+    private string ComposeBaseInstructions() =>
+        _instructionComposer?.Compose(ThreadInstructions) ?? ThreadInstructions;
 
     public event Func<string, JsonElement, Task>? NotificationReceived;
 
@@ -123,6 +130,7 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         CancellationToken cancellationToken = default)
     {
         var parameters = CreateThreadStartParameters(cwd, model);
+        parameters["baseInstructions"] = ComposeBaseInstructions();
 
         var result = await CallAsync("thread/start", parameters, cancellationToken).ConfigureAwait(false);
         return result.GetProperty("thread").GetProperty("id").GetString()
@@ -141,7 +149,7 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
             ["cwd"] = Path.GetFullPath(cwd),
             ["approvalPolicy"] = "never",
             ["sandbox"] = "read-only",
-            ["baseInstructions"] = ThreadInstructions,
+            ["baseInstructions"] = ComposeBaseInstructions(),
             ["excludeTurns"] = true
         };
         if (!string.IsNullOrWhiteSpace(model))

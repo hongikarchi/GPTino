@@ -93,6 +93,18 @@ export default function App() {
             <span title={runtime.rhinoFile}>R <b>{shortFile(runtime.rhinoFile)}</b></span>
             <Icon name="chevron" />
             <span title={runtime.grasshopperFile}>GH <b>{shortFile(runtime.grasshopperFile)}</b></span>
+            {runtime.contextFolder ? (
+              <button
+                type="button"
+                className="context-chip"
+                title={`Project context folder (rules.md, MEMORY.md) — click to copy path\n${runtime.contextFolder}`}
+                onClick={() => {
+                  void navigator.clipboard?.writeText(runtime.contextFolder!).catch(() => undefined);
+                }}
+              >
+                context
+              </button>
+            ) : null}
           </div>
         </div>
 

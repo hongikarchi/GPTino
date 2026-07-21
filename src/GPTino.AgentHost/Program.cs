@@ -47,6 +47,9 @@ var identity = new RuntimeIdentity(
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(identity);
 builder.Services.AddSingleton(new SessionStore(Path.Combine(options.ResolveDataDirectory(), "runtime.db")));
+builder.Services.AddSingleton(new ProjectContextStore(options.ResolveDataDirectory()));
+builder.Services.AddSingleton<IThreadInstructionComposer>(services =>
+    services.GetRequiredService<ProjectContextStore>());
 builder.Services.AddSingleton<RuntimeControl>();
 builder.Services.AddSingleton<EventHub>();
 builder.Services.AddSingleton<EndpointRegistry>();
@@ -75,6 +78,13 @@ builder.Services.AddHostedService<ParentProcessMonitor>();
 var app = builder.Build();
 var store = app.Services.GetRequiredService<SessionStore>();
 await store.InitializeAsync();
+app.Services.GetRequiredService<ProjectContextStore>().EnsureScaffolded(
+    identity.ProjectId,
+    string.IsNullOrWhiteSpace(options.RhinoPath)
+        ? "Untitled Rhino"
+        : Path.GetFileNameWithoutExtension(options.RhinoPath),
+    options.RhinoPath,
+    options.GrasshopperPath);
 var events = app.Services.GetRequiredService<EventHub>();
 var control = app.Services.GetRequiredService<RuntimeControl>();
 var backend = app.Services.GetRequiredService<ILiveDocumentBackend>();

@@ -110,6 +110,7 @@ export interface RuntimeState {
   queue: QueueItem[];
   conflicts: RuntimeConflict[];
   currentSelection?: CurrentSelection | null;
+  contextFolder?: string | null;
   lastUpdatedAt: string;
 }
 

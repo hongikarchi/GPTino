@@ -214,6 +214,22 @@ textarea:disabled {
   flex: 0 0 auto;
 }
 
+.context-chip {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--dim);
+  background: var(--surface-2);
+  font-family: "DM Mono", monospace;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  cursor: copy;
+}
+
+.context-chip:hover { color: var(--lime); border-color: #526334; }
+
 .runtime-summary {
   gap: 18px;
 }

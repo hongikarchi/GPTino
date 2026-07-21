@@ -15,6 +15,7 @@ public sealed class RuntimeStateProjector
     private readonly EffectiveModelState _effectiveModels;
     private readonly EventHub _events;
     private readonly TerminalLauncher? _terminals;
+    private readonly ProjectContextStore? _contextStore;
 
     public RuntimeStateProjector(
         SessionStore store,
@@ -24,7 +25,8 @@ public sealed class RuntimeStateProjector
         ILiveDocumentBackend backend,
         EffectiveModelState effectiveModels,
         EventHub events,
-        TerminalLauncher? terminals = null)
+        TerminalLauncher? terminals = null,
+        ProjectContextStore? contextStore = null)
     {
         _store = store;
         _options = options;
@@ -34,6 +36,7 @@ public sealed class RuntimeStateProjector
         _effectiveModels = effectiveModels;
         _events = events;
         _terminals = terminals;
+        _contextStore = contextStore;
     }
 
     public async Task<object> BuildAsync(CancellationToken cancellationToken = default)
@@ -154,6 +157,7 @@ public sealed class RuntimeStateProjector
             sessions = projectedSessions,
             queue = projectedQueue,
             conflicts = projectedConflicts,
+            contextFolder = _contextStore?.ContextDirectory,
             currentSelection = live?.CurrentSelection is { } selection
                 ? new
                 {
