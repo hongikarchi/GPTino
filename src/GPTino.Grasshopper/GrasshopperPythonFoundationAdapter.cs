@@ -795,42 +795,25 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
 
     private static object? PrepareConverter(PropertyInfo property, object parameter, string typeHint)
     {
-        var targetType = ResolveSafeType(typeHint, allowObject: true);
-        var existing = property.GetValue(parameter);
-        if (targetType == typeof(object))
-        {
-            return null;
-        }
-        if (ConverterTargets(existing, targetType))
-        {
-            return existing;
-        }
-
-        var codeAssembly = property.PropertyType.Assembly;
-        var identityType = codeAssembly.GetType(
-            "Rhino.Runtime.Code.Execution.ParamConverterIdentity",
-            throwOnError: true)!;
-        var paramType = codeAssembly.GetType("Rhino.Runtime.Code.ParamType", throwOnError: true)!;
-        var converterType = codeAssembly.GetType(
-            "Rhino.Runtime.Code.Execution.ParamValueCastConverter",
-            throwOnError: true)!;
-        var identity = Activator.CreateInstance(
-            identityType,
-            StableGuid(typeHint),
-            $"GPTino {targetType.Name}",
-            $"gptino/{targetType.Name.ToLowerInvariant()}")
-            ?? throw new InvalidOperationException("Could not create a RhinoCode converter identity.");
-        var target = Activator.CreateInstance(paramType, targetType)
-            ?? throw new InvalidOperationException("Could not create a RhinoCode parameter type.");
-        return Activator.CreateInstance(converterType, identity, target)
-            ?? throw new InvalidOperationException("Could not create a RhinoCode value converter.");
+        // Do NOT attach a custom RhinoCode cast converter. RhinoCode's ParamConverterIdentity
+        // constructor calls SpecTaxonomy.EnsureSpecific(), which rejects any taxonomy that is not
+        // registered in its spec registry — so a synthesized "gptino/<type>" taxonomy throws
+        // "Developer must be specific" (verified via bridge diagnostics). This broke typed sockets
+        // for every type, including primitives. Instead we leave sockets GENERIC: the socket is
+        // bound by its variable name and the Python script coerces inputs (int(count),
+        // float(spacing)). The type hint is advisory only; Access (item/list/tree) is still
+        // applied separately, so list/tree inputs keep working.
+        _ = property;
+        _ = parameter;
+        _ = typeHint;
+        return null;
     }
 
     private static Type ResolveSafeType(string typeHint, bool allowObject)
     {
         var resolved = typeHint?.Trim().ToLowerInvariant() switch
         {
-            "object" or "system.object" when allowObject => typeof(object),
+            "object" or "system.object" => typeof(object),
             "bool" or "boolean" or "system.boolean" => typeof(bool),
             "int" or "int32" or "integer" or "system.int32" => typeof(int),
             "float" or "single" or "system.single" => typeof(float),
@@ -838,24 +821,19 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
             "string" or "text" or "system.string" => typeof(string),
             _ => null
         };
-        return resolved ?? throw new NotSupportedException(
+        if (resolved is not null)
+        {
+            return resolved;
+        }
+        // Sockets are generic (no custom cast converter — see PrepareConverter), so any hint,
+        // including geometry types like point/curve/brep the agent may declare for outputs, is
+        // accepted and treated as a generic socket rather than rejected.
+        if (allowObject)
+        {
+            return typeof(object);
+        }
+        throw new NotSupportedException(
             $"Type hint '{typeHint}' is not in GPTino's safe primitive converter set.");
-    }
-
-    private static bool ConverterTargets(object? converter, Type targetType)
-    {
-        if (converter is null)
-        {
-            return targetType == typeof(object);
-        }
-        var typeName = converter.GetType().GetProperty("TypeName")?.GetValue(converter)?.ToString();
-        if (string.Equals(typeName, targetType.Name, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(typeName, targetType.FullName, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        var target = converter.GetType().GetProperty("TargetType")?.GetValue(converter);
-        return target is Type type && type == targetType;
     }
 
     private static bool ConverterEquivalent(object? left, object? right) =>
@@ -1003,13 +981,6 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
     private static string Hash(string value) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(value)))
             .ToLowerInvariant();
-
-    private static Guid StableGuid(string value)
-    {
-        var hash = System.Security.Cryptography.SHA256.HashData(
-            Encoding.UTF8.GetBytes($"gptino-converter:{value.ToLowerInvariant()}"));
-        return new Guid(hash.AsSpan(0, 16));
-    }
 
     private sealed record ScriptParameterObject(
         Guid ParameterId,
