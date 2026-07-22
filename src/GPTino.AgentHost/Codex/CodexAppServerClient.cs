@@ -149,6 +149,7 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
             ["cwd"] = Path.GetFullPath(cwd),
             ["approvalPolicy"] = "never",
             ["sandbox"] = "read-only",
+            ["multiAgentMode"] = "proactive",
             ["baseInstructions"] = ComposeBaseInstructions(),
             ["excludeTurns"] = true
         };
@@ -1353,6 +1354,11 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
             ["approvalPolicy"] = "never",
             ["sandbox"] = "read-only",
             ["personality"] = "pragmatic",
+            // Let codex proactively decompose a turn into native sub-agents that draft in
+            // parallel and report back into the parent turn. Sub-agents are codex-internal
+            // (own threads, parentThreadId) and are not GPTino sessions, so they cannot call
+            // the session-bound gptino_v1 tools — they draft, the parent session submits.
+            ["multiAgentMode"] = "proactive",
             ["baseInstructions"] = ThreadInstructions,
             ["dynamicTools"] = DynamicToolSpecs.Create()
         };
