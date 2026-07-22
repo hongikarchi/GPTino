@@ -71,8 +71,13 @@ public static class HouseRules
           2) setComponentIo second — append sockets whose names exactly match the script's input/output variables.
              Type hints are advisory (sockets are generic); set access (item/list/tree) correctly for list inputs.
           3) executePython last — this performs the single recompute after sockets exist and inputs are wired.
-          Read current sockets first with one scoped snapshot_read (scope wireify:<component-guid>); preserve every
-          existing socket UUID and order; only appended sockets get new UUIDs.
+          Read current sockets first with one scoped snapshot_read (scope wireify:<component-guid>); list existing
+          sockets in order, then appended ones.
+        - After setComponentIo commits, the input socket UUIDs are Grasshopper-assigned and are NOT the placeholder
+          ids you supplied. Before wiring sliders into the component, snapshot_read the component (scope
+          wireify:<component-guid>) and use each input socket's exact parameterId from that read as the wire target.
+          Never reconstruct or guess a socket UUID; if a wire reports the parameter was not found, the error lists the
+          available socket name=id pairs — wire to that exact id.
         - Acceptance predicate kinds are exactly: fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent |
           objectExists | objectAbsent. No other spelling parses. For updatePythonSource/executePython use
           {"name":"no runtime errors","kind":"runtimeErrorAbsent","resource":null,"expectedValue":null}.

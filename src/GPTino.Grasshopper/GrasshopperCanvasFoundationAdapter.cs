@@ -905,9 +905,20 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             IGH_Param standalone when standalone.InstanceGuid == parameterId => standalone,
             _ => null,
         };
-        return parameter ?? throw new KeyNotFoundException(
+        if (parameter is not null)
+        {
+            return parameter;
+        }
+        // List the object's available parameters on the required side so the model can correct a
+        // wrong socket id in one retry instead of guessing (socket ids are Grasshopper-assigned).
+        var available = owner is IGH_Component comp
+            ? string.Join(", ", (source ? comp.Params.Output : comp.Params.Input)
+                .Select(item => $"{item.Name}={item.InstanceGuid:D}"))
+            : owner is IGH_Param p ? $"{p.Name}={p.InstanceGuid:D}" : "none";
+        throw new KeyNotFoundException(
             $"Grasshopper {(source ? "source" : "target")} parameter {parameterId:D} " +
-            $"on object {ownerId:D} was not found in the required direction.");
+            $"on object {ownerId:D} was not found. Available {(source ? "output" : "input")} " +
+            $"sockets: {available}.");
     }
 
     private static bool WouldCreateCycle(
