@@ -30,9 +30,10 @@ internal static class DynamicToolSpecs
         "reports the expected id, declare that exact string and resubmit. " +
         "Write domains are exact: move/layout=grasshopperComponentLayout; Number Slider setValue=grasshopperComponentValue; component create/delete=grasshopperComponent; wire=grasshopperWire; group=grasshopperGroup; " +
         "Python source/schema-or-typing/execute=grasshopperComponentSource/grasshopperComponentIo/grasshopperComponentValue; every Rhino mutation=rhinoObject. " +
-        "Python source/I/O/value writes share runtime-sensitive whole-component state: one ChangeSet may write exactly one Python component, those writes must be contiguous, no other writes may be mixed in, and every writeSet entry uses the same inspected starting fingerprint. " +
-        "CreateComponent, CreateRhinoPrimitive, CreateRhinoObject, BakeGeometry, ConnectWire, and a new SetGroup use writeSet expectedFingerprint='gptino:absent' " +
-        "for the exact new resource; all existing resources use the actual snapshot fingerprint. For CreateRhinoObject/BakeGeometry only, payload arguments.expectedFingerprint is null. " +
+        "Python source/I/O/value writes share runtime-sensitive whole-component state: one ChangeSet may write exactly one Python component, those writes must be contiguous, and no other writes may be mixed in. " +
+        "Optimistic-concurrency bookkeeping is automatic: set existing-resource writeSet/readSet expectedFingerprint to 'gptino:auto', expectedSnapshotId to 'gptino:auto', and baseSnapshotRevision to -1 — the server fills them from this session's own last commit, and a foreign change still Blocks. " +
+        "CreateComponent, CreateRhinoPrimitive, CreateRhinoObject, BakeGeometry, ConnectWire, and a new SetGroup use writeSet expectedFingerprint='gptino:absent' for the exact new resource. " +
+        "Value/geometry payload+writeSet fingerprints (setNumberSlider, move, delete, rhino transform/upsert) must be the concrete value, not gptino:auto. For CreateRhinoObject/BakeGeometry only, payload arguments.expectedFingerprint is null. " +
         "Rhino geometryJson must be native RhinoCommon JSON and match geometryType; attributesJson is native ObjectAttributes JSON, or an empty string for default/new attributes. Distinct Rhino object IDs in one ChangeSet must use distinct case-sensitive logicalEntityId values. " +
         "Payload fingerprints for existing canvas/Rhino resources must exactly match writeSet, and two operations in one ChangeSet cannot write overlapping domains. " +
         "Every write needs an explicit supported acceptance predicate.";
@@ -131,7 +132,7 @@ internal static class DynamicToolSpecs
                         properties = new
                         {
                             changeSet = ChangeSetSchema(),
-                            expectedSnapshotId = new { type = "string", description = "Exact snapshotId returned by snapshot_read." },
+                            expectedSnapshotId = new { type = "string", description = "gptino:auto to let the server anchor to the current snapshot, or the exact snapshotId returned by snapshot_read." },
                             idempotencyKey = new { type = "string", description = "Stable unique key for retrying this logically identical submission." },
                             summary = new { type = "string", description = "Short user-visible queue/history summary." }
                         },
@@ -178,7 +179,7 @@ internal static class DynamicToolSpecs
             changeSetId = Uuid(),
             projectId = Uuid(),
             sessionId = Uuid(),
-            baseSnapshotRevision = new { type = "integer", minimum = 0 },
+            baseSnapshotRevision = new { type = "integer", minimum = -1, description = "-1 to let the server anchor to the current revision, or the exact revision from snapshot_read/job_status." },
             baseGitCommit = NullableString("Managed-history HEAD from the snapshot, or null before baseline."),
             dependencies = new { type = "array", items = Uuid() },
             readSet = new { type = "array", items = ResourceExpectationSchema() },
@@ -229,7 +230,7 @@ internal static class DynamicToolSpecs
             {
                 type = "string",
                 minLength = 1,
-                description = "Actual snapshot fingerprint, or gptino:absent only for a supported exact create target."
+                description = "gptino:auto (server fills it from this session's own last commit), the actual snapshot fingerprint, or gptino:absent only for a supported exact create target."
             }
         },
         required = new[] { "resource", "expectedFingerprint" },

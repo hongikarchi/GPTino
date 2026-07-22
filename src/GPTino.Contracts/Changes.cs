@@ -46,8 +46,25 @@ public sealed record ResourceExpectation(
     /// </summary>
     public const string AbsentFingerprint = "gptino:absent";
 
+    /// <summary>
+    /// Opt-in sentinel that asks the server to fill in the current fingerprint from live state — but only
+    /// when the resource is unchanged since THIS session last committed it (a self-sequential write). A
+    /// foreign-session write or manual Grasshopper drift is refused and blocks the job, so optimistic
+    /// concurrency stays safe. Not valid for create targets (use <see cref="AbsentFingerprint"/>).
+    /// </summary>
+    public const string AutoFingerprint = "gptino:auto";
+
+    /// <summary>
+    /// Sentinel <c>BaseSnapshotRevision</c> that opts a ChangeSet out of the whole-document revision gate;
+    /// per-resource auto expectations still govern every resource the ChangeSet touches.
+    /// </summary>
+    public const long AutoBaseRevision = -1;
+
     public bool ExpectsAbsence =>
         string.Equals(ExpectedFingerprint, AbsentFingerprint, StringComparison.Ordinal);
+
+    public bool IsAuto =>
+        string.Equals(ExpectedFingerprint, AutoFingerprint, StringComparison.Ordinal);
 }
 
 public sealed record TypedOperation(

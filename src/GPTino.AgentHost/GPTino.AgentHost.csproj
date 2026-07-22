@@ -15,6 +15,9 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="GPTino.AgentHost.Tests" />
+  </ItemGroup>
   <ItemGroup Condition="Exists('..\..\ui\panel\dist')">
     <Content Include="..\..\ui\panel\dist\**\*"
              Link="wwwroot\%(RecursiveDir)%(Filename)%(Extension)"

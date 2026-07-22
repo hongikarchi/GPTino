@@ -80,11 +80,15 @@ public static class HouseRules
           5) executePython in its OWN final ChangeSet (a Python value write must be alone), AFTER the wires commit.
              Executing a component whose inputs are still unwired (None) is a defect — that is why wiring is step 4
              and execution is step 5.
-        - After a job commits, job_status returns committed { snapshotId, revision, resources[].fingerprint }.
-          Base the next ChangeSet's expectedSnapshotId, baseSnapshotRevision, and write expectations on those values;
-          the only mid-chain read you need is the step-3 snapshot_read for the server-assigned socket UUIDs.
-        - If a submit is rejected or blocked as stale, the error message carries the current fingerprint or current
-          snapshotId. Correct only those values and resubmit immediately; do not restart discovery.
+        - Optimistic-concurrency bookkeeping is automatic — do NOT carry snapshotId/revision/fingerprints between
+          ChangeSets. Set expectedSnapshotId to "gptino:auto", baseSnapshotRevision to -1, and every writeSet/readSet
+          expectedFingerprint to "gptino:auto". The server fills the real values from your own session's last commit,
+          so a Python source→schema→execute→wire chain submits back to back with no re-reads. Two exceptions still
+          need the concrete fingerprint from the previous commit (in both payload and writeSet): value/geometry writes
+          (setNumberSlider, moveComponent, delete, Rhino transform/upsert) and create targets (which use "gptino:absent").
+        - "gptino:auto" fills a value only when THIS session already committed the resource and it is unchanged. If a
+          genuine foreign change (another session or a manual Grasshopper edit) touched it, the job is Blocked with the
+          current fingerprint — re-read that one resource and resubmit it with the concrete value; do not restart discovery.
         - Acceptance predicate kinds are exactly: fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent |
           objectExists | objectAbsent. No other spelling parses. For updatePythonSource/executePython use
           {"name":"no runtime errors","kind":"runtimeErrorAbsent","resource":null,"expectedValue":null}.
@@ -95,7 +99,7 @@ public static class HouseRules
           Do not invent per-operation "value updated" predicates.
         - Use this exact ChangeSet shape on the first submit (property names are exact; no other spellings exist):
           {"changeSetId":"<uuid>","projectId":"<from snapshot_read>","sessionId":"<from snapshot_read>",
-           "baseSnapshotRevision":7,"baseGitCommit":null,"dependencies":[],
+           "baseSnapshotRevision":-1,"baseGitCommit":null,"dependencies":[],
            "readSet":[],"writeSet":[{"resource":{"kind":"grasshopperComponent","id":"<uuid>","field":"*"},
            "expectedFingerprint":"gptino:absent"}],
            "operations":[{"operationId":"create-x","kind":"createComponent","owner":"cordyceps",

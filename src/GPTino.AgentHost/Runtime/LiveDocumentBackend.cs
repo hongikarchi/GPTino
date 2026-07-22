@@ -82,6 +82,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private readonly EventHub _events;
     private readonly ILogger<LiveDocumentBackend> _logger;
     private readonly ConflictDetector _conflictDetector = new();
+    // Per-resource "last committed by whom, to what fingerprint" ledger used to resolve gptino:auto
+    // expectations to a live fingerprint ONLY for a session's own self-sequential writes. Both the commit
+    // write and the execute-time read run on the SingleWriterBroker's single worker thread (one job at a
+    // time under the write lease), so access is fully serialized and needs no lock.
+    private readonly Dictionary<string, ResourceLedgerEntry> _resourceLedger = new(StringComparer.Ordinal);
     private readonly SingleWriterBroker _broker;
     private readonly ManagedHistoryRepository _history;
     private readonly DurableJobStore _jobStore;
@@ -394,12 +399,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             snapshot = await CaptureSnapshotAsync(force: true, cancellationToken).ConfigureAwait(false);
         }
-        if (!string.Equals(expectedSnapshotId, snapshot.SnapshotId, StringComparison.Ordinal))
+        // "gptino:auto" opts out of the whole-document snapshot/revision gate; per-resource auto expectations
+        // (resolved at execute time against this session's own last-committed fingerprints) then govern every
+        // resource the ChangeSet touches, so a foreign change to an UNRELATED resource no longer false-rejects.
+        if (!string.Equals(expectedSnapshotId, ResourceExpectation.AutoFingerprint, StringComparison.Ordinal) &&
+            !string.Equals(expectedSnapshotId, snapshot.SnapshotId, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 $"Snapshot changed. Expected '{expectedSnapshotId}', current is '{snapshot.SnapshotId}'.");
         }
-        if (changeSet.BaseSnapshotRevision != snapshot.State.Revision)
+        if (changeSet.BaseSnapshotRevision != ResourceExpectation.AutoBaseRevision &&
+            changeSet.BaseSnapshotRevision != snapshot.State.Revision)
         {
             throw new InvalidOperationException(
                 $"ChangeSet base revision {changeSet.BaseSnapshotRevision} does not match current revision {snapshot.State.Revision}.");
@@ -672,7 +682,21 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 before,
                 job.ChangeSet,
                 execution.Token).ConfigureAwait(false);
-            var conflicts = _conflictDetector.ValidateAgainstSnapshot(job.ChangeSet, before.State);
+            // Resolve any gptino:auto expectations against live state (self-sequential only) BEFORE conflict
+            // validation, then validate and execute the RESOLVED ChangeSet so ValidateAgainstSnapshot and the
+            // bridge requests see concrete fingerprints. A declined auto returns a Stale-class conflict here.
+            var (resolvedChangeSet, autoConflicts) = ResolveAutoExpectations(
+                job.ChangeSet,
+                before.State,
+                job.ChangeSet.SessionId,
+                _resourceLedger);
+            if (autoConflicts.Count > 0)
+            {
+                var autoMessage = string.Join(" ", autoConflicts);
+                await SetJobPhaseAsync(entry, JobState.Blocked, autoMessage).ConfigureAwait(false);
+                return new JobExecutionResult(job.JobId, JobState.Blocked, autoMessage);
+            }
+            var conflicts = _conflictDetector.ValidateAgainstSnapshot(resolvedChangeSet, before.State);
             if (conflicts.Count > 0)
             {
                 var message = string.Join(" ", conflicts.Select(conflict => conflict.Message));
@@ -708,7 +732,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     access == BridgeOperationAccess.Write
                     ? PythonStateWrite(operation)
                     : null;
-                var expectedFingerprint = FindExpectedFingerprint(job.ChangeSet, operation);
+                var expectedFingerprint = FindExpectedFingerprint(resolvedChangeSet, operation);
                 if (pythonWrite is not null &&
                     rollingPythonFingerprints.TryGetValue(pythonWrite.Id, out var rollingFingerprint))
                 {
@@ -801,6 +825,41 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 // Chaining data is observability sugar. The live change is verified and
                 // committed at this point; a projection bug must never demote the job.
                 _logger.LogWarning(exception, "Could not build the committed chaining view for job {JobId}.", job.JobId);
+            }
+            try
+            {
+                // Record each written resource's committed fingerprint + this session as its last writer, so a
+                // later gptino:auto expectation from the SAME session can be self-resolved (and a foreign write
+                // afterwards flips the ledger owner, forcing that auto to Block). Same never-demote discipline
+                // as the committed-view build above. Runs on the broker worker thread, so no lock is needed.
+                var beforeFingerprints = before.State.Resources.ToDictionary(
+                    item => $"{item.Resource.Kind}:{item.Resource.Id}:{item.Resource.Field}",
+                    item => item.Fingerprint,
+                    StringComparer.Ordinal);
+                foreach (var resource in after.State.Resources.Where(item =>
+                    !string.IsNullOrWhiteSpace(item.Fingerprint)))
+                {
+                    // Attribute every resource this job actually changed (new, or a moved fingerprint) to this
+                    // session — including SIDE EFFECTS that never appear in the writeSet, such as a wire connecting
+                    // into a component's inputs, which moves the component fingerprint. This keeps a later
+                    // sub-domain gptino:auto (setComponentIo/executePython) self-resolvable via its parent, and
+                    // makes the committing session the ledger owner so a foreign change flips ownership and Blocks.
+                    var key = $"{resource.Resource.Kind}:{resource.Resource.Id}:{resource.Resource.Field}";
+                    var changed = !beforeFingerprints.TryGetValue(key, out var beforeFingerprint) ||
+                        !string.Equals(beforeFingerprint, resource.Fingerprint, StringComparison.Ordinal);
+                    if (changed)
+                    {
+                        _resourceLedger[key] = new ResourceLedgerEntry(
+                            resource.Resource,
+                            resource.Fingerprint!,
+                            job.ChangeSet.SessionId,
+                            after.State.Revision);
+                    }
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "Could not update the resource ledger for job {JobId}.", job.JobId);
             }
             await SetJobPhaseAsync(
                 entry,
@@ -2745,6 +2804,108 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
+    // Resolves gptino:auto read/write expectations against the live snapshot, gated by the per-session
+    // resource ledger: an auto expectation is filled with the live fingerprint ONLY when THIS session wrote
+    // the resource and it has not changed since (self-sequential). A foreign-session write, a manual
+    // Grasshopper edit, an absent resource, or a resource this session never wrote is REFUSED and returned as
+    // a conflict so the existing Blocked path stops it. Runs on the single broker worker thread, so the
+    // ledger read cannot race a commit.
+    internal static (ChangeSet Resolved, IReadOnlyList<string> Conflicts) ResolveAutoExpectations(
+        ChangeSet changeSet,
+        StateSnapshot liveState,
+        Guid sessionId,
+        IReadOnlyDictionary<string, ResourceLedgerEntry> resourceLedger)
+    {
+        if (!changeSet.ReadSet.Concat(changeSet.WriteSet).Any(expectation => expectation.IsAuto))
+        {
+            return (changeSet, Array.Empty<string>());
+        }
+
+        var conflicts = new List<string>();
+
+        ResourceExpectation Resolve(ResourceExpectation expectation)
+        {
+            if (!expectation.IsAuto)
+            {
+                return expectation;
+            }
+            var key = $"{expectation.Resource.Kind}:{expectation.Resource.Id}:{expectation.Resource.Field}";
+            var live = liveState.Resources.FirstOrDefault(item =>
+                ExactDomainOverlaps(item.Resource, expectation.Resource));
+            if (live is null || string.IsNullOrWhiteSpace(live.Fingerprint))
+            {
+                conflicts.Add(
+                    $"gptino:auto declined for {key}: the resource is absent from the live document. " +
+                    "Create it first, or supply a concrete fingerprint.");
+                return expectation;
+            }
+            if (!resourceLedger.TryGetValue(key, out var ledger))
+            {
+                // Fallback: a Python/Rhino sub-domain may lack its own ledger row (e.g. the first setComponentIo
+                // right after createComponent), yet the parent component/object this session created still has a
+                // ledger row. If this session owns the parent AND the parent's own fingerprint is unchanged
+                // (no foreign session write and no manual edit touched the component or any sub-domain since),
+                // resolve the sub-domain auto to its own live fingerprint. A foreign change moves the parent
+                // fingerprint, so this still declines.
+                var parent = ParentResource(expectation.Resource);
+                if (parent is not null)
+                {
+                    var parentLive = liveState.Resources.FirstOrDefault(item =>
+                        ExactDomainOverlaps(item.Resource, parent));
+                    var parentEntry = resourceLedger.Values.FirstOrDefault(entry =>
+                        entry.SessionId == sessionId && ExactDomainOverlaps(entry.Resource, parent));
+                    if (parentLive is not null &&
+                        parentEntry.Resource is not null &&
+                        string.Equals(parentEntry.Fingerprint, parentLive.Fingerprint, StringComparison.Ordinal))
+                    {
+                        return expectation with { ExpectedFingerprint = live.Fingerprint };
+                    }
+                }
+                conflicts.Add(
+                    $"gptino:auto declined for {key}: this session has not committed it, so there is no " +
+                    "baseline to fill. Run snapshot_read and supply the concrete fingerprint once.");
+                return expectation;
+            }
+            if (ledger.SessionId != sessionId)
+            {
+                conflicts.Add(
+                    $"gptino:auto declined for {key}: another session wrote it after this session last did. " +
+                    $"Current fingerprint: {live.Fingerprint}. Re-read and resubmit with this value.");
+                return expectation;
+            }
+            if (!string.Equals(ledger.Fingerprint, live.Fingerprint, StringComparison.Ordinal))
+            {
+                conflicts.Add(
+                    $"gptino:auto declined for {key}: it drifted (a manual Grasshopper edit) since this session " +
+                    $"last wrote it. Current fingerprint: {live.Fingerprint}. Re-read and resubmit with this value.");
+                return expectation;
+            }
+            return expectation with { ExpectedFingerprint = live.Fingerprint };
+        }
+
+        var readSet = changeSet.ReadSet.Select(Resolve).ToArray();
+        var writeSet = changeSet.WriteSet.Select(Resolve).ToArray();
+        if (conflicts.Count > 0)
+        {
+            return (changeSet, conflicts);
+        }
+        return (changeSet with { ReadSet = readSet, WriteSet = writeSet }, Array.Empty<string>());
+    }
+
+    // The parent component/object of a Python/Rhino sub-domain, or null when the resource is already a
+    // top-level domain. A freshly created component has no source/io/value snapshot rows yet, but its parent
+    // exists; the parent's own fingerprint moves if anyone (foreign session or manual edit) touches the
+    // component or its sub-domains, so the parent's unchanged fingerprint is a sound self-ownership proof.
+    private static ResourceAddress? ParentResource(ResourceAddress resource) => resource.Kind switch
+    {
+        ResourceKind.GrasshopperComponentSource or ResourceKind.GrasshopperComponentIo or
+        ResourceKind.GrasshopperComponentValue or ResourceKind.GrasshopperComponentLayout =>
+            new ResourceAddress(ResourceKind.GrasshopperComponent, resource.Id, "*"),
+        ResourceKind.RhinoObjectGeometry or ResourceKind.RhinoObjectAttributes =>
+            new ResourceAddress(ResourceKind.RhinoObject, resource.Id, "*"),
+        _ => null,
+    };
+
     private static string? FindExpectedFingerprint(ChangeSet changeSet, TypedOperation operation)
     {
         foreach (var address in operation.Writes.Concat(operation.Reads))
@@ -3344,6 +3505,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         ResourceAddress resource,
         string payloadFingerprint)
     {
+        if (string.Equals(payloadFingerprint, ResourceExpectation.AutoFingerprint, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operation.OperationId}' cannot use gptino:auto: value and geometry writes " +
+                "(setNumberSlider, move, delete, rhino transform/upsert) carry the fingerprint in the payload " +
+                "and need the concrete value from the previous commit. Auto is for Python source/schema/value " +
+                "and wire writeSet expectations only.");
+        }
         var expectation = FindExpectation(changeSet.WriteSet, resource);
         if (expectation is null || expectation.ExpectsAbsence ||
             !string.Equals(
@@ -3752,6 +3921,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         Convert.ToHexString(SHA256.HashData(value)).ToLowerInvariant();
 
     private sealed record ResourceObservation(ResourceAddress Resource, string? Fingerprint);
+
+    internal readonly record struct ResourceLedgerEntry(
+        ResourceAddress Resource, string Fingerprint, Guid SessionId, long Revision);
 
     /// <summary>
     /// Post-commit chaining data: the fresh snapshot identity plus the committed write
