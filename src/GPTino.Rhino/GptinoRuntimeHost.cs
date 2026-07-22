@@ -759,6 +759,14 @@ public sealed class GptinoRuntimeHost : IDisposable
             {
                 effective = inner;
             }
+            var failureDetail =
+                $"operationId={TryReadOperationId(frame)};payloadType={frame.PayloadType};" +
+                $"exceptionType={effective.GetType().FullName};message={effective.Message};" +
+                $"trace={effective}";
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Rhino",
+                "bridge-op-failure-detail",
+                failureDetail.Length > 1500 ? failureDetail[..1500] : failureDetail);
             var failure = new BridgeFailure(
                 effective is BridgeProtocolException protocolException
                     ? protocolException.Code
