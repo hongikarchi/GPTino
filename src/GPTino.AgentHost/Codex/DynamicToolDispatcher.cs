@@ -74,18 +74,21 @@ public sealed class DynamicToolDispatcher
     private readonly string _artifactRoot;
     private readonly SkillLibrary? _skills;
     private readonly SessionActivityLog? _activity;
+    private readonly ProjectContextStore? _context;
 
     public DynamicToolDispatcher(
         SessionStore store,
         ILiveDocumentBackend backend,
         AgentHostOptions options,
         SkillLibrary? skills = null,
-        SessionActivityLog? activity = null)
+        SessionActivityLog? activity = null,
+        ProjectContextStore? context = null)
     {
         _store = store;
         _backend = backend;
         _skills = skills;
         _activity = activity;
+        _context = context;
         _artifactRoot = Path.Combine(options.ResolveDataDirectory(), "artifacts");
         Directory.CreateDirectory(_artifactRoot);
     }
@@ -114,6 +117,7 @@ public sealed class DynamicToolDispatcher
                 "job_status" => DynamicToolResult.Ok(
                     await _backend.ReadJobAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "skill_read" => DynamicToolResult.Ok(RequireSkills().Read(TryString(call.Arguments, "name"))),
+                "memory_append" => AppendMemory(call),
                 _ => DynamicToolResult.Fail($"Unsupported GPTino tool: {call.Tool}")
             };
             await RecordActivityAsync(call, ok: true, stopwatch.ElapsedMilliseconds, cancellationToken)
@@ -134,6 +138,14 @@ public sealed class DynamicToolDispatcher
 
     private SkillLibrary RequireSkills() =>
         _skills ?? throw new InvalidOperationException("The skill library is not available in this runtime.");
+
+    private DynamicToolResult AppendMemory(DynamicToolCall call)
+    {
+        var context = _context
+            ?? throw new InvalidOperationException("The project context store is not available in this runtime.");
+        var result = context.AppendMemory(TryString(call.Arguments, "entry"));
+        return result.Appended ? DynamicToolResult.Ok(result.Message) : DynamicToolResult.Fail(result.Message);
+    }
 
     private async Task RecordActivityAsync(
         DynamicToolCall call,
@@ -188,6 +200,7 @@ public sealed class DynamicToolDispatcher
         "change_submit" => $"Submitting: {TryString(call.Arguments, "summary")}",
         "job_status" => "Polling job status",
         "skill_read" => $"Reading skill {TryString(call.Arguments, "name")}",
+        "memory_append" => "Saving a project memory note",
         _ => call.Tool
     };
 

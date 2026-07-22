@@ -113,7 +113,8 @@ public sealed class RuntimeStateProjector
             title = item.Summary,
             state = ProjectQueueState(item.State),
             resource = (string?)null,
-            waitingFor = (string?)null
+            waitingFor = (string?)null,
+            target = item.Target
         }).ToArray();
         var sessionsByJob = queueItems.ToDictionary(item => item.JobId, item => item.SessionId);
         var projectedConflicts = (queueControl?.ReadConflicts() ?? Array.Empty<LiveConflictItem>())

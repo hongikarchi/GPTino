@@ -38,7 +38,8 @@ public sealed record LiveQueueItem(
     string Summary,
     JobState State,
     long EnqueueSequence,
-    DateTimeOffset EnqueuedAt);
+    DateTimeOffset EnqueuedAt,
+    string? Target);
 
 public sealed record LiveConflictItem(
     Guid JobId,
@@ -603,13 +604,43 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 entry.Summary,
                 entry.State,
                 entry.Job.EnqueueSequence,
-                entry.Job.EnqueuedAt))
+                entry.Job.EnqueuedAt,
+                DeriveQueueTarget(entry.Job.ChangeSet)))
             .Where(item => item.State is
                 JobState.Queued or JobState.Validating or JobState.Executing or JobState.Verifying)
             .OrderBy(item => item.State is JobState.Executing or JobState.Verifying ? 0 : 1)
             .ThenBy(item => rank.GetValueOrDefault(item.SessionId, int.MaxValue))
             .ThenBy(item => item.EnqueueSequence)
             .ToArray();
+    }
+
+    // Which document a queued job writes, so the node-graph animates the correct orchestrator->document wire.
+    // Derived from the write resource kinds (Grasshopper* vs Rhino*); null when a job writes neither or both
+    // in a way the UI should animate together (the panel treats a missing target as "animate both").
+    private static string? DeriveQueueTarget(ChangeSet changeSet)
+    {
+        var grasshopper = false;
+        var rhino = false;
+        foreach (var resource in changeSet.WriteSet.Select(expectation => expectation.Resource)
+            .Concat(changeSet.Operations.SelectMany(operation => operation.Writes)))
+        {
+            var kind = resource.Kind.ToString();
+            if (kind.StartsWith("Grasshopper", StringComparison.Ordinal))
+            {
+                grasshopper = true;
+            }
+            else if (kind.StartsWith("Rhino", StringComparison.Ordinal))
+            {
+                rhino = true;
+            }
+        }
+        return (grasshopper, rhino) switch
+        {
+            (true, true) => "both",
+            (true, false) => "grasshopper",
+            (false, true) => "rhino",
+            _ => null,
+        };
     }
 
     public IReadOnlyList<LiveConflictItem> ReadConflicts()

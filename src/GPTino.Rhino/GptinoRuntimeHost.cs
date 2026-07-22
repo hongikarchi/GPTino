@@ -195,9 +195,12 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
 
         var normalizedPath = Path.GetFullPath(rawPath);
+        bool changed;
         int observedCount;
         lock (_observationGate)
         {
+            changed = !_observedRhinoDocuments.TryGetValue(documentSerial, out var previousPath) ||
+                !string.Equals(previousPath, normalizedPath, StringComparison.OrdinalIgnoreCase);
             _observedRhinoDocuments[documentSerial] = normalizedPath;
             observedCount = _observedRhinoDocuments.Count;
         }
@@ -205,10 +208,15 @@ public sealed class GptinoRuntimeHost : IDisposable
             "Rhino",
             "rhino-document-observed",
             $"serial={documentSerial};count={observedCount}");
-        // A Save As / rename changes document.Path but NOT the runtime serial, so the live pair identity is
-        // unchanged. Re-register in place (path metadata refreshed, same ProjectId/serial/generation) rather
-        // than tearing the target down — the bound AgentHost stays alive and session/codex state is preserved.
-        TryRegisterUnambiguousPair();
+        // A Save As / rename changes document.Path but NOT the runtime serial, so re-registering in place
+        // refreshes the path metadata while keeping the AgentHost/session/codex state alive. Only do it when
+        // the pair genuinely changed (a new serial or a new path): a repeated observation of the same
+        // serial+path — e.g. the panel re-observing on show — is a true no-op, skipped to avoid redundant
+        // re-registration / schedule / event churn.
+        if (changed)
+        {
+            TryRegisterUnambiguousPair();
+        }
     }
 
     public void ObserveGrasshopperDocument(Guid documentId, string filePath)
@@ -219,9 +227,12 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
 
         var normalizedPath = Path.GetFullPath(filePath);
+        bool changed;
         int observedCount;
         lock (_observationGate)
         {
+            changed = !_observedGrasshopperDocuments.TryGetValue(documentId, out var previousPath) ||
+                !string.Equals(previousPath, normalizedPath, StringComparison.OrdinalIgnoreCase);
             _observedGrasshopperDocuments[documentId] = normalizedPath;
             observedCount = _observedGrasshopperDocuments.Count;
         }
@@ -229,9 +240,12 @@ public sealed class GptinoRuntimeHost : IDisposable
             "Rhino",
             "grasshopper-document-observed",
             $"id={documentId:D};count={observedCount}");
-        // Save As of the .gh changes its path but keeps the same GH DocumentID, so the live pair is unchanged.
-        // Re-register in place instead of tearing the target down (keeps the AgentHost and its state alive).
-        TryRegisterUnambiguousPair();
+        // Save As of the .gh changes its path but keeps the same GH DocumentID; re-register in place to refresh
+        // it. Skip a true no-op (same id + same path) to avoid redundant re-registration churn.
+        if (changed)
+        {
+            TryRegisterUnambiguousPair();
+        }
     }
 
     public void ForgetGrasshopperDocument(Guid documentId)

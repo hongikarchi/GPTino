@@ -64,4 +64,43 @@ public sealed class ProjectContextStoreTests
         Assert.Contains("[Truncated:", composed, StringComparison.Ordinal);
         Assert.True(composed.Length < 20_000);
     }
+
+    [Fact]
+    public void AppendMemoryCreatesFileAndAccumulatesEntries()
+    {
+        using var directory = new TestDirectory();
+        var store = new ProjectContextStore(directory.Path);
+
+        Assert.True(store.AppendMemory("## First\nsymptom -> cause -> fix").Appended);
+        Assert.True(store.AppendMemory("## Second\nanother lesson").Appended);
+
+        var content = File.ReadAllText(store.MemoryPath);
+        Assert.Contains("## First", content, StringComparison.Ordinal);
+        Assert.Contains("## Second", content, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AppendMemoryRejectsEmptyEntry(string? entry)
+    {
+        using var directory = new TestDirectory();
+        var store = new ProjectContextStore(directory.Path);
+
+        Assert.False(store.AppendMemory(entry).Appended);
+    }
+
+    [Fact]
+    public void AppendMemoryRefusesToGrowPastTheContextCap()
+    {
+        using var directory = new TestDirectory();
+        var store = new ProjectContextStore(directory.Path);
+        Assert.True(store.AppendMemory(new string('x', 15 * 1024)).Appended);
+
+        var overflow = store.AppendMemory(new string('y', 2 * 1024));
+
+        Assert.False(overflow.Appended);
+        Assert.Contains("cap", overflow.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

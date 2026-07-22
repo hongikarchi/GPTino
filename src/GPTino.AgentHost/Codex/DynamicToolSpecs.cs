@@ -165,6 +165,22 @@ internal static class DynamicToolSpecs
                         },
                         required = new[] { "name" },
                         additionalProperties = false
+                    }),
+                Function(
+                    "memory_append",
+                    "Append a durable note to this project's MEMORY.md (append-only, folded into every future session for " +
+                    "this project). Use ONLY for a non-obvious, reusable lesson: a symptom -> cause -> fix, a hard project " +
+                    "constraint, or a convention the user confirmed. One concise entry; never restate the obvious, the " +
+                    "current task, or code the repo already records. Refused if MEMORY.md is near its size cap.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            entry = new { type = "string", description = "Markdown note to append, e.g. a short '## Title' with symptom/cause/fix lines." }
+                        },
+                        required = new[] { "entry" },
+                        additionalProperties = false
                     })
             }
         }

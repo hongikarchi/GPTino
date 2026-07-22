@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 
 namespace GPTino.AgentHost.Hosting;
 
@@ -28,9 +27,14 @@ internal static class AgentHostArguments
         var grasshopperPath = AgentHostOptions.NormalizeDocumentPath(
             Value("grasshopper") ?? configuration[$"{AgentHostOptions.SectionName}:GrasshopperPath"]);
         var projectIdText = Value("project-id") ?? configuration[$"{AgentHostOptions.SectionName}:ProjectId"];
+        // ProjectId is a runtime-tuple identity minted by the plugin (GptinoRuntimeHost.CreateProjectId) and
+        // always supplied via --project-id on a bridge launch. It is NOT derived from file paths any more, so
+        // there is no path-based fallback to reconstruct here: a standalone/config launch without --project-id
+        // just gets a fresh id (it has no plugin peer to agree with). A path hash here would only ever fail the
+        // plugin's project_mismatch check.
         var projectId = Guid.TryParse(projectIdText, out var parsedProjectId)
             ? parsedProjectId
-            : StableProjectId(rhinoPath, grasshopperPath);
+            : Guid.NewGuid();
         var parentText = Value("parent-process-id");
         var rhinoDocumentSerialText = Value("rhino-document-serial")
             ?? configuration[$"{AgentHostOptions.SectionName}:RhinoDocumentSerial"];
@@ -58,13 +62,5 @@ internal static class AgentHostArguments
         };
 
         string? Value(string key) => values.TryGetValue(key, out var value) ? value : null;
-    }
-
-    private static Guid StableProjectId(string? rhinoPath, string? grasshopperPath)
-    {
-        var value = $"{AgentHostOptions.CanonicalDocumentIdentity(rhinoPath)}\n" +
-            AgentHostOptions.CanonicalDocumentIdentity(grasshopperPath);
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
-        return new Guid(hash.AsSpan(0, 16));
     }
 }

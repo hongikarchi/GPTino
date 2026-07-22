@@ -126,6 +126,40 @@ public sealed class ProjectContextStore : IThreadInstructionComposer
         }
     }
 
+    /// <summary>
+    /// Appends an agent-authored entry to the append-only project MEMORY.md. A single File.AppendAllText, so
+    /// it interleaves safely with the user hand-editing the same file, and it refuses to grow past the context
+    /// cap so the folded memory never overflows a thread's instruction budget. Never throws for the caller:
+    /// I/O problems are returned as a failed result, matching the "context must never block a thread" rule.
+    /// </summary>
+    public MemoryAppendResult AppendMemory(string? entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry))
+        {
+            return new MemoryAppendResult(false, "The memory entry is empty.");
+        }
+        var trimmed = entry.Trim();
+        try
+        {
+            Directory.CreateDirectory(ContextDirectory);
+            var existing = File.Exists(MemoryPath) ? File.ReadAllText(MemoryPath) : string.Empty;
+            if (existing.Length + trimmed.Length + 2 > MaximumContextFileCharacters)
+            {
+                return new MemoryAppendResult(
+                    false,
+                    $"MEMORY.md is near the {MaximumContextFileCharacters}-character cap; consolidate or remove " +
+                    "stale entries before appending.");
+            }
+            var separator = existing.Length == 0 || existing.EndsWith('\n') ? "\n" : "\n\n";
+            File.AppendAllText(MemoryPath, separator + trimmed + "\n");
+            return new MemoryAppendResult(true, "Appended to project memory (MEMORY.md).");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new MemoryAppendResult(false, $"Could not write project memory: {exception.Message}");
+        }
+    }
+
     private static void WriteIfAbsent(string path, string content)
     {
         if (!File.Exists(path))
@@ -134,3 +168,5 @@ public sealed class ProjectContextStore : IThreadInstructionComposer
         }
     }
 }
+
+public sealed record MemoryAppendResult(bool Appended, string Message);
