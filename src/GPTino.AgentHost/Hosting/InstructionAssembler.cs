@@ -65,10 +65,12 @@ public static class HouseRules
         - Python component IO, in this order within one contiguous ChangeSet:
           1) updatePythonSource first — the script must reference every input variable by name and coerce it
              (count = int(count); spacing = float(spacing)), because sockets are generic (name-bound, not
-             strictly typed). Assign outputs to variables named after the output sockets.
+             strictly typed). Assign outputs to variables named after the output sockets. updatePythonSource
+             only stages the source and never runs the script (so referencing not-yet-created input sockets is
+             safe); the recompute happens at executePython.
           2) setComponentIo second — append sockets whose names exactly match the script's input/output variables.
              Type hints are advisory (sockets are generic); set access (item/list/tree) correctly for list inputs.
-          3) executePython last.
+          3) executePython last — this performs the single recompute after sockets exist and inputs are wired.
           Read current sockets first with one scoped snapshot_read (scope wireify:<component-guid>); preserve every
           existing socket UUID and order; only appended sockets get new UUIDs.
         - Acceptance predicate kinds are exactly: fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent |

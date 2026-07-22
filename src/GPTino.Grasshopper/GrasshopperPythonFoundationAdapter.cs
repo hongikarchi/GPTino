@@ -105,11 +105,13 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
             throw;
         }
 
-        if (request.ExpireSolution)
-        {
-            component.ExpireSolution(recompute: false);
-            document.NewSolution(expireAllObjects: false);
-        }
+        // Never recompute the document here, even when ExpireSolution is requested. Within a
+        // source -> setComponentIo -> execute ChangeSet, running the script before the schema
+        // adds its input sockets raises "name '<input>' is not defined" (the socket, and thus the
+        // script variable, does not exist yet). We only mark the component dirty; the explicit
+        // executePython operation performs the single recompute after sockets exist and inputs
+        // are wired.
+        component.ExpireSolution(recompute: false);
 
         var after = ReadState(component);
         return Task.FromResult(new WireifyMutationResult(
