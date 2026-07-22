@@ -13,7 +13,7 @@ internal static class DynamicToolSpecs
         "setGroup=canvas.setGroup {operationId,groupId,name,objectIds,argbColor}; " +
         "updatePythonSource=python.setSource {operationId,componentId,expectedSourceSha256,source,runtime:cpython3|ironPython2,expireSolution}; " +
         "setComponentIo=python.setSchema {operationId,componentId,inputs,outputs,preserveIncidentWires}; " +
-        "Python schema may append sockets only: preserve every existing socket UUID and order, and assign a new non-empty UUID to each appended socket; socket removal is unsupported; " +
+        "Python schema may append sockets only (socket removal is unsupported): list every existing socket in order followed by appended sockets. Socket UUIDs are managed by the server: existing sockets keep their id and appended sockets are assigned one, so any placeholder UUID you supply is reconciled by position — you only control each socket's name, access, and (advisory) type; " +
         "convertSocket=python.setTyping {operationId,componentId,inputParameterId,typeHint,access:item|list|tree}; " +
         "executePython=python.execute {operationId,componentId,expireUpstream,recomputeDocument}; " +
         "readRuntimeMessages=python.runtimeMessages {componentId}; " +

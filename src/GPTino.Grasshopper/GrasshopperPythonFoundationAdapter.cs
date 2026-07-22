@@ -137,12 +137,19 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         var inputs = ReadParameterObjects(component, "Inputs");
         var outputs = ReadParameterObjects(component, "Outputs");
         ValidateSchema(request.Inputs, request.Outputs);
-        ValidateAppendOnlySchema(inputs, request.Inputs, "input");
-        ValidateAppendOnlySchema(outputs, request.Outputs, "output");
-        var initialPlans = PrepareSchema(inputs, request.Inputs.Take(inputs.Count).ToArray())
-            .Concat(PrepareSchema(outputs, request.Outputs.Take(outputs.Count).ToArray()))
+        // The model does not manage socket UUIDs: they belong to Grasshopper (existing sockets
+        // keep their id; a fresh script component's default socket has an id the model cannot
+        // know without reading it). Reconcile the requested list to the ACTUAL socket ids by
+        // position, so the model only controls each socket's name/access/type. This removes the
+        // "socket identity changed" friction where the model's declared UUID did not match.
+        var requestedInputs = ReconcileSocketIds(inputs, request.Inputs);
+        var requestedOutputs = ReconcileSocketIds(outputs, request.Outputs);
+        ValidateAppendOnlySchema(inputs, requestedInputs, "input");
+        ValidateAppendOnlySchema(outputs, requestedOutputs, "output");
+        var initialPlans = PrepareSchema(inputs, requestedInputs.Take(inputs.Count).ToArray())
+            .Concat(PrepareSchema(outputs, requestedOutputs.Take(outputs.Count).ToArray()))
             .ToArray();
-        if (inputs.Count == request.Inputs.Count && outputs.Count == request.Outputs.Count &&
+        if (inputs.Count == requestedInputs.Count && outputs.Count == requestedOutputs.Count &&
             initialPlans.All(plan => plan.IsNoOp))
         {
             return Task.FromResult(new WireifyMutationResult(
@@ -159,20 +166,24 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         document.UndoUtil.RecordGenericObjectEvent($"GPTino: {request.OperationId}", component);
         try
         {
-            AppendMissingParameters(component, GH_ParameterSide.Input, inputs.Count, request.Inputs, additions);
-            AppendMissingParameters(component, GH_ParameterSide.Output, outputs.Count, request.Outputs, additions);
+            AppendMissingParameters(component, GH_ParameterSide.Input, inputs.Count, requestedInputs, additions);
+            AppendMissingParameters(component, GH_ParameterSide.Output, outputs.Count, requestedOutputs, additions);
             inputs = ReadParameterObjects(component, "Inputs");
             outputs = ReadParameterObjects(component, "Outputs");
-            plans = PrepareSchema(inputs, request.Inputs)
-            .Concat(PrepareSchema(outputs, request.Outputs))
+            // Re-reconcile against the full post-append socket set so name/access plans always
+            // target the actual socket id, regardless of the id Grasshopper assigned on append.
+            requestedInputs = ReconcileSocketIds(inputs, requestedInputs);
+            requestedOutputs = ReconcileSocketIds(outputs, requestedOutputs);
+            plans = PrepareSchema(inputs, requestedInputs)
+            .Concat(PrepareSchema(outputs, requestedOutputs))
             .ToArray();
             foreach (var plan in plans)
             {
                 ApplyPlan(plan);
             }
             SynchronizeParameters(component);
-            VerifySocketIdentity(inputs, request.Inputs);
-            VerifySocketIdentity(outputs, request.Outputs);
+            VerifySocketIdentity(inputs, requestedInputs);
+            VerifySocketIdentity(outputs, requestedOutputs);
             VerifyWireState(wireState);
         }
         catch (Exception mutationFailure)
@@ -551,6 +562,17 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
             throw new InvalidOperationException("Python socket variable names must be unique.");
         }
     }
+
+    // Rewrites each requested socket's ParameterId to the actual socket id at the same position,
+    // so socket UUIDs are owned by Grasshopper, not the model. Positions beyond the actual sockets
+    // (to be appended) keep their requested id.
+    private static IReadOnlyList<PythonParameter> ReconcileSocketIds(
+        IReadOnlyList<ScriptParameterObject> actual,
+        IReadOnlyList<PythonParameter> requested) =>
+        requested
+            .Select((parameter, index) =>
+                index < actual.Count ? parameter with { ParameterId = actual[index].ParameterId } : parameter)
+            .ToArray();
 
     private static void ValidateAppendOnlySchema(
         IReadOnlyList<ScriptParameterObject> actual,
