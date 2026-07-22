@@ -187,7 +187,9 @@ public sealed class GptinoPlugIn : PlugIn
     {
         if (!args.ExportSelected)
         {
-            GptinoRuntimeHost.Instance.ObserveRhinoDocument(args.DocumentSerialNumber);
+            // Pass args.FileName (the authoritative save target) rather than reading RhinoDoc.Path, which
+            // can still report the pre-Save-As path at EndSaveDocument time and would register a stale path.
+            GptinoRuntimeHost.Instance.ObserveRhinoDocument(args.DocumentSerialNumber, args.FileName);
         }
     }
 

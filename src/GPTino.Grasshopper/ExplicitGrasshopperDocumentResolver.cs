@@ -26,20 +26,12 @@ public sealed class ExplicitGrasshopperDocumentResolver :
                 $"Grasshopper document {target.GrasshopperDocumentId:D} is not registered.");
         }
 
-        if (!document.IsFilePathDefined || !PathsEqual(document.FilePath, target.GrasshopperPath))
-        {
-            throw new GrasshopperDocumentUnavailableException(
-                $"Grasshopper path does not match target {target.StableTargetKey()}.");
-        }
-
-        var rhinoDocument = global::Rhino.RhinoDoc.FromRuntimeSerialNumber(target.RhinoDocumentSerial)
+        // Identity is the GH DocumentID (resolved above) plus the paired RhinoDoc serial — not the file
+        // paths. A Save As changes FilePath while the DocumentID is unchanged, so paths are mutable metadata.
+        // Still require the paired Rhino document to be open as a liveness invariant.
+        _ = global::Rhino.RhinoDoc.FromRuntimeSerialNumber(target.RhinoDocumentSerial)
             ?? throw new GrasshopperDocumentUnavailableException(
                 $"Paired Rhino document {target.RhinoDocumentSerial} is not open.");
-        if (!PathsEqual(rhinoDocument.Path, target.RhinoPath))
-        {
-            throw new GrasshopperDocumentUnavailableException(
-                $"Paired Rhino path does not match target {target.StableTargetKey()}.");
-        }
 
         return document;
     }
@@ -53,19 +45,6 @@ public sealed class ExplicitGrasshopperDocumentResolver :
             throw new GrasshopperDocumentUnavailableException(
                 $"Target {target.StableTargetKey()} belongs to a different Rhino process.");
         }
-    }
-
-    private static bool PathsEqual(string? left, string right)
-    {
-        if (string.IsNullOrWhiteSpace(left))
-        {
-            return false;
-        }
-
-        return string.Equals(
-            Path.GetFullPath(left),
-            Path.GetFullPath(right),
-            StringComparison.OrdinalIgnoreCase);
     }
 }
 

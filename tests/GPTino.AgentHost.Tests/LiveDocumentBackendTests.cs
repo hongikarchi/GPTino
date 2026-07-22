@@ -61,6 +61,28 @@ public sealed class LiveDocumentBackendTests
     }
 
     [Fact]
+    public async Task ReRegistrationWithChangedPathsIsAcceptedForSamePair()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        // Simulate a Save As / rename: same live pair (ProjectId, RhinoDoc serial, GH DocumentID), only the
+        // file paths change. The AgentHost must accept the re-registration in place instead of rejecting it,
+        // so the binding — and all live session/codex state — survives the rename.
+        var renamed = harness.Target with
+        {
+            RhinoPath = Path.Combine(Path.GetTempPath(), "renamed", "TEST 1.3dm"),
+            GrasshopperPath = Path.Combine(Path.GetTempPath(), "renamed", "TEST 1.gh"),
+        };
+
+        var response = await harness.RegisterAsync(renamed);
+
+        Assert.Equal(BridgeMessageKind.Response, response.Kind);
+        Assert.Equal(BridgeMessageTypes.DocumentRegistered, response.PayloadType);
+        Assert.True(harness.Backend.IsConnected);
+        Assert.Equal(harness.Target.Identity, harness.Backend.CurrentTarget?.Identity);
+        Assert.Equal(renamed.RhinoPath, harness.Backend.CurrentTarget?.RhinoPath);
+    }
+
+    [Fact]
     public async Task SnapshotRequestCompletesOnlyForMatchingCorrelation()
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync();

@@ -125,20 +125,36 @@ public sealed class GptinoRuntimeHost : IDisposable
         _ = new ExplicitRhinoDocumentResolver().Resolve(target);
 
         DocumentTarget registered;
+        DetachedRuntime? detached = null;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_targets.Values.Any(existing => existing.ProjectId != target.ProjectId) ||
-                _bootstrapProjectId is { } bootstrapProjectId && bootstrapProjectId != target.ProjectId)
+            var boundToDifferentProject =
+                _targets.Values.Any(existing => existing.ProjectId != target.ProjectId) ||
+                _bootstrapProjectId is { } bootstrapProjectId && bootstrapProjectId != target.ProjectId;
+            if (boundToDifferentProject)
             {
-                throw new InvalidOperationException(
-                    "This GPTino runtime is already bound to another Rhino/Grasshopper file pair.");
+                // The observed file pair changed identity (Save As, rename, or close+reopen). Rebind to
+                // the new pair instead of staying bound to a pair that no longer exists: drop the stale
+                // targets and tear down the old AgentHost so the new pair can bootstrap cleanly. Without
+                // this a single Save As permanently strands the session on a dead AgentHost.
+                foreach (var staleKey in _targets.Keys.ToArray())
+                {
+                    _targets.TryRemove(staleKey, out _);
+                }
+                detached = DetachRuntimeLocked("Rebinding to the current Rhino/Grasshopper file pair.");
+                ResetAutomaticRestartPolicyLocked();
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "runtime-rebind",
+                    $"project={target.ProjectId:D}");
             }
             registered = _targets.AddOrUpdate(
                 target.StableTargetKey(),
                 target,
                 (_, current) => target.Generation >= current.Generation ? target : current);
         }
+        StopDetachedRuntime(detached);
         EnsureBootstrap(registered);
         QueueRegistration(registered);
     }
@@ -148,7 +164,16 @@ public sealed class GptinoRuntimeHost : IDisposable
     /// Rhino document and one saved GH document have been observed; otherwise explicit registration
     /// remains required.
     /// </summary>
-    public void ObserveRhinoDocument(uint documentSerial)
+    public void ObserveRhinoDocument(uint documentSerial) =>
+        ObserveRhinoDocument(documentSerial, explicitPath: null);
+
+    /// <param name="explicitPath">
+    /// The authoritative file path from a save event (DocumentSaveEventArgs.FileName). Preferred over
+    /// RhinoDoc.Path because at EndSaveDocument the document's Path can still report the pre-Save-As value,
+    /// which would register (and display) a stale path even though the live binding — keyed on the runtime
+    /// serial — is correct. Null for open/panel observations, which read the current Path.
+    /// </param>
+    public void ObserveRhinoDocument(uint documentSerial, string? explicitPath)
     {
         if (documentSerial == 0)
         {
@@ -156,18 +181,23 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
 
         var document = global::Rhino.RhinoDoc.FromRuntimeSerialNumber(documentSerial);
-        if (document is null || string.IsNullOrWhiteSpace(document.Path))
+        if (document is null)
         {
             return;
         }
 
-        var normalizedPath = Path.GetFullPath(document.Path);
-        bool pathChanged;
+        var rawPath = !string.IsNullOrWhiteSpace(explicitPath) && Path.IsPathFullyQualified(explicitPath)
+            ? explicitPath
+            : document.Path;
+        if (string.IsNullOrWhiteSpace(rawPath) || !Path.IsPathFullyQualified(rawPath))
+        {
+            return;
+        }
+
+        var normalizedPath = Path.GetFullPath(rawPath);
         int observedCount;
         lock (_observationGate)
         {
-            pathChanged = _observedRhinoDocuments.TryGetValue(documentSerial, out var previousPath) &&
-                !PathsEqual(previousPath, normalizedPath);
             _observedRhinoDocuments[documentSerial] = normalizedPath;
             observedCount = _observedRhinoDocuments.Count;
         }
@@ -175,12 +205,9 @@ public sealed class GptinoRuntimeHost : IDisposable
             "Rhino",
             "rhino-document-observed",
             $"serial={documentSerial};count={observedCount}");
-        if (pathChanged)
-        {
-            RemoveTargets(
-                target => target.RhinoDocumentSerial == documentSerial,
-                "Rhino document path changed.");
-        }
+        // A Save As / rename changes document.Path but NOT the runtime serial, so the live pair identity is
+        // unchanged. Re-register in place (path metadata refreshed, same ProjectId/serial/generation) rather
+        // than tearing the target down — the bound AgentHost stays alive and session/codex state is preserved.
         TryRegisterUnambiguousPair();
     }
 
@@ -192,12 +219,9 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
 
         var normalizedPath = Path.GetFullPath(filePath);
-        bool pathChanged;
         int observedCount;
         lock (_observationGate)
         {
-            pathChanged = _observedGrasshopperDocuments.TryGetValue(documentId, out var previousPath) &&
-                !PathsEqual(previousPath, normalizedPath);
             _observedGrasshopperDocuments[documentId] = normalizedPath;
             observedCount = _observedGrasshopperDocuments.Count;
         }
@@ -205,12 +229,8 @@ public sealed class GptinoRuntimeHost : IDisposable
             "Rhino",
             "grasshopper-document-observed",
             $"id={documentId:D};count={observedCount}");
-        if (pathChanged)
-        {
-            RemoveTargets(
-                target => target.GrasshopperDocumentId == documentId,
-                "Grasshopper document path changed.");
-        }
+        // Save As of the .gh changes its path but keeps the same GH DocumentID, so the live pair is unchanged.
+        // Re-register in place instead of tearing the target down (keeps the AgentHost and its state alive).
         TryRegisterUnambiguousPair();
     }
 
@@ -288,6 +308,33 @@ public sealed class GptinoRuntimeHost : IDisposable
         };
         uri = builder.Uri;
         return true;
+    }
+
+    /// <summary>
+    /// Reports the current AgentHost UI base URI for a panel's document serial without consuming a
+    /// bootstrap nonce. The panel polls this to detect when the live endpoint changes (a rebind spawns
+    /// a fresh AgentHost on a new port) so it can re-navigate instead of staying on the dead old port.
+    /// </summary>
+    public bool TryGetActivePanelBaseUri(uint documentSerial, out Uri baseUri)
+    {
+        baseUri = null!;
+        if (documentSerial == 0)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            var target = _targets.Values.FirstOrDefault(candidate =>
+                candidate.ProjectId == _bootstrapProjectId &&
+                candidate.RhinoDocumentSerial == documentSerial);
+            if (target is null || _bootstrapper?.UiBaseUri is not { } uri)
+            {
+                return false;
+            }
+            baseUri = uri;
+            return true;
+        }
     }
 
     public DocumentPipeClient CreateBridgeClient()
@@ -1378,6 +1425,7 @@ public sealed class GptinoRuntimeHost : IDisposable
 
     private void TryRegisterUnambiguousPair()
     {
+        DocumentTarget target;
         lock (_observationGate)
         {
             DevelopmentDiagnosticTrace.TryWrite(
@@ -1392,31 +1440,41 @@ public sealed class GptinoRuntimeHost : IDisposable
             var rhinoPair = _observedRhinoDocuments.Single();
             var grasshopperPair = _observedGrasshopperDocuments.Single();
             using var process = Process.GetCurrentProcess();
-            var target = DocumentRuntimeTarget.Create(
-                CreateProjectId(rhinoPair.Value, grasshopperPair.Value),
+            var startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            target = DocumentRuntimeTarget.Create(
+                CreateProjectId(process.Id, startedAt.UtcTicks, rhinoPair.Key, grasshopperPair.Key),
                 process.Id,
-                new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero),
+                startedAt,
                 rhinoPair.Key,
                 grasshopperPair.Key,
                 rhinoPair.Value,
                 grasshopperPair.Value);
-            RegisterDocument(target);
         }
+
+        // Register outside _observationGate: rebinding may tear down the previous AgentHost
+        // (up to a 2s process wait), which must not stall concurrent document observation.
+        RegisterDocument(target);
     }
 
-    private static Guid CreateProjectId(string rhinoPath, string grasshopperPath)
+    // ProjectId identifies the LIVE document pair by its stable runtime identity — the Rhino process,
+    // the RhinoDoc runtime serial, and the Grasshopper DocumentID — NOT by file paths. This makes it
+    // invariant across a Save As / rename, so the AgentHost binding is not torn down when a path changes.
+    // (It is a per-Rhino-session token; the persistent context folder is keyed separately by path.)
+    private static Guid CreateProjectId(
+        int rhinoProcessId,
+        long rhinoProcessStartTicks,
+        uint rhinoDocumentSerial,
+        Guid grasshopperDocumentId)
     {
-        var canonical = $"{Path.GetFullPath(rhinoPath).ToUpperInvariant()}\n" +
-            Path.GetFullPath(grasshopperPath).ToUpperInvariant();
+        var canonical = string.Join(
+            '\n',
+            rhinoProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            rhinoProcessStartTicks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            rhinoDocumentSerial.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            grasshopperDocumentId.ToString("D"));
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
         return new Guid(hash.AsSpan(0, 16));
     }
-
-    private static bool PathsEqual(string left, string right) =>
-        string.Equals(
-            Path.GetFullPath(left),
-            Path.GetFullPath(right),
-            StringComparison.OrdinalIgnoreCase);
 
     private static string? TryReadOperationId(BridgeFrame frame)
     {

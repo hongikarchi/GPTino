@@ -817,20 +817,82 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         }
     }
 
+    // RhinoCode ships a built-in value converter per geometry/data type
+    // (RhinoCodePlatform.Rhino3D.Languages.GH1.Converters.*). Each has a public parameterless constructor
+    // and a REGISTERED taxonomy, so attaching one coerces incoming Grasshopper data to the Rhino type
+    // (e.g. GH_Point/Guid -> Point3d) and — unlike a synthesized custom ParamConverterIdentity — does NOT
+    // trip SpecTaxonomy.EnsureSpecific ("Developer must be specific"). We attach converters only for
+    // GEOMETRY hints; scalar inputs from sliders stay generic and are coerced in-script (int()/float()),
+    // preserving the working slider path and the unwired-value == None defensive guard.
+    private const string ConverterNamespace = "RhinoCodePlatform.Rhino3D.Languages.GH1.Converters";
+
+    private static readonly IReadOnlyDictionary<string, string> GeometryConverterByHint =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["point3d"] = "Point3dConverter", ["point"] = "Point3dConverter",
+            ["vector3d"] = "Vector3dConverter", ["vector"] = "Vector3dConverter",
+            ["line"] = "LineConverter",
+            ["curve"] = "CurveConverter",
+            ["circle"] = "CircleConverter",
+            ["arc"] = "ArcConverter",
+            ["plane"] = "PlaneConverter",
+            ["polyline"] = "PolylineConverter",
+            ["rectangle3d"] = "Rectangle3dConverter", ["rectangle"] = "Rectangle3dConverter",
+            ["box"] = "BoxConverter",
+            ["brep"] = "BrepConverter",
+            ["mesh"] = "MeshConverter",
+            ["surface"] = "SurfaceConverter",
+            ["geometry"] = "GeometryBaseConverter", ["geometrybase"] = "GeometryBaseConverter",
+            ["guid"] = "GuidConverter",
+            ["interval"] = "IntervalConverter",
+            ["transform"] = "TransformConverter",
+        };
+
+    private static readonly IReadOnlyDictionary<string, string> HintByConverterType =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Point3dConverter"] = "point3d", ["Vector3dConverter"] = "vector3d",
+            ["LineConverter"] = "line", ["CurveConverter"] = "curve", ["CircleConverter"] = "circle",
+            ["ArcConverter"] = "arc", ["PlaneConverter"] = "plane", ["PolylineConverter"] = "polyline",
+            ["Rectangle3dConverter"] = "rectangle3d", ["BoxConverter"] = "box", ["BrepConverter"] = "brep",
+            ["MeshConverter"] = "mesh", ["SurfaceConverter"] = "surface",
+            ["GeometryBaseConverter"] = "geometry", ["GuidConverter"] = "guid",
+            ["IntervalConverter"] = "interval", ["TransformConverter"] = "transform",
+        };
+
+    private static Assembly? _rhino3dAssembly;
+
     private static object? PrepareConverter(PropertyInfo property, object parameter, string typeHint)
     {
-        // Do NOT attach a custom RhinoCode cast converter. RhinoCode's ParamConverterIdentity
-        // constructor calls SpecTaxonomy.EnsureSpecific(), which rejects any taxonomy that is not
-        // registered in its spec registry — so a synthesized "gptino/<type>" taxonomy throws
-        // "Developer must be specific" (verified via bridge diagnostics). This broke typed sockets
-        // for every type, including primitives. Instead we leave sockets GENERIC: the socket is
-        // bound by its variable name and the Python script coerces inputs (int(count),
-        // float(spacing)). The type hint is advisory only; Access (item/list/tree) is still
-        // applied separately, so list/tree inputs keep working.
         _ = property;
         _ = parameter;
-        _ = typeHint;
-        return null;
+        if (string.IsNullOrWhiteSpace(typeHint) ||
+            !GeometryConverterByHint.TryGetValue(typeHint.Trim(), out var converterTypeName))
+        {
+            return null;
+        }
+        var converterType = ResolveConverterType(converterTypeName);
+        if (converterType is null)
+        {
+            return null;
+        }
+        try
+        {
+            return Activator.CreateInstance(converterType);
+        }
+        catch
+        {
+            // Never let a converter failure break schema editing; degrade to a generic socket.
+            return null;
+        }
+    }
+
+    private static Type? ResolveConverterType(string simpleName)
+    {
+        var assembly = _rhino3dAssembly ??= AppDomain.CurrentDomain.GetAssemblies()
+            .FirstOrDefault(a => string.Equals(
+                a.GetName().Name, "RhinoCodePlatform.Rhino3D", StringComparison.Ordinal));
+        return assembly?.GetType($"{ConverterNamespace}.{simpleName}");
     }
 
     private static Type ResolveSafeType(string typeHint, bool allowObject)
@@ -869,6 +931,12 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         if (converter is null)
         {
             return "object";
+        }
+        // Round-trip built-in geometry converters back to the canonical hint we set them from, so
+        // snapshot_read reports a stable hint and no-op detection (ConverterEquivalent) is deterministic.
+        if (HintByConverterType.TryGetValue(converter.GetType().Name, out var canonicalHint))
+        {
+            return canonicalHint;
         }
         var typeName = converter.GetType().GetProperty("TypeName")?.GetValue(converter)?.ToString();
         if (!string.IsNullOrWhiteSpace(typeName))

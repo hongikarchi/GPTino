@@ -21,12 +21,8 @@ public sealed class ExplicitRhinoDocumentResolver : ICordycepsDocumentResolver<g
             throw new DocumentTargetUnavailableException("Rhino returned a different document serial.");
         }
 
-        if (!PathsEqual(document.Path, target.RhinoPath))
-        {
-            throw new DocumentTargetUnavailableException(
-                $"Rhino document path does not match target {target.StableTargetKey()}.");
-        }
-
+        // Identity is the runtime serial (verified above), not the file path. A Save As / rename changes
+        // document.Path while this stays the same live document, so the path is mutable metadata, not a gate.
         return document;
     }
 
@@ -39,19 +35,6 @@ public sealed class ExplicitRhinoDocumentResolver : ICordycepsDocumentResolver<g
             throw new DocumentTargetUnavailableException(
                 $"Target {target.StableTargetKey()} belongs to a different Rhino process.");
         }
-    }
-
-    private static bool PathsEqual(string? left, string right)
-    {
-        if (string.IsNullOrWhiteSpace(left))
-        {
-            return false;
-        }
-
-        return string.Equals(
-            Path.GetFullPath(left),
-            Path.GetFullPath(right),
-            StringComparison.OrdinalIgnoreCase);
     }
 }
 

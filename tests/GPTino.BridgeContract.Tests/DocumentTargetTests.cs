@@ -36,6 +36,45 @@ public sealed class DocumentTargetTests
         Assert.DoesNotContain("..", target.RhinoPath, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void TargetKey_IgnoresFilePaths_SoSaveAsPreservesIdentity()
+    {
+        var original = CreateTarget();
+        // A Save As / rename keeps the same live pair (Rhino process, RhinoDoc serial, GH DocumentID,
+        // ProjectId) and only changes the file paths. The stable key — and therefore the document target
+        // guard — must be unaffected, so the bound AgentHost survives the rename in place.
+        var renamed = DocumentRuntimeTarget.Create(
+            original.ProjectId,
+            original.RhinoProcessId,
+            original.RhinoProcessStartedAt,
+            original.RhinoDocumentSerial,
+            original.GrasshopperDocumentId,
+            Path.Combine(Path.GetTempPath(), "renamed", "TEST 1.3dm"),
+            Path.Combine(Path.GetTempPath(), "renamed", "TEST 1.gh"),
+            original.Generation);
+
+        Assert.Equal(original.StableTargetKey(), renamed.StableTargetKey());
+        DocumentTargetGuard.RequireCurrent(original, renamed);
+    }
+
+    [Fact]
+    public void TargetKey_ChangesWhenLiveIdentityChanges()
+    {
+        var original = CreateTarget();
+        // A genuinely different pair (different Grasshopper document) must still get a different key so the
+        // relaxed path handling does not let one AgentHost be rebound to the wrong live document.
+        var differentGrasshopperDocument = DocumentRuntimeTarget.Create(
+            original.ProjectId,
+            original.RhinoProcessId,
+            original.RhinoProcessStartedAt,
+            original.RhinoDocumentSerial,
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            original.RhinoPath,
+            original.GrasshopperPath);
+
+        Assert.NotEqual(original.StableTargetKey(), differentGrasshopperDocument.StableTargetKey());
+    }
+
     internal static DocumentTarget CreateTarget() =>
         DocumentRuntimeTarget.Create(
             Guid.Parse("bd368228-75d8-43a9-a67e-f50946b0a029"),

@@ -48,7 +48,11 @@ public static class DocumentRuntimeExtensions
         }
     }
 
-    /// <summary>Stable process/document/file identity. Generation is intentionally excluded.</summary>
+    /// <summary>
+    /// Stable process/document identity. Deliberately PATH-FREE: the RhinoDoc serial and Grasshopper
+    /// DocumentID uniquely identify the live pair, and a Save As / rename changes the file paths without
+    /// changing this key — so the AgentHost binding survives a rename in place. Generation is also excluded.
+    /// </summary>
     public static string StableTargetKey(this DocumentRuntime target)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -58,9 +62,7 @@ public static class DocumentRuntimeExtensions
             target.RhinoProcessId.ToString(CultureInfo.InvariantCulture),
             target.RhinoProcessStartedAt.UtcTicks.ToString(CultureInfo.InvariantCulture),
             target.RhinoDocumentSerial.ToString(CultureInfo.InvariantCulture),
-            target.GrasshopperDocumentId.ToString("D"),
-            DocumentRuntimeTarget.NormalizePath(target.RhinoPath).ToUpperInvariant(),
-            DocumentRuntimeTarget.NormalizePath(target.GrasshopperPath).ToUpperInvariant());
+            target.GrasshopperDocumentId.ToString("D"));
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }

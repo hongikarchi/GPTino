@@ -55,29 +55,36 @@ public static class HouseRules
           with canvas.create instead of searching the catalog. Number Slider values are set with canvas.setNumberSlider.
 
         Speed discipline (mandatory):
-        - Author a Python component's whole payload chain (create, setSource, optional setSchema/setTyping, execute)
-          in one deliberation, then submit the ChangeSets back to back without re-reading state in between.
+        - A Python component is authored as an ORDERED chain of ChangeSets. executePython is ALWAYS the last step
+          and the input sliders MUST be wired before it. Plan the whole chain in one deliberation, then submit:
+          1) createComponent for the script component AND every input Number Slider (one ChangeSet).
+          2) updatePythonSource + setComponentIo in ONE ChangeSet — DO NOT execute here. The script references
+             every input variable by name and coerces it DEFENSIVELY, because an input socket that is not yet wired
+             evaluates to None: count = int(count) if count is not None else <default>;
+             spacing = float(spacing) if spacing is not None else <default>. Assign outputs to variables named after
+             the output sockets. setComponentIo appends sockets whose names exactly match the script's input/output
+             variables; set access (item/list/tree) correctly. TYPE HINTS MATTER FOR GEOMETRY: a scalar from a
+             slider stays generic (leave typeHint object/int/double and coerce in-script), but ANY socket that
+             carries geometry — especially one wired to or from another component — MUST use the geometry type
+             hint (point3d, vector3d, line, curve, circle, arc, plane, polyline, box, brep, mesh, surface,
+             geometry) on BOTH the producing output and the consuming input, or the receiver gets an
+             untyped/Guid value and pt.X fails. updatePythonSource only stages the source and never runs it, so
+             referencing sockets that setComponentIo is about to create in the same ChangeSet is safe.
+          3) snapshot_read the component (scope wireify:<component-guid>) to read the Grasshopper-assigned input
+             socket UUIDs — they are NOT the placeholder ids you supplied, and you cannot wire without them. Never
+             reconstruct or guess a socket UUID.
+          4) createWire from each slider to its matching input socket (using the exact parameterId from step 3),
+             in ONE ChangeSet (wire writes only — a wire cannot share a ChangeSet with a Python source/IO/value
+             write). If a wire reports the parameter was not found, the error lists the available socket
+             name=id pairs — wire to that exact id.
+          5) executePython in its OWN final ChangeSet (a Python value write must be alone), AFTER the wires commit.
+             Executing a component whose inputs are still unwired (None) is a defect — that is why wiring is step 4
+             and execution is step 5.
         - After a job commits, job_status returns committed { snapshotId, revision, resources[].fingerprint }.
-          Base the next ChangeSet's expectedSnapshotId, baseSnapshotRevision, and write expectations on those values
-          instead of calling snapshot_read again.
+          Base the next ChangeSet's expectedSnapshotId, baseSnapshotRevision, and write expectations on those values;
+          the only mid-chain read you need is the step-3 snapshot_read for the server-assigned socket UUIDs.
         - If a submit is rejected or blocked as stale, the error message carries the current fingerprint or current
           snapshotId. Correct only those values and resubmit immediately; do not restart discovery.
-        - Python component IO, in this order within one contiguous ChangeSet:
-          1) updatePythonSource first — the script must reference every input variable by name and coerce it
-             (count = int(count); spacing = float(spacing)), because sockets are generic (name-bound, not
-             strictly typed). Assign outputs to variables named after the output sockets. updatePythonSource
-             only stages the source and never runs the script (so referencing not-yet-created input sockets is
-             safe); the recompute happens at executePython.
-          2) setComponentIo second — append sockets whose names exactly match the script's input/output variables.
-             Type hints are advisory (sockets are generic); set access (item/list/tree) correctly for list inputs.
-          3) executePython last — this performs the single recompute after sockets exist and inputs are wired.
-          Read current sockets first with one scoped snapshot_read (scope wireify:<component-guid>); list existing
-          sockets in order, then appended ones.
-        - After setComponentIo commits, the input socket UUIDs are Grasshopper-assigned and are NOT the placeholder
-          ids you supplied. Before wiring sliders into the component, snapshot_read the component (scope
-          wireify:<component-guid>) and use each input socket's exact parameterId from that read as the wire target.
-          Never reconstruct or guess a socket UUID; if a wire reports the parameter was not found, the error lists the
-          available socket name=id pairs — wire to that exact id.
         - Acceptance predicate kinds are exactly: fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent |
           objectExists | objectAbsent. No other spelling parses. For updatePythonSource/executePython use
           {"name":"no runtime errors","kind":"runtimeErrorAbsent","resource":null,"expectedValue":null}.

@@ -16,6 +16,7 @@ public sealed class GptinoPanel : Panel
     private readonly UITimer _readyTimer;
     private bool _navigated;
     private bool _wasVisible;
+    private Uri? _navigatedBaseUri;
 
     public GptinoPanel(uint documentSerialNumber)
     {
@@ -55,9 +56,17 @@ public sealed class GptinoPanel : Panel
 
     private void OnTimerTick()
     {
-        if (!_navigated)
+        // Re-navigate whenever the live AgentHost endpoint changes: on first ready, and again after a
+        // rebind (Save As / rename) spawns a fresh AgentHost on a new port. Without this the panel would
+        // stay pinned to the old, now-dead port and show a connection-refused page.
+        if (GptinoRuntimeHost.Instance.TryGetActivePanelBaseUri(_documentSerial, out var baseUri) &&
+            !Equals(baseUri, _navigatedBaseUri))
         {
             TryNavigateToAgentHost();
+            return;
+        }
+        if (!_navigated)
+        {
             return;
         }
         var visible = Visible && Width > 0 && Height > 0;
@@ -77,6 +86,8 @@ public sealed class GptinoPanel : Panel
 
         _webView.Url = uri;
         _navigated = true;
+        _ = GptinoRuntimeHost.Instance.TryGetActivePanelBaseUri(_documentSerial, out var baseUri);
+        _navigatedBaseUri = baseUri;
         return true;
     }
 

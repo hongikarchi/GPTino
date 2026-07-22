@@ -1090,24 +1090,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private void ValidateRegistration(DocumentRuntime target)
     {
+        // Identity is the opaque ProjectId (derived on the plugin side from the stable runtime tuple:
+        // Rhino process + RhinoDoc serial + GH DocumentID). File paths are mutable metadata and are NOT
+        // gated here — a Save As / rename re-registers the SAME pair with updated paths and must be accepted
+        // so the live binding survives. Stable-identity enforcement lives in StableTargetKey / one_target_only
+        // and the document resolvers; the persistent data directory stays frozen to the launch-time paths.
         if (target.ProjectId != _options.ProjectId)
         {
             throw new BridgeProtocolException(
                 "project_mismatch",
                 $"Bridge project {target.ProjectId:D} does not match AgentHost project {_options.ProjectId:D}.");
         }
-        if (!PathMatches(_options.RhinoPath, target.RhinoPath) ||
-            !PathMatches(_options.GrasshopperPath, target.GrasshopperPath))
-        {
-            throw new BridgeProtocolException(
-                "path_mismatch",
-                "Bridge document paths do not match this AgentHost's explicit file pair.");
-        }
     }
-
-    private static bool PathMatches(string? expected, string actual) =>
-        !string.IsNullOrWhiteSpace(expected) &&
-        string.Equals(Path.GetFullPath(expected), Path.GetFullPath(actual), StringComparison.OrdinalIgnoreCase);
 
     private void CloseTarget(BridgeFrame frame)
     {
