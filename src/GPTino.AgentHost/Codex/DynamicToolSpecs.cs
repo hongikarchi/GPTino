@@ -24,7 +24,10 @@ internal static class DynamicToolSpecs
         "Read operations use {objectId} for canvas/Rhino or {componentId} for Wireify. JSON property and enum names are camelCase. " +
         "Every operation read needs a readSet fingerprint and every write needs an exact writeSet expectation; unused expectations and extra payload-unrelated writes are rejected. " +
         "Every typed read operation must keep its writes empty; a read-only ChangeSet also keeps writeSet empty, while a mixed ChangeSet uses writeSet only for its write operations. Canvas points require exactly x/y and Rhino points or vectors exactly x/y/z. " +
-        "Use field='*' and canonical lowercase UUIDs: D format for object resources and N-format endpoints for wires. " +
+        "Use field='*' and canonical lowercase UUIDs: D format (8-4-4-4-12 with dashes) for object resources. " +
+        "A wire's writeSet resource id is the exact string sourceObjectId/sourceParameterId>targetObjectId/targetParameterId " +
+        "where each id is N format (32 hex, no dashes) — same guids as the wire payload. If a payload-alignment error " +
+        "reports the expected id, declare that exact string and resubmit. " +
         "Write domains are exact: move/layout=grasshopperComponentLayout; Number Slider setValue=grasshopperComponentValue; component create/delete=grasshopperComponent; wire=grasshopperWire; group=grasshopperGroup; " +
         "Python source/schema-or-typing/execute=grasshopperComponentSource/grasshopperComponentIo/grasshopperComponentValue; every Rhino mutation=rhinoObject. " +
         "Python source/I/O/value writes share runtime-sensitive whole-component state: one ChangeSet may write exactly one Python component, those writes must be contiguous, no other writes may be mixed in, and every writeSet entry uses the same inspected starting fingerprint. " +

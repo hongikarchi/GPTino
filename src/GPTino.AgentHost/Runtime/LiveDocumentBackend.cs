@@ -2638,9 +2638,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             targets.Any(target => !declared.Any(resource =>
                 Guid.TryParse(resource.Id, out var id) && id == target)))
         {
+            var expected = string.Join(", ", targets.Select(id => $"{kind} id='{id:D}' field='*'"));
             throw new InvalidOperationException(
                 $"Operation '{operation.OperationId}' payload targets do not match its declared " +
-                $"{(write ? "write" : "read")} resources.");
+                $"{(write ? "write" : "read")} resources. Declare exactly: {expected}.");
         }
     }
 
@@ -2658,7 +2659,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             throw new InvalidOperationException(
                 $"Operation '{operation.OperationId}' payload target does not match its declared " +
-                $"{(write ? "write" : "read")} resource.");
+                $"{(write ? "write" : "read")} resource. Declare exactly one {allowedKinds[0]} resource with " +
+                $"id='{target:D}' and field='*'.");
         }
     }
 
@@ -2677,7 +2679,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             throw new InvalidOperationException(
                 $"Operation '{operation.OperationId}' payload target does not match its declared " +
-                $"{(write ? "write" : "read")} resource.");
+                $"{(write ? "write" : "read")} resource. Declare exactly one {kind} resource with " +
+                $"id='{target}' and field='*' (this exact string, derived from the payload).");
         }
     }
 
