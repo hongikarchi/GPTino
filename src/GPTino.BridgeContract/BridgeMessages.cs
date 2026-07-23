@@ -41,14 +41,23 @@ public sealed record DocumentRegisteredResponse(
 public sealed record DocumentClosedEvent(string Reason, long LastGeneration);
 
 /// <summary>
-/// Rhino-to-AgentHost push describing the user's current Rhino selection. Ids only —
-/// no geometry — so the event stays cheap under rapid selection changes. Selection ids
-/// are a discovery hint, never a snapshot fingerprint substitute.
+/// Rhino-to-AgentHost push describing the user's current selection in BOTH documents of the
+/// bound pair. Ids and display names only — no geometry — so the event stays cheap under rapid
+/// selection changes. Selection is a discovery hint, never a snapshot fingerprint substitute,
+/// and is deliberately kept OUT of canvas object fingerprints so clicking around never
+/// invalidates optimistic concurrency.
 /// </summary>
 public sealed record SelectionChangedEvent(
     IReadOnlyList<Guid> RhinoObjectIds,
     string? ActiveLayerName,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    IReadOnlyList<GrasshopperSelectedObject>? GrasshopperObjects = null);
+
+/// <summary>One selected Grasshopper canvas object, captured by the .gha-side watcher.</summary>
+public sealed record GrasshopperSelectedObject(
+    Guid ObjectId,
+    string Name,
+    string NickName);
 
 public sealed record BridgeHealthRequest(string ProbeId);
 

@@ -189,6 +189,15 @@ public sealed class RuntimeStateProjector
                         .Select(id => id.ToString("D"))
                         .ToArray(),
                     activeLayer = selection.ActiveLayerName,
+                    grasshopperObjectCount = selection.GrasshopperObjects?.Count ?? 0,
+                    grasshopperObjects = (selection.GrasshopperObjects ?? [])
+                        .Take(32)
+                        .Select(item => new
+                        {
+                            id = item.ObjectId.ToString("D"),
+                            nickName = string.IsNullOrWhiteSpace(item.NickName) ? item.Name : item.NickName
+                        })
+                        .ToArray(),
                     observedAt = selection.ObservedAt
                 }
                 : null,

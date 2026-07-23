@@ -10,7 +10,8 @@ public static class BridgeProtocol
     // stale AgentHost surviving an upgrade; both ends must compute the key identically.
     // v4: CanvasOutputParameterInspection gained SampleValues. JsonOptions disallow unmapped members,
     // so any payload-shape change MUST bump this version or skew fails as an opaque JsonException.
-    public const int Version = 4;
+    // v5: SelectionChangedEvent gained GrasshopperObjects (canvas selection discovery hint).
+    public const int Version = 5;
 
     public const int DefaultMaximumFrameBytes = 8 * 1024 * 1024;
 

@@ -30,6 +30,7 @@ public sealed class GptinoAssemblyPriority : GH_AssemblyPriority
         try
         {
             GrasshopperDocumentCatalog.Initialize();
+            GrasshopperSelectionWatcher.Start();
             var resolver = new ExplicitGrasshopperDocumentResolver();
             BridgeProcessHub.RegisterOperationHandler(
                 new CordycepsCanvasBridgeOperationHandler(
@@ -47,6 +48,7 @@ public sealed class GptinoAssemblyPriority : GH_AssemblyPriority
         }
         catch (Exception exception)
         {
+            GrasshopperSelectionWatcher.Stop();
             GrasshopperDocumentCatalog.Teardown();
             DevelopmentDiagnosticTrace.TryWriteException(
                 "Grasshopper",

@@ -437,19 +437,23 @@ public sealed class SessionOrchestrator : IDisposable
     }
 
     private const int MaximumContextSelectionIds = 32;
+    private const int MaximumContextGrasshopperSelections = 16;
 
     /// <summary>
-    /// Prepends the user's live Rhino selection as a tagged, one-line context hint. Applied
-    /// only to the Codex turn input — after routing, so context wording never influences
-    /// model escalation — and only when a selection exists. Ids are hints, not fingerprints:
-    /// writes still require snapshot_read fingerprints.
+    /// Prepends the user's live selection (Rhino viewport and Grasshopper canvas) as a tagged,
+    /// one-line context hint. Applied only to the Codex turn input — after routing, so context
+    /// wording never influences model escalation — and only when a selection exists. Ids are
+    /// hints, not fingerprints: writes still require snapshot_read fingerprints.
     /// </summary>
     private string ComposeTurnInput(string content)
     {
         var selection = _selectionContext?.CurrentSelection;
         var digest = _selectionContext?.CurrentCanvasDigest;
+        var grasshopperObjects = selection?.GrasshopperObjects;
         var hasSelection = selection is not null &&
-            (selection.RhinoObjectIds.Count > 0 || !string.IsNullOrWhiteSpace(selection.ActiveLayerName));
+            (selection.RhinoObjectIds.Count > 0 ||
+             grasshopperObjects is { Count: > 0 } ||
+             !string.IsNullOrWhiteSpace(selection.ActiveLayerName));
         if (!hasSelection && digest is null)
         {
             return content;
@@ -466,6 +470,30 @@ public sealed class SessionOrchestrator : IDisposable
         }
         if (hasSelection && selection is not null)
         {
+            if (grasshopperObjects is { Count: > 0 })
+            {
+                builder.Append("Current Grasshopper selection (discovery hint, not fingerprints): ")
+                    .Append(grasshopperObjects.Count)
+                    .Append(" object(s): ");
+                builder.AppendJoin(
+                    ", ",
+                    grasshopperObjects
+                        .Take(MaximumContextGrasshopperSelections)
+                        .Select(item =>
+                        {
+                            var label = string.IsNullOrWhiteSpace(item.NickName)
+                                ? item.Name
+                                : item.NickName;
+                            return string.IsNullOrWhiteSpace(label)
+                                ? item.ObjectId.ToString("D")
+                                : $"{label} ({item.ObjectId:D})";
+                        }));
+                if (grasshopperObjects.Count > MaximumContextGrasshopperSelections)
+                {
+                    builder.Append(",...");
+                }
+                builder.Append(". ");
+            }
             builder.Append("Current Rhino selection (discovery hint, not fingerprints): ");
             if (selection.RhinoObjectIds.Count == 0)
             {

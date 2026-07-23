@@ -402,6 +402,7 @@ public sealed class GptinoRuntimeHost : IDisposable
                 BridgeProcessHub.GrasshopperDocumentObserved -= OnHubGrasshopperDocumentObserved;
                 BridgeProcessHub.GrasshopperDocumentForgotten -= OnHubGrasshopperDocumentForgotten;
                 BridgeProcessHub.OperationHandlerRegistered -= OnHubOperationHandlerRegistered;
+                BridgeProcessHub.GrasshopperSelectionChanged -= OnHubGrasshopperSelectionChanged;
             }
 
             _lifetime.Dispose();
@@ -421,6 +422,7 @@ public sealed class GptinoRuntimeHost : IDisposable
             BridgeProcessHub.GrasshopperDocumentObserved += OnHubGrasshopperDocumentObserved;
             BridgeProcessHub.GrasshopperDocumentForgotten += OnHubGrasshopperDocumentForgotten;
             BridgeProcessHub.OperationHandlerRegistered += OnHubOperationHandlerRegistered;
+            BridgeProcessHub.GrasshopperSelectionChanged += OnHubGrasshopperSelectionChanged;
             _hubAttached = true;
         }
 
@@ -471,6 +473,31 @@ public sealed class GptinoRuntimeHost : IDisposable
         {
             RegisterOperationHandler(handler);
         }
+    }
+
+    private void OnHubGrasshopperSelectionChanged(
+        Guid documentId,
+        IReadOnlyList<GrasshopperSelectedObject> selection)
+    {
+        _ = selection; // The latest selection is read back from the hub at capture time.
+        uint serial;
+        lock (_gate)
+        {
+            if (_disposed || _connection is null)
+            {
+                return;
+            }
+            var target = _targets.Values.FirstOrDefault(
+                candidate => candidate.GrasshopperDocumentId == documentId);
+            if (target is null)
+            {
+                return;
+            }
+            serial = target.RhinoDocumentSerial;
+        }
+        // Reuse the Rhino selection debounce path: canvas clicks coalesce with viewport
+        // selection into one settled SelectionChangedEvent per burst.
+        NotifySelectionChanged(serial);
     }
 
     private bool IsDisposed()
@@ -1340,10 +1367,14 @@ public sealed class GptinoRuntimeHost : IDisposable
                 break;
             }
         }
+        // Canvas selection is captured by the .gha watcher and read back from the hub here, so
+        // one event carries the settled selection of BOTH documents in the bound pair.
+        var grasshopperObjects = BridgeProcessHub.GetGrasshopperSelection(target.GrasshopperDocumentId);
         return new SelectionChangedEvent(
             ids,
             document.Layers.CurrentLayer?.FullPath,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            grasshopperObjects.Count > 0 ? grasshopperObjects : null);
     }
 
     private async Task SendDocumentClosedSafelyAsync(

@@ -101,6 +101,8 @@ export interface CurrentSelection {
   rhinoObjectCount: number;
   rhinoObjectIds: string[];
   activeLayer?: string | null;
+  grasshopperObjectCount?: number;
+  grasshopperObjects?: { id: string; nickName: string }[];
   observedAt: string;
 }
 

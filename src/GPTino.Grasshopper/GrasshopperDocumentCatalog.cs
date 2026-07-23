@@ -62,6 +62,28 @@ public static class GrasshopperDocumentCatalog
         return false;
     }
 
+    /// <summary>
+    /// Live (id, document) pairs for read-only inspection such as selection polling. Returns
+    /// empty once the catalog stops accepting resolutions, so pollers quiesce on teardown.
+    /// </summary>
+    internal static IReadOnlyList<KeyValuePair<Guid, GH_Document>> SnapshotLiveDocuments()
+    {
+        if (Volatile.Read(ref _acceptingResolutions) == 0)
+        {
+            return Array.Empty<KeyValuePair<Guid, GH_Document>>();
+        }
+
+        var live = new List<KeyValuePair<Guid, GH_Document>>();
+        foreach (var entry in Documents)
+        {
+            if (entry.Value.TryGetTarget(out var document) && document.DocumentID == entry.Key)
+            {
+                live.Add(new KeyValuePair<Guid, GH_Document>(entry.Key, document));
+            }
+        }
+        return live;
+    }
+
     internal static void Register(GH_Document? document) =>
         EnqueueMutation(() =>
         {

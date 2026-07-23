@@ -68,6 +68,40 @@ public sealed class SessionOrchestratorTests
         Assert.Equal("선택한 객체를 위로 이동해줘", user.Content);
     }
 
+    [Fact]
+    public async Task TurnInputCarriesGrasshopperSelectionContextHint()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient
+        {
+            ReadTurn = (_, _, _) => Task.FromResult<CodexTurnReadResult?>(Completed("done"))
+        };
+        var selectionContext = new StaticSelectionContext(new GPTino.BridgeContract.SelectionChangedEvent(
+            [],
+            null,
+            DateTimeOffset.UtcNow,
+            [
+                new GPTino.BridgeContract.GrasshopperSelectedObject(
+                    Guid.Parse("b7f0e6a2-1d34-4c8e-9a51-0c2d3e4f5a61"),
+                    "Python 3 Script",
+                    "H-Column Grid")
+            ]));
+        using var harness = await CreateHarnessAsync(directory, client, selectionContext: selectionContext);
+
+        await harness.Orchestrator.SubmitMessageAsync(
+            harness.Session.Id,
+            new SendMessageRequest("지금 선택한 컴포넌트 뭐야?", "gh-selection-1"),
+            CancellationToken.None);
+
+        await WaitForStateAsync(harness.Store, harness.Session.Id, SessionStates.Idle);
+        var startedTurn = Assert.Single(client.StartedTurns);
+        Assert.StartsWith("<gptino_context>", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("Current Grasshopper selection", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("H-Column Grid", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("b7f0e6a2-1d34-4c8e-9a51-0c2d3e4f5a61", startedTurn.Message, StringComparison.Ordinal);
+        Assert.EndsWith("지금 선택한 컴포넌트 뭐야?", startedTurn.Message, StringComparison.Ordinal);
+    }
+
     private sealed class StaticSelectionContext(GPTino.BridgeContract.SelectionChangedEvent? selection)
         : ISelectionContextSource
     {
