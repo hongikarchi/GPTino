@@ -140,14 +140,20 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         var before = ReadState(component);
         var inputs = ReadParameterObjects(component, "Inputs");
         var outputs = ReadParameterObjects(component, "Outputs");
-        ValidateSchema(request.Inputs, request.Outputs);
+        // The model only controls each socket's name/access/type hint. Everything else is
+        // server-side bookkeeping: fill missing placeholder ids (reconciled to actual socket ids
+        // below anyway), default the nickname to the variable name, and default the type hint to
+        // a generic object socket.
+        var normalizedInputs = NormalizeRequestedParameters(request.Inputs);
+        var normalizedOutputs = NormalizeRequestedParameters(request.Outputs);
+        ValidateSchema(normalizedInputs, normalizedOutputs);
         // The model does not manage socket UUIDs: they belong to Grasshopper (existing sockets
         // keep their id; a fresh script component's default socket has an id the model cannot
         // know without reading it). Reconcile the requested list to the ACTUAL socket ids by
         // position, so the model only controls each socket's name/access/type. This removes the
         // "socket identity changed" friction where the model's declared UUID did not match.
-        var requestedInputs = ReconcileSocketIds(inputs, request.Inputs);
-        var requestedOutputs = ReconcileSocketIds(outputs, request.Outputs);
+        var requestedInputs = ReconcileSocketIds(inputs, normalizedInputs);
+        var requestedOutputs = ReconcileSocketIds(outputs, normalizedOutputs);
         ValidateAppendOnlySchema(inputs, requestedInputs, "input");
         ValidateAppendOnlySchema(outputs, requestedOutputs, "output");
         var initialPlans = PrepareSchema(inputs, requestedInputs.Take(inputs.Count).ToArray())
@@ -584,6 +590,25 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
             throw new InvalidOperationException("Python socket variable names must be unique.");
         }
     }
+
+    private static IReadOnlyList<PythonParameter> NormalizeRequestedParameters(
+        IReadOnlyList<PythonParameter> requested) =>
+        requested
+            .Select(parameter => parameter is null
+                ? parameter!
+                : parameter with
+                {
+                    ParameterId = parameter.ParameterId == Guid.Empty
+                        ? Guid.NewGuid()
+                        : parameter.ParameterId,
+                    NickName = string.IsNullOrWhiteSpace(parameter.NickName)
+                        ? parameter.Name
+                        : parameter.NickName,
+                    TypeHint = string.IsNullOrWhiteSpace(parameter.TypeHint)
+                        ? "object"
+                        : parameter.TypeHint,
+                })
+            .ToArray();
 
     // Rewrites each requested socket's ParameterId to the actual socket id at the same position,
     // so socket UUIDs are owned by Grasshopper, not the model. Positions beyond the actual sockets

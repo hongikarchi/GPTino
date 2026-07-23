@@ -2424,16 +2424,38 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             throw new InvalidOperationException(
                 $"Operation '{operationId}' has an invalid Python parameter schema.");
         }
+        // The model only owns each socket's name/access/typeHint. ParameterId, nickName, and
+        // typeHint are server-normalized by the adapter (placeholder ids generated, nickName
+        // defaults to name, typeHint defaults to object), so only names are validated here — and
+        // the error names the offender instead of a blanket rejection.
         var parameters = request.Inputs.Concat(request.Outputs).ToArray();
-        if (parameters.Any(parameter =>
-                parameter is null || parameter.ParameterId == Guid.Empty ||
-                string.IsNullOrWhiteSpace(parameter.Name) ||
-                string.IsNullOrWhiteSpace(parameter.NickName) ||
-                string.IsNullOrWhiteSpace(parameter.TypeHint)) ||
-            parameters.Select(parameter => parameter.ParameterId).Distinct().Count() != parameters.Length)
+        if (parameters.Any(parameter => parameter is null || string.IsNullOrWhiteSpace(parameter.Name)))
         {
             throw new InvalidOperationException(
-                $"Operation '{operationId}' has invalid or duplicate Python parameters.");
+                $"Operation '{operationId}' has a Python socket without a name; every input and " +
+                "output needs a script variable name.");
+        }
+        var duplicateNames = parameters
+            .GroupBy(parameter => parameter.Name, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToArray();
+        if (duplicateNames.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' declares duplicate Python socket names: " +
+                $"{string.Join(", ", duplicateNames)}. Socket variable names must be unique " +
+                "across inputs and outputs.");
+        }
+        var explicitIds = parameters
+            .Where(parameter => parameter.ParameterId != Guid.Empty)
+            .Select(parameter => parameter.ParameterId)
+            .ToArray();
+        if (explicitIds.Distinct().Count() != explicitIds.Length)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' declares duplicate Python socket ids; omit " +
+                "parameterId entirely (the server assigns and reconciles socket ids).");
         }
     }
 
