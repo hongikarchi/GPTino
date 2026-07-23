@@ -3357,16 +3357,34 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var resources = new List<CommittedResourceFingerprint>();
+        void Add(ResourceAddress resource, string? fingerprint)
+        {
+            var key = $"{resource.Kind}:{resource.Id}:{resource.Field}";
+            if (seen.Add(key))
+            {
+                resources.Add(new CommittedResourceFingerprint(resource, fingerprint));
+            }
+        }
         foreach (var expectation in changeSet.WriteSet)
         {
-            var key = $"{expectation.Resource.Kind}:{expectation.Resource.Id}:{expectation.Resource.Field}";
-            if (!seen.Add(key))
-            {
-                continue;
-            }
             var current = after.State.Resources.FirstOrDefault(item =>
                 ExactDomainOverlaps(item.Resource, expectation.Resource));
-            resources.Add(new CommittedResourceFingerprint(expectation.Resource, current?.Fingerprint));
+            Add(expectation.Resource, current?.Fingerprint);
+            // A freshly created component's sibling domains (layout/value) have fingerprints the
+            // model cannot know yet is about to need — a slider is created, then its value is set.
+            // Project the siblings so the next ChangeSet chains directly instead of paying one
+            // Blocked round trip to learn the value-domain hash.
+            if (expectation.Resource.Kind == ResourceKind.GrasshopperComponent)
+            {
+                foreach (var sibling in after.State.Resources.Where(item =>
+                    item.Resource.Kind is
+                        ResourceKind.GrasshopperComponentLayout or
+                        ResourceKind.GrasshopperComponentValue &&
+                    string.Equals(item.Resource.Id, expectation.Resource.Id, StringComparison.Ordinal)))
+                {
+                    Add(sibling.Resource, sibling.Fingerprint);
+                }
+            }
         }
         return new CommittedJobView(after.SnapshotId, after.State.Revision, resources);
     }
