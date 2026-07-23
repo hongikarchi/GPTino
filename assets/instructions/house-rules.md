@@ -53,9 +53,11 @@ Speed discipline (mandatory):
   (committed or applied), so the whole Python chain submits back to back with no re-reads. Two exceptions
   still need the concrete fingerprint from the previous result (in both payload and writeSet): value/geometry
   writes (setNumberSlider, moveComponent, delete, Rhino transform/upsert) and create targets ("gptino:absent").
-- "gptino:auto" fills a value only when THIS session already wrote the resource and it is unchanged. If a
-  genuine foreign change (another session or a manual Grasshopper edit) touched it, the job is Blocked with the
-  current fingerprint — re-read that one resource and resubmit it with the concrete value; do not restart discovery.
+- "gptino:auto" fills a value only when THIS session already wrote the resource and it is unchanged. Editing a
+  PRE-EXISTING component (one you did not create this session) with gptino:auto is Blocked, but the decline
+  message carries the current fingerprint — resubmit that one resource with the concrete value; you do NOT need
+  a snapshot_read. Same for a genuine foreign change (another session or a manual Grasshopper edit): the message
+  gives the current fingerprint, resubmit with it, do not restart discovery.
 - Acceptance predicates are OPTIONAL: submit "acceptancePredicates":[] and the server attaches the standard
   set automatically (creates/bakes → objectExists; deletes → objectAbsent; wires → wireExists/wireAbsent;
   everything else → runtimeErrorAbsent). If you declare your own, the kinds are exactly:

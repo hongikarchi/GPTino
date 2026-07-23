@@ -122,7 +122,11 @@ public sealed class FingerprintAutoFillTests
         var (_, conflicts) = LiveDocumentBackend.ResolveAutoExpectations(
             changeSet, snapshot, session, ledger);
 
-        Assert.Contains("has not committed it", Assert.Single(conflicts), StringComparison.OrdinalIgnoreCase);
+        var message = Assert.Single(conflicts);
+        Assert.Contains("has not written it", message, StringComparison.OrdinalIgnoreCase);
+        // The decline must carry the live fingerprint so the model resubmits directly (no read).
+        Assert.Contains("fp-3", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("snapshot_read", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -3023,8 +3023,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     }
                 }
                 conflicts.Add(
-                    $"gptino:auto declined for {key}: this session has not committed it, so there is no " +
-                    "baseline to fill. Run snapshot_read and supply the concrete fingerprint once.");
+                    $"gptino:auto declined for {key}: this session has not written it, so there is no " +
+                    $"baseline to fill (editing a pre-existing component). Current fingerprint: {live.Fingerprint}. " +
+                    "Resubmit that resource with this concrete value directly.");
                 return expectation;
             }
             if (ledger.SessionId != sessionId)
