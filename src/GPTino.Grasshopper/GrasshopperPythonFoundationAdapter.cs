@@ -20,10 +20,11 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
 {
     private static readonly Guid Cpython3ComponentGuid = new("719467e6-7cf5-4848-99b0-c5dd57e5442c");
     private static readonly Guid IronPython2ComponentGuid = new("410755b1-224a-4c1e-a407-bf32fb45ea7e");
-    // Extracted from RhinoCodePluginGH.gha's string heap, directly adjacent to the
-    // "C# Script / C# / C# scripting component" name constants. Re-verify on the live benchmark:
-    // canvas.create with this GUID must yield a C# Script component.
-    private static readonly Guid CSharpComponentGuid = new("ae3b6678-0856-4e38-8100-3e31ceb6779b");
+    // Live-verified 2026-07-23 via component_catalog + canvas.create on Rhino 8: this is the
+    // installed "C# Script" component that implements IScriptComponent. (RhinoCodePluginGH.gha
+    // also contains ae3b6678-... next to the C# name strings, but that component lacks the
+    // IScriptComponent surface — do not use it.)
+    private static readonly Guid CSharpComponentGuid = new("b6ba1144-02d6-4a2d-b53c-ec62e290eeb7");
     private static readonly TimeSpan RebuildTimeout = TimeSpan.FromSeconds(30);
 
     private const string Python3Directive = "#! python 3";

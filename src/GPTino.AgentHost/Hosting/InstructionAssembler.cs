@@ -55,7 +55,7 @@ public static class HouseRules
           It handles layers, per-object names, replace/append re-bake semantics, and group/block containers.
           Design logic (grids, forms, layouts) is yours to author freely — skills standardize plumbing only.
         - LANGUAGE POLICY: author script components in C# BY DEFAULT (proxy GUID
-          ae3b6678-0856-4e38-8100-3e31ceb6779b with canvas.create; runtime "csharp"; skill
+          b6ba1144-02d6-4a2d-b53c-ec62e290eeb7 with canvas.create; runtime "csharp"; skill
           gh-csharp-cookbook.md has the scaffold and idioms). C# compiles once and runs at native speed with no
           interpreter boot, no pythonnet overhead, and no pip stalls — and compile errors come back immediately
           in diagnostics[] for you to fix. Use Python 3 (GUID 719467e6-7cf5-4848-99b0-c5dd57e5442c; runtime

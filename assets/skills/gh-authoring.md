@@ -21,7 +21,7 @@ Reference notes, not fixed code. Design logic stays yours; these save discovery 
 
 | Component | Type GUID |
 |---|---|
-| C# Script (Rhino 8, default) | `ae3b6678-0856-4e38-8100-3e31ceb6779b` |
+| C# Script (Rhino 8, default) | `b6ba1144-02d6-4a2d-b53c-ec62e290eeb7` |
 | Python 3 Script (Rhino 8 CPython) | `719467e6-7cf5-4848-99b0-c5dd57e5442c` |
 | Number Slider | `57da07bd-ecab-415d-9d86-af36d7073abc` |
 | Panel | `59e0b89a-e487-49f8-bab8-b5bab16be14c` |
