@@ -89,14 +89,19 @@ public static class HouseRules
         - "gptino:auto" fills a value only when THIS session already committed the resource and it is unchanged. If a
           genuine foreign change (another session or a manual Grasshopper edit) touched it, the job is Blocked with the
           current fingerprint — re-read that one resource and resubmit it with the concrete value; do not restart discovery.
-        - Acceptance predicate kinds are exactly: fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent |
-          objectExists | objectAbsent. No other spelling parses. For updatePythonSource/executePython use
-          {"name":"no runtime errors","kind":"runtimeErrorAbsent","resource":null,"expectedValue":null}.
-          objectExists/objectAbsent take an object resource and expectedValue null; only fingerprintEquals uses
-          expectedValue. Never predict a future fingerprint with fingerprintEquals. The standard predicate set is:
-          creates → one objectExists per created component; wires → wireExists/wireAbsent; everything else
-          (setValue, moveComponent, setGroup, python source/schema/execute) → the single runtimeErrorAbsent example.
-          Do not invent per-operation "value updated" predicates.
+        - Acceptance predicates are OPTIONAL: submit "acceptancePredicates":[] and the server attaches the standard
+          set automatically (creates/bakes → objectExists; deletes → objectAbsent; wires → wireExists/wireAbsent;
+          everything else → runtimeErrorAbsent). If you declare your own, the kinds are exactly:
+          fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent | objectExists | objectAbsent — never
+          predict a future fingerprint with fingerprintEquals and never invent per-operation "value updated"
+          predicates.
+        - A job that ends state=failed WITH an "applied" block means the writes physically landed but were not
+          committed — script compile/runtime errors report this way. This is the normal iterate loop, not a dead
+          end: read diagnostics[] (every error names its operationId), fix the source, and resubmit with
+          gptino:auto — the server ledger already tracks the applied state, so the retry is not stale-blocked.
+          A red component never commits; only job_status=committed means the change is verified and in history.
+        - Two consecutive Failed/Blocked jobs for the same intent → STOP, show the exact job message to the user,
+          and ask how to proceed. Do not re-draft artifacts against a Blocked job.
         - Use this exact ChangeSet shape on the first submit (property names are exact; no other spellings exist):
           {"changeSetId":"<uuid>","projectId":"<from snapshot_read>","sessionId":"<from snapshot_read>",
            "baseSnapshotRevision":-1,"baseGitCommit":null,"dependencies":[],

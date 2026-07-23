@@ -176,8 +176,11 @@ export default function App() {
       {runtime.conflicts.length > 0 ? (
         <div className="conflict-banner" role="alert">
           <Icon name="warning" />
-          <span>
+          <span title={runtime.conflicts[0].detail || undefined}>
             {runtime.conflicts.length} resource conflict{runtime.conflicts.length > 1 ? "s" : ""} — {runtime.conflicts[0].title}
+            {runtime.conflicts[0].detail ? (
+              <span className="conflict-detail"> · {runtime.conflicts[0].detail}</span>
+            ) : null}
           </span>
         </div>
       ) : null}

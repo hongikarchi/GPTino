@@ -36,7 +36,8 @@ internal static class DynamicToolSpecs
         "Value/geometry payload+writeSet fingerprints (setNumberSlider, move, delete, rhino transform/upsert) must be the concrete value, not gptino:auto. For CreateRhinoObject/BakeGeometry only, payload arguments.expectedFingerprint is null. " +
         "Rhino geometryJson must be native RhinoCommon JSON and match geometryType; attributesJson is native ObjectAttributes JSON, or an empty string for default/new attributes. Distinct Rhino object IDs in one ChangeSet must use distinct case-sensitive logicalEntityId values. " +
         "Payload fingerprints for existing canvas/Rhino resources must exactly match writeSet, and two operations in one ChangeSet cannot write overlapping domains. " +
-        "Every write needs an explicit supported acceptance predicate.";
+        "Acceptance predicates are optional: submit acceptancePredicates as [] and the server attaches the standard set " +
+        "(creates/bakes verify objectExists, deletes objectAbsent, wires wireExists/wireAbsent, everything else runtimeErrorAbsent).";
 
     public static object[] Create() =>
     [
@@ -145,7 +146,9 @@ internal static class DynamicToolSpecs
                     "Submit a typed ChangeSet to the central single-writer broker. Pass wait=true to receive the terminal " +
                     "result (state, diagnostics, committed view with sockets/outputs) in this same response for fast jobs. " +
                     "If the returned state is still queued/executing — normal when other sessions are ahead — fall back to " +
-                    "polling job_status; the jobId is always returned. " + PayloadGuide,
+                    "polling job_status; the jobId is always returned. state=failed with an applied block means the writes " +
+                    "landed but did not commit (e.g. script compile/runtime errors): read diagnostics[], fix, and resubmit " +
+                    "with gptino:auto — the retry is not stale-blocked. " + PayloadGuide,
                     new
                     {
                         type = "object",
@@ -166,7 +169,9 @@ internal static class DynamicToolSpecs
                     "Terminal states include diagnostics[] (per-operation errors/warnings/remarks from the live solve). " +
                     "A committed job includes committed { snapshotId, revision, resources[].fingerprint, sockets, outputs }: " +
                     "base the next ChangeSet on these fingerprints, wire using the Grasshopper-assigned socket ids in " +
-                    "committed.sockets, and verify results from committed.outputs instead of calling snapshot_read again.",
+                    "committed.sockets, and verify results from committed.outputs instead of calling snapshot_read again. " +
+                    "A failed job with an applied block landed its writes without committing (script errors report this " +
+                    "way): read diagnostics[], fix the source, resubmit with gptino:auto.",
                     new
                     {
                         type = "object",

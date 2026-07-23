@@ -48,8 +48,16 @@ submits an immutable `ChangeSet`. JSON properties and enum values are camelCase.
   equivalent number spellings compare equally, while negative zero remains
   distinct from positive zero. Reusing the key for different accepted content
   is rejected.
-- Every live write has at least one explicit `acceptancePredicate`.
-- `change_submit` returns a job ID. Only `job_status=committed` means success.
+- Every live write is verified by at least one `acceptancePredicate`. Predicates
+  are optional in the submission: when omitted, the broker attaches the standard
+  set per write kind (creates/bakes → `objectExists`, deletes → `objectAbsent`,
+  wires → `wireExists`/`wireAbsent`, everything else → `runtimeErrorAbsent`)
+  before the request hash is computed. Explicit predicates are used as declared.
+- `change_submit` returns a job ID (with `wait=true`, fast jobs return their
+  terminal state in the same response). Only `job_status=committed` means
+  success. A `failed` job carrying an `applied` block landed its writes without
+  committing — deterministic script compile/runtime errors report this way; the
+  session iterates by fixing the source and resubmitting with `gptino:auto`.
 
 Resource kinds are `document`, `grasshopperComponent`,
 `grasshopperComponentSource`, `grasshopperComponentIo`,
@@ -92,7 +100,7 @@ eventual `ObjectTable.Add`, `Replace`, or `ModifyAttributes` call can still fail
 at execution time—for example because of document-table constraints—and the job
 can then enter `recoveryRequired`.
 
-Bridge application frames use `protocolVersion=2`, carry the exact bound
+Bridge application frames use `protocolVersion=4`, carry the exact bound
 document target, and validate request/response correlation. Reads carry
 `BridgeOperationAccess.Read` and no lease. Writes carry `Write` plus a non-empty
 host-generated writer lease, and each adapter rechecks its expected access. The
@@ -145,3 +153,14 @@ values are reserved and fail closed. Canvas predicates are evaluated against a
 fresh post-write snapshot. Python and Rhino predicates additionally use the
 adapter's correlated post-operation fingerprint, including an explicit absence
 observation after deletion. Any error diagnostic fails verification.
+
+Verification failure semantics are deterministic: script-content errors
+(`updatePythonSource` compile failures, `executePython` runtime errors) do not
+abort the operation loop — every operation completes, the post-state snapshot is
+captured, and the job ends `failed` with the full `diagnostics[]`, an `applied`
+block carrying the actual post-write fingerprints, and the session resource
+ledger updated to live state so the corrective resubmission is not
+stale-blocked. No history revision is committed for a red state.
+`recoveryRequired` is reserved for genuinely unknown outcomes: mid-write
+exceptions on non-script operations, cancellation after a write, fingerprint
+chain violations, history-commit failures, and restart recovery.

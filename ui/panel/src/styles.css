@@ -390,6 +390,16 @@ button.llm-auth:hover strong {
   color: var(--red);
 }
 
+.conflict-banner > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conflict-detail {
+  opacity: 0.8;
+}
+
 .error-banner svg,
 .pause-banner svg {
   width: 14px;

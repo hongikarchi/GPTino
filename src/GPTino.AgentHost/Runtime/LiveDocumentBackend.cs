@@ -387,6 +387,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var changeSetElement = arguments.GetProperty("changeSet");
         var changeSet = changeSetElement.Deserialize<ChangeSet>(BridgeProtocol.JsonOptions)
             ?? throw new InvalidOperationException("changeSet cannot be null.");
+        // Predicates are deterministic functions of the operation kinds; when the model omits
+        // them the server attaches the standard set instead of rejecting. Applied BEFORE the
+        // request hash so an identical retry dedups identically. Explicit predicates still win.
+        changeSet = ApplyDefaultPredicates(changeSet);
         var expectedSnapshotId = RequiredString(arguments, "expectedSnapshotId");
         var idempotencyKey = RequiredString(arguments, "idempotencyKey");
         var summary = RequiredString(arguments, "summary");
@@ -884,8 +888,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 }
                 var error = response.Diagnostics.FirstOrDefault(item =>
                     item.Severity == BridgeDiagnosticSeverity.Error);
-                if (error is not null)
+                if (error is not null && !IsScriptContentOperation(operation.Kind))
                 {
+                    // For non-script operations an Error diagnostic means the operation itself
+                    // failed — abort. Script-content errors (compile/runtime) mean the write
+                    // LANDED and the errors describe the script: finish the loop so the after
+                    // snapshot reflects the complete application and Verify reports every error.
                     throw new InvalidOperationException(
                         $"Operation '{operation.OperationId}' reported {error.Code}: {error.Message}");
                 }
@@ -905,16 +913,35 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 operationObservations);
             if (verificationProblems.Count > 0)
             {
+                // Deterministic failure: every operation completed and the after-snapshot is in
+                // hand, so the post-state is fully known even though writes landed. The job still
+                // never commits (no history revision for a red state — a model's success claim is
+                // refuted structurally), but the session gets everything it needs to iterate: the
+                // full diagnostics, the actual post-write fingerprints under `applied`, and a
+                // ledger updated to live state so its next gptino:auto submission is not blocked
+                // as stale. RecoveryRequired stays reserved for genuinely unknown outcomes
+                // (mid-write throws, cancellation, history-commit failures, restarts).
                 entry.Diagnostics = diagnostics;
+                try
+                {
+                    entry.Applied = BuildCommittedJobView(job.ChangeSet, after);
+                    entry.Sockets = CollectComponentSockets(job.ChangeSet, after);
+                    entry.Outputs = await CollectComponentOutputsAsync(
+                        job.ChangeSet,
+                        after,
+                        execution.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    _logger.LogWarning(
+                        exception,
+                        "Could not build the applied view for job {JobId}.",
+                        job.JobId);
+                }
+                UpdateResourceLedger(before, after, job.ChangeSet.SessionId, job.JobId);
                 var message = string.Join(" ", verificationProblems);
-                await SetJobPhaseAsync(
-                    entry,
-                    liveChanged ? JobState.RecoveryRequired : JobState.Failed,
-                    message).ConfigureAwait(false);
-                return new JobExecutionResult(
-                    job.JobId,
-                    liveChanged ? JobState.RecoveryRequired : JobState.Failed,
-                    message);
+                await SetJobPhaseAsync(entry, JobState.Failed, message).ConfigureAwait(false);
+                return new JobExecutionResult(job.JobId, JobState.Failed, message);
             }
 
             try
@@ -931,6 +958,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             try
             {
                 entry.Committed = BuildCommittedJobView(job.ChangeSet, after);
+                entry.Applied = entry.Committed;
                 entry.Diagnostics = diagnostics;
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -956,41 +984,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             {
                 _logger.LogWarning(exception, "Could not capture post-solve observations for job {JobId}.", job.JobId);
             }
-            try
-            {
-                // Record each written resource's committed fingerprint + this session as its last writer, so a
-                // later gptino:auto expectation from the SAME session can be self-resolved (and a foreign write
-                // afterwards flips the ledger owner, forcing that auto to Block). Same never-demote discipline
-                // as the committed-view build above. Runs on the broker worker thread, so no lock is needed.
-                var beforeFingerprints = before.State.Resources.ToDictionary(
-                    item => $"{item.Resource.Kind}:{item.Resource.Id}:{item.Resource.Field}",
-                    item => item.Fingerprint,
-                    StringComparer.Ordinal);
-                foreach (var resource in after.State.Resources.Where(item =>
-                    !string.IsNullOrWhiteSpace(item.Fingerprint)))
-                {
-                    // Attribute every resource this job actually changed (new, or a moved fingerprint) to this
-                    // session — including SIDE EFFECTS that never appear in the writeSet, such as a wire connecting
-                    // into a component's inputs, which moves the component fingerprint. This keeps a later
-                    // sub-domain gptino:auto (setComponentIo/executePython) self-resolvable via its parent, and
-                    // makes the committing session the ledger owner so a foreign change flips ownership and Blocks.
-                    var key = $"{resource.Resource.Kind}:{resource.Resource.Id}:{resource.Resource.Field}";
-                    var changed = !beforeFingerprints.TryGetValue(key, out var beforeFingerprint) ||
-                        !string.Equals(beforeFingerprint, resource.Fingerprint, StringComparison.Ordinal);
-                    if (changed)
-                    {
-                        _resourceLedger[key] = new ResourceLedgerEntry(
-                            resource.Resource,
-                            resource.Fingerprint!,
-                            job.ChangeSet.SessionId,
-                            after.State.Revision);
-                    }
-                }
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                _logger.LogWarning(exception, "Could not update the resource ledger for job {JobId}.", job.JobId);
-            }
+            UpdateResourceLedger(before, after, job.ChangeSet.SessionId, job.JobId);
             await SetJobPhaseAsync(
                 entry,
                 JobState.Committed,
@@ -3248,7 +3242,6 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private object ProjectJob(LiveJobEntry entry, bool duplicate)
     {
-        var committed = entry.Committed;
         var state = entry.State;
         // Diagnostics and observations are complete only at a terminal state; non-terminal
         // job_status polls arrive every few seconds and must stay slim.
@@ -3263,31 +3256,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             message = entry.Message,
             duplicate,
             enqueueSequence = entry.Job.EnqueueSequence,
-            committed = committed is null
-                ? null
-                : new
-                {
-                    snapshotId = committed.SnapshotId,
-                    revision = committed.Revision,
-                    resources = committed.Resources.Select(item => new
-                    {
-                        kind = item.Resource.Kind,
-                        id = item.Resource.Id,
-                        field = item.Resource.Field,
-                        fingerprint = item.Fingerprint
-                    }).ToArray(),
-                    sockets = entry.Sockets?.Select(component => new
-                    {
-                        componentId = component.ComponentId,
-                        inputs = component.Inputs.Select(ProjectSocket).ToArray(),
-                        outputs = component.Outputs.Select(ProjectSocket).ToArray()
-                    }).ToArray(),
-                    outputs = entry.Outputs?.Select(component => new
-                    {
-                        componentId = component.ComponentId,
-                        inspection = component.Inspection
-                    }).ToArray()
-                },
+            committed = ProjectJobView(entry.Committed, entry),
+            // Present whenever the writes landed and the post-state is known — on commit
+            // (identical to committed) and on deterministic failure. A failed job with applied
+            // means: the change is live but NOT committed; fix and resubmit against these
+            // fingerprints (or gptino:auto, which the ledger already tracks).
+            applied = ProjectJobView(entry.Applied, entry),
             diagnostics = terminal
                 ? (entry.Diagnostics ?? Array.Empty<JobDiagnostic>()).Select(item => new
                 {
@@ -3306,6 +3280,33 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }).ToArray()
         };
     }
+
+    private static object? ProjectJobView(CommittedJobView? view, LiveJobEntry entry) =>
+        view is null
+            ? null
+            : new
+            {
+                snapshotId = view.SnapshotId,
+                revision = view.Revision,
+                resources = view.Resources.Select(item => new
+                {
+                    kind = item.Resource.Kind,
+                    id = item.Resource.Id,
+                    field = item.Resource.Field,
+                    fingerprint = item.Fingerprint
+                }).ToArray(),
+                sockets = entry.Sockets?.Select(component => new
+                {
+                    componentId = component.ComponentId,
+                    inputs = component.Inputs.Select(ProjectSocket).ToArray(),
+                    outputs = component.Outputs.Select(ProjectSocket).ToArray()
+                }).ToArray(),
+                outputs = entry.Outputs?.Select(component => new
+                {
+                    componentId = component.ComponentId,
+                    inspection = component.Inspection
+                }).ToArray()
+            };
 
     private static object ProjectSocket(JobSocket socket) => new
     {
@@ -3335,6 +3336,50 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     }
 
     private const int MaximumOutputInspectionComponents = 4;
+
+    /// <summary>
+    /// Records each resource this job actually changed (new, or a moved fingerprint) with this
+    /// session as its last writer — including SIDE EFFECTS that never appear in the writeSet, such
+    /// as a wire moving the target component's fingerprint. A later gptino:auto expectation from
+    /// the SAME session then self-resolves against the true live state, and a foreign write flips
+    /// ledger ownership so that session's auto Blocks. Runs on both the commit path and the
+    /// deterministic-failure path: the ledger tracks the last OBSERVED-AND-OWNED write, committed
+    /// or not, because the write physically landed either way. Never-demote discipline; runs on
+    /// the broker worker thread, so no lock is needed.
+    /// </summary>
+    private void UpdateResourceLedger(
+        SnapshotEnvelope before,
+        SnapshotEnvelope after,
+        Guid sessionId,
+        Guid jobId)
+    {
+        try
+        {
+            var beforeFingerprints = before.State.Resources.ToDictionary(
+                item => $"{item.Resource.Kind}:{item.Resource.Id}:{item.Resource.Field}",
+                item => item.Fingerprint,
+                StringComparer.Ordinal);
+            foreach (var resource in after.State.Resources.Where(item =>
+                !string.IsNullOrWhiteSpace(item.Fingerprint)))
+            {
+                var key = $"{resource.Resource.Kind}:{resource.Resource.Id}:{resource.Resource.Field}";
+                var changed = !beforeFingerprints.TryGetValue(key, out var beforeFingerprint) ||
+                    !string.Equals(beforeFingerprint, resource.Fingerprint, StringComparison.Ordinal);
+                if (changed)
+                {
+                    _resourceLedger[key] = new ResourceLedgerEntry(
+                        resource.Resource,
+                        resource.Fingerprint!,
+                        sessionId,
+                        after.State.Revision);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(exception, "Could not update the resource ledger for job {JobId}.", jobId);
+        }
+    }
 
     private static IReadOnlyList<JobComponentSockets> CollectComponentSockets(
         ChangeSet changeSet,
@@ -3485,6 +3530,94 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             ValidateAcceptancePredicate(predicate);
         }
+    }
+
+    /// <summary>
+    /// Attaches the standard acceptance predicate per write kind when the model declared none:
+    /// creates/bakes verify the object exists, deletes verify absence, wires verify presence or
+    /// absence, and everything else (values, moves, script writes) verifies runtimeErrorAbsent.
+    /// Explicit model-declared predicates are left untouched.
+    /// </summary>
+    private static ChangeSet ApplyDefaultPredicates(ChangeSet changeSet)
+    {
+        if (changeSet.AcceptancePredicates is not { Count: 0 } ||
+            changeSet.Operations is null ||
+            !changeSet.Operations.Any(operation => OperationSemantics.IsWrite(operation.Kind)))
+        {
+            return changeSet;
+        }
+
+        var predicates = new List<VerificationPredicate>();
+        var runtimeErrorAbsent = false;
+        foreach (var operation in changeSet.Operations.Where(item => OperationSemantics.IsWrite(item.Kind)))
+        {
+            var added = operation.Kind switch
+            {
+                OperationKind.CreateComponent or
+                OperationKind.CreateRhinoPrimitive or
+                OperationKind.CreateRhinoObject or
+                OperationKind.BakeGeometry =>
+                    TryAddDefaultObjectPredicate(predicates, operation, PredicateKind.ObjectExists),
+                OperationKind.DeleteComponent or
+                OperationKind.DeleteRhinoObject =>
+                    TryAddDefaultObjectPredicate(predicates, operation, PredicateKind.ObjectAbsent),
+                OperationKind.ConnectWire =>
+                    TryAddDefaultWirePredicate(predicates, operation, PredicateKind.WireExists),
+                OperationKind.DisconnectWire =>
+                    TryAddDefaultWirePredicate(predicates, operation, PredicateKind.WireAbsent),
+                _ => false
+            };
+            runtimeErrorAbsent |= !added;
+        }
+        if (runtimeErrorAbsent || predicates.Count == 0)
+        {
+            predicates.Add(new VerificationPredicate(
+                "gptino:default runtimeErrorAbsent",
+                PredicateKind.RuntimeErrorAbsent,
+                null,
+                null));
+        }
+        return changeSet with { AcceptancePredicates = predicates };
+    }
+
+    private static bool TryAddDefaultObjectPredicate(
+        List<VerificationPredicate> predicates,
+        TypedOperation operation,
+        PredicateKind kind)
+    {
+        var resource = operation.Writes.FirstOrDefault(item => item.Kind is
+            ResourceKind.GrasshopperComponent or
+            ResourceKind.GrasshopperGroup or
+            ResourceKind.RhinoObject);
+        if (resource is null)
+        {
+            return false;
+        }
+        predicates.Add(new VerificationPredicate(
+            $"gptino:default {kind.ToString().ToLowerInvariant()} {operation.OperationId}",
+            kind,
+            resource,
+            null));
+        return true;
+    }
+
+    private static bool TryAddDefaultWirePredicate(
+        List<VerificationPredicate> predicates,
+        TypedOperation operation,
+        PredicateKind kind)
+    {
+        var resource = operation.Writes.FirstOrDefault(item =>
+            item.Kind == ResourceKind.GrasshopperWire);
+        if (resource is null)
+        {
+            return false;
+        }
+        predicates.Add(new VerificationPredicate(
+            $"gptino:default {kind.ToString().ToLowerInvariant()} {operation.OperationId}",
+            kind,
+            resource,
+            null));
+        return true;
     }
 
     private static void ValidateAcceptancePredicate(VerificationPredicate predicate)
@@ -3872,6 +4005,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
         }
     }
+
+    /// <summary>
+    /// Script-content operations are the ones whose Error diagnostics describe the SCRIPT (compile
+    /// or runtime failures) rather than the operation: the write itself landed deterministically.
+    /// Keyed on OperationKind — the typed contract surface — not on bridge op names or plugin
+    /// diagnostic codes. SetComponentIo/ConvertSocket stay abort-on-error until their rebuild
+    /// error semantics are audited.
+    /// </summary>
+    private static bool IsScriptContentOperation(OperationKind kind) =>
+        kind is OperationKind.UpdatePythonSource or OperationKind.ExecutePython;
 
     private static ResourceAddress? PythonStateWrite(TypedOperation operation)
     {
@@ -4281,6 +4424,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         /// <summary>Written once by the single-writer executor just before Committed.</summary>
         public CommittedJobView? Committed { get; set; }
+
+        /// <summary>
+        /// Written once whenever the writes landed and the post-state is fully known: on commit
+        /// (same view as Committed) and on deterministic verification failure. A failed job with
+        /// Applied means "the change is live but not committed — fix and resubmit against these
+        /// fingerprints"; committed stays success-only.
+        /// </summary>
+        public CommittedJobView? Applied { get; set; }
 
         /// <summary>
         /// Written once at a terminal transition: the per-operation bridge diagnostics the
