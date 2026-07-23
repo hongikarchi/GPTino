@@ -48,10 +48,13 @@ public sealed record PythonComponentState(
     IReadOnlyList<PythonParameter> Outputs,
     IReadOnlyList<ComponentRuntimeMessage> RuntimeMessages);
 
+// Historic name: this enum predates C# support and is baked into the bridge payload contract
+// ("runtime" on python.setSource). It now covers every Rhino 8 script-component language.
 public enum PythonRuntime
 {
     Cpython3,
     IronPython2,
+    Csharp,
 }
 
 public enum ParameterAccess

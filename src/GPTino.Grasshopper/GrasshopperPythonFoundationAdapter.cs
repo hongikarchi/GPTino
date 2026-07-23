@@ -10,18 +10,24 @@ using Grasshopper.Kernel;
 namespace GPTino.Grasshopper;
 
 /// <summary>
-/// Document-bound Rhino 8 Python adapter. RhinoCode's unversioned implementation assembly is
-/// accessed by reflection, but only after the component has been identified by its Python proxy
-/// GUID. This deliberately excludes C# Script components, which implement the same public script
-/// interfaces.
+/// Document-bound Rhino 8 script-component adapter (Python 3, IronPython 2, C#). RhinoCode's
+/// unversioned implementation assembly is accessed by reflection, but only after the component
+/// has been identified by its language proxy GUID. Modern runtimes (CPython 3, C#) share the
+/// same RhinoCodePlatform.GH.IScriptComponent surface: TryGetSource/SetSource plus
+/// IScriptObject.ReBuild; IronPython 2 keeps its legacy Code property.
 /// </summary>
 public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAdapter<GH_Document>
 {
     private static readonly Guid Cpython3ComponentGuid = new("719467e6-7cf5-4848-99b0-c5dd57e5442c");
     private static readonly Guid IronPython2ComponentGuid = new("410755b1-224a-4c1e-a407-bf32fb45ea7e");
+    // Extracted from RhinoCodePluginGH.gha's string heap, directly adjacent to the
+    // "C# Script / C# / C# scripting component" name constants. Re-verify on the live benchmark:
+    // canvas.create with this GUID must yield a C# Script component.
+    private static readonly Guid CSharpComponentGuid = new("ae3b6678-0856-4e38-8100-3e31ceb6779b");
     private static readonly TimeSpan RebuildTimeout = TimeSpan.FromSeconds(30);
 
     private const string Python3Directive = "#! python 3";
+    private const string CSharpDirective = "// #! csharp";
     private const string ScriptComponentInterface = "RhinoCodePlatform.GH.IScriptComponent";
     private const string ScriptParameterInterface = "RhinoCodePlatform.GH.IScriptParameter";
 
@@ -60,12 +66,10 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         if (before.Runtime != request.Runtime)
         {
             throw new NotSupportedException(
-                "Changing the Python runtime is not safe in-place; create the intended script component first.");
+                "Changing the script runtime is not safe in-place; create the intended script component first.");
         }
 
-        var source = before.Runtime == PythonRuntime.Cpython3
-            ? EnsurePython3Directive(request.Source)
-            : request.Source ?? throw new InvalidOperationException("Python source is required.");
+        var source = EnsureLanguageDirective(request.Source, before.Runtime);
         if (string.Equals(before.Source, source, StringComparison.Ordinal))
         {
             return Task.FromResult(new WireifyMutationResult(
@@ -310,10 +314,11 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         var component = document.FindObject(componentId, true)
             ?? throw new KeyNotFoundException($"Grasshopper object {componentId:D} was not found.");
         var runtime = RuntimeOf(component);
-        if (runtime == PythonRuntime.Cpython3 && FindInterface(component, ScriptComponentInterface) is null)
+        if (runtime is PythonRuntime.Cpython3 or PythonRuntime.Csharp &&
+            FindInterface(component, ScriptComponentInterface) is null)
         {
             throw new NotSupportedException(
-                $"Grasshopper object {componentId:D} is not a supported Rhino 8 CPython component.");
+                $"Grasshopper object {componentId:D} is not a supported Rhino 8 script component.");
         }
         return component;
     }
@@ -328,8 +333,13 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         {
             return PythonRuntime.IronPython2;
         }
+        if (component.ComponentGuid == CSharpComponentGuid)
+        {
+            return PythonRuntime.Csharp;
+        }
         throw new NotSupportedException(
-            $"Grasshopper object {component.InstanceGuid:D} is not a Python script component.");
+            $"Grasshopper object {component.InstanceGuid:D} is not a supported script component " +
+            "(Python 3, IronPython 2, or C#).");
     }
 
     private static PythonComponentState ReadState(IGH_DocumentObject component)
@@ -433,7 +443,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
 
         if (rebuild is null)
         {
-            if (runtime == PythonRuntime.Cpython3)
+            if (runtime is PythonRuntime.Cpython3 or PythonRuntime.Csharp)
             {
                 throw new MissingMethodException(component.GetType().FullName, "IScriptObject.ReBuild()");
             }
@@ -460,19 +470,31 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         }
     }
 
-    private static string EnsurePython3Directive(string source)
+    private static string EnsureLanguageDirective(string? source, PythonRuntime runtime) =>
+        runtime switch
+        {
+            PythonRuntime.Cpython3 => EnsureDirective(source, Python3Directive, "#!", "CPython"),
+            PythonRuntime.Csharp => EnsureDirective(source, CSharpDirective, "// #!", "C#"),
+            _ => source ?? throw new InvalidOperationException("Script source is required."),
+        };
+
+    private static string EnsureDirective(
+        string? source,
+        string directive,
+        string directivePrefix,
+        string languageName)
     {
         ArgumentNullException.ThrowIfNull(source);
         var trimmed = source.TrimStart('\uFEFF', ' ', '\t', '\r', '\n');
-        if (trimmed.StartsWith("#!", StringComparison.Ordinal) &&
-            !trimmed.StartsWith(Python3Directive, StringComparison.Ordinal))
+        if (trimmed.StartsWith(directivePrefix, StringComparison.Ordinal) &&
+            !trimmed.StartsWith(directive, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"CPython source has an incompatible language directive; expected '{Python3Directive}'.");
+                $"{languageName} source has an incompatible language directive; expected '{directive}'.");
         }
-        return trimmed.StartsWith(Python3Directive, StringComparison.Ordinal)
+        return trimmed.StartsWith(directive, StringComparison.Ordinal)
             ? trimmed
-            : Python3Directive + "\n" + source;
+            : directive + "\n" + source;
     }
 
     private static IReadOnlyList<ScriptParameterObject> ReadParameterObjects(

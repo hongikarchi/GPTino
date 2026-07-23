@@ -122,7 +122,7 @@ may cover only its write operations.
 | `createComponent` | Cordyceps / `canvas.create` | `{operationId,objectId,componentTypeId,pivot:{x,y},nickName}` |
 | `deleteComponent` | Cordyceps / `canvas.delete` | `{operationId,objectId,expectedFingerprint}` |
 | `setGroup` | Cordyceps / `canvas.setGroup` | `{operationId,groupId,name,objectIds,argbColor}` |
-| `updatePythonSource` | Wireify / `python.setSource` | `{operationId,componentId,expectedSourceSha256,source,runtime:"cpython3"|"ironPython2",expireSolution}` |
+| `updatePythonSource` | Wireify / `python.setSource` | `{operationId,componentId,expectedSourceSha256,source,runtime:"csharp"|"cpython3"|"ironPython2",expireSolution}` — the `python.*` operations drive every Rhino 8 script component regardless of language |
 | `setComponentIo` | Wireify / `python.setSchema` | `{operationId,componentId,inputs,outputs,preserveIncidentWires}` |
 | `convertSocket` | Wireify / `python.setTyping` | `{operationId,componentId,inputParameterId,typeHint,access:"item"|"list"|"tree"}` |
 | `executePython` | Wireify / `python.execute` | `{operationId,componentId,expireUpstream,recomputeDocument}` |

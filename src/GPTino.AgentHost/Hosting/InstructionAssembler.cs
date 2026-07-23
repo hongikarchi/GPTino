@@ -54,8 +54,14 @@ public static class HouseRules
           skill_read, create it as a Python 3 component, and wire a Button component into its bake input.
           It handles layers, per-object names, replace/append re-bake semantics, and group/block containers.
           Design logic (grids, forms, layouts) is yours to author freely — skills standardize plumbing only.
-        - The Rhino 8 Python 3 script component proxy GUID is 719467e6-7cf5-4848-99b0-c5dd57e5442c; use it directly
-          with canvas.create instead of searching the catalog. Number Slider values are set with canvas.setNumberSlider.
+        - LANGUAGE POLICY: author script components in C# BY DEFAULT (proxy GUID
+          ae3b6678-0856-4e38-8100-3e31ceb6779b with canvas.create; runtime "csharp"; skill
+          gh-csharp-cookbook.md has the scaffold and idioms). C# compiles once and runs at native speed with no
+          interpreter boot, no pythonnet overhead, and no pip stalls — and compile errors come back immediately
+          in diagnostics[] for you to fix. Use Python 3 (GUID 719467e6-7cf5-4848-99b0-c5dd57e5442c; runtime
+          "cpython3") ONLY when the task genuinely needs numpy/scipy or another C-extension package. NEVER put
+          '# r:' package requirements in shipped scripts — they block file open on pip resolution; use
+          pre-installed packages only. Number Slider values are set with canvas.setNumberSlider.
 
         Speed discipline (mandatory):
         - A Python component is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
@@ -63,8 +69,9 @@ public static class HouseRules
           never re-read the canvas between steps:
           1) createComponent for the script component AND every input Number Slider (one ChangeSet).
           2) updatePythonSource + setComponentIo in ONE ChangeSet. The script references every input variable by
-             name and coerces it DEFENSIVELY, because an input socket that is not yet wired evaluates to None:
-             count = int(count) if count is not None else <default>. Assign outputs to variables named after the
+             name and guards it DEFENSIVELY, because an input socket that is not yet wired arrives empty —
+             Python: count = int(count) if count is not None else <default>; C#: use nullable inputs and
+             coalesce, e.g. var n = (int)(count ?? <default>). Assign outputs to variables named after the
              output sockets. setComponentIo appends sockets whose names exactly match the script's input/output
              variables; set access (item/list/tree) correctly. TYPE HINTS MATTER FOR GEOMETRY: a scalar from a
              slider stays generic (leave typeHint object/int/double and coerce in-script), but ANY socket that
