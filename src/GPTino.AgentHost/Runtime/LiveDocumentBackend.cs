@@ -1512,17 +1512,26 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         foreach (var item in canvas.Objects)
         {
             var id = item.ObjectId.ToString("D");
+            // Per-domain fingerprints: independent user edits must not invalidate each other's
+            // expectations (moving a component cannot stale a pending value write). Empty domain
+            // hashes fall back to the whole-object hash for older adapters/test fakes.
+            var structureFingerprint = string.IsNullOrEmpty(item.StructureFingerprint)
+                ? item.Fingerprint
+                : item.StructureFingerprint;
+            var layoutFingerprint = string.IsNullOrEmpty(item.LayoutFingerprint)
+                ? item.Fingerprint
+                : item.LayoutFingerprint;
             resources.Add(new ResourceFingerprint(
                 new ResourceAddress(ResourceKind.GrasshopperComponent, id),
-                item.Fingerprint));
+                structureFingerprint));
             resources.Add(new ResourceFingerprint(
                 new ResourceAddress(ResourceKind.GrasshopperComponentLayout, id),
-                item.Fingerprint));
+                layoutFingerprint));
             if (item.ValueJson is not null)
             {
                 resources.Add(new ResourceFingerprint(
                     new ResourceAddress(ResourceKind.GrasshopperComponentValue, id),
-                    item.Fingerprint));
+                    string.IsNullOrEmpty(item.ValueFingerprint) ? item.Fingerprint : item.ValueFingerprint));
             }
         }
         foreach (var wire in canvas.Wires)

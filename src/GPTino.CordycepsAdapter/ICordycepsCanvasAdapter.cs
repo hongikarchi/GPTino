@@ -80,6 +80,18 @@ public sealed record CanvasObjectState(
         Array.Empty<CanvasParameterState>();
 
     public string? ValueJson { get; init; }
+
+    /// <summary>
+    /// Per-domain fingerprints so independent edits do not invalidate each other: moving a
+    /// component must not block a pending value write. <see cref="Fingerprint"/> stays the
+    /// whole-object hash (drives document revision); these back the layout/value/structure
+    /// conflict domains. Empty means "not computed" and consumers fall back to the whole hash.
+    /// </summary>
+    public string StructureFingerprint { get; init; } = string.Empty;
+
+    public string LayoutFingerprint { get; init; } = string.Empty;
+
+    public string? ValueFingerprint { get; init; }
 }
 
 public sealed record CanvasParameterState(

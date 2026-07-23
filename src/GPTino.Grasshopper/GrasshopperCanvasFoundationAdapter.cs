@@ -245,10 +245,15 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         }
         var documentObject = document.FindObject(request.ObjectId, true)
             ?? throw new KeyNotFoundException($"Grasshopper object {request.ObjectId:D} was not found.");
-        var before = ToObjectState(documentObject, BuildParameterOwners(document)).Fingerprint;
+        // Delete guards on the STRUCTURE fingerprint: deleting a component the user merely moved
+        // or value-tweaked is still their intent; rewiring or renaming it is a real conflict.
+        var beforeState = ToObjectState(documentObject, BuildParameterOwners(document));
+        var before = beforeState.StructureFingerprint;
         if (!string.Equals(before, request.ExpectedFingerprint, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("Canvas object changed after the request snapshot.");
+            throw new InvalidOperationException(
+                "Canvas object structure changed after the request snapshot. Current structure " +
+                $"fingerprint: {before}. Resubmit with this value.");
         }
 
         document.UndoUtil.RecordRemoveObjectEvent($"GPTino: {request.OperationId}", documentObject);
@@ -297,11 +302,14 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
                     ?? throw new KeyNotFoundException($"Grasshopper object {pair.Key:D} was not found.");
                 var state = ToObjectState(documentObject, BuildParameterOwners(document));
                 var expected = request.ExpectedFingerprints[pair.Key];
+                // Moves guard on the LAYOUT fingerprint only: a concurrent value or wiring edit
+                // does not conflict with repositioning the component.
                 if (string.IsNullOrWhiteSpace(expected) ||
-                    !string.Equals(state.Fingerprint, expected, StringComparison.Ordinal))
+                    !string.Equals(state.LayoutFingerprint, expected, StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException(
-                        $"Canvas object {pair.Key:D} changed after the request snapshot.");
+                        $"Canvas object {pair.Key:D} layout changed after the request snapshot. " +
+                        $"Current layout fingerprint: {state.LayoutFingerprint}. Resubmit with this value.");
                 }
                 return new PreparedMove(
                     pair.Key,
@@ -375,9 +383,13 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             ?? throw new InvalidOperationException(
                 $"Grasshopper object {request.ObjectId:D} is not a Number Slider.");
         var beforeState = ToObjectState(slider, BuildParameterOwners(document));
-        if (!string.Equals(beforeState.Fingerprint, request.ExpectedFingerprint, StringComparison.Ordinal))
+        // Value writes guard on the VALUE fingerprint only: moving the slider around the canvas
+        // does not conflict with setting its value.
+        if (!string.Equals(beforeState.ValueFingerprint, request.ExpectedFingerprint, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("The Number Slider changed after the request snapshot.");
+            throw new InvalidOperationException(
+                "The Number Slider value changed after the request snapshot. Current value " +
+                $"fingerprint: {beforeState.ValueFingerprint}. Resubmit with this value.");
         }
 
         var oldMinimum = slider.Slider.Minimum;
@@ -618,11 +630,23 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
                 decimalPlaces = slider.Slider.DecimalPlaces
             })
             : null;
-        var fingerprintSource = string.Create(
+        // Per-domain hashes: layout (position/size), value (slider state), structure (identity,
+        // nickname, sockets, incoming wires). Independent user edits must not invalidate each
+        // other's optimistic-concurrency expectations — moving a component cannot block a value
+        // write. The whole-object fingerprint combines all three and keeps driving the document
+        // revision, so any edit still bumps the snapshot.
+        var structureSource = string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{documentObject.InstanceGuid:N}|{documentObject.ComponentGuid:N}|{pivot.X:R}|{pivot.Y:R}|{bounds.Width:R}|{bounds.Height:R}|{documentObject.NickName}|{sockets}|{valueJson}");
-        var fingerprint = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintSource))).ToLowerInvariant();
+            $"{documentObject.InstanceGuid:N}|{documentObject.ComponentGuid:N}|{documentObject.NickName}|{sockets}");
+        var layoutSource = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{documentObject.InstanceGuid:N}|{pivot.X:R}|{pivot.Y:R}|{bounds.Width:R}|{bounds.Height:R}");
+        var structureFingerprint = HashHex(structureSource);
+        var layoutFingerprint = HashHex(layoutSource);
+        var valueFingerprint = valueJson is null
+            ? null
+            : HashHex($"{documentObject.InstanceGuid:N}|{valueJson}");
+        var fingerprint = HashHex($"{structureFingerprint}|{layoutFingerprint}|{valueFingerprint}");
         return new CanvasObjectState(
             documentObject.InstanceGuid,
             documentObject.ComponentGuid,
@@ -634,8 +658,14 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             Inputs = inputs,
             Outputs = outputs,
             ValueJson = valueJson,
+            StructureFingerprint = structureFingerprint,
+            LayoutFingerprint = layoutFingerprint,
+            ValueFingerprint = valueFingerprint,
         };
     }
+
+    private static string HashHex(string source) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
 
     private static void SetSliderRangeAndValue(
         GH_NumberSlider slider,

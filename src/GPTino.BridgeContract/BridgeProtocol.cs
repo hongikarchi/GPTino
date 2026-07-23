@@ -11,7 +11,9 @@ public static class BridgeProtocol
     // v4: CanvasOutputParameterInspection gained SampleValues. JsonOptions disallow unmapped members,
     // so any payload-shape change MUST bump this version or skew fails as an opaque JsonException.
     // v5: SelectionChangedEvent gained GrasshopperObjects (canvas selection discovery hint).
-    public const int Version = 5;
+    // v6: CanvasObjectState gained per-domain Structure/Layout/Value fingerprints so a component
+    //     move no longer invalidates pending value writes.
+    public const int Version = 6;
 
     public const int DefaultMaximumFrameBytes = 8 * 1024 * 1024;
 
