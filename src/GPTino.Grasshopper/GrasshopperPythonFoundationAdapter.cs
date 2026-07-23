@@ -59,9 +59,21 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
 
         var component = ResolveComponent(document, request.ComponentId);
         var before = ReadState(component);
-        if (!string.Equals(before.SourceSha256, request.ExpectedSourceSha256, StringComparison.Ordinal))
+        // "gptino:auto" opts out of the in-payload source-hash guard: the whole-component
+        // fingerprint chain on the operation envelope already detects concurrent source edits,
+        // and a freshly created component's seeded template hash is unknowable to the model.
+        var autoSource = string.Equals(
+            request.ExpectedSourceSha256,
+            "gptino:auto",
+            StringComparison.Ordinal);
+        if (!autoSource &&
+            !string.Equals(before.SourceSha256, request.ExpectedSourceSha256, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("Python source changed after the request snapshot.");
+            throw new InvalidOperationException(
+                "Python source changed after the request snapshot. The current source sha256 is " +
+                $"'{before.SourceSha256}' — resubmit with that exact value, or use " +
+                "expectedSourceSha256:\"gptino:auto\" (the component fingerprint chain still " +
+                "guards concurrent edits).");
         }
         if (before.Runtime != request.Runtime)
         {
