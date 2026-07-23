@@ -23,6 +23,7 @@ export interface GptinoApiClient {
   setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
   sendMessage(sessionId: string, request: MessageRequest): Promise<void>;
   openTerminal(sessionId: string): Promise<void>;
+  openLoginTerminal(): Promise<void>;
   setRuntimePaused(paused: boolean): Promise<void>;
   stopCurrent(): Promise<void>;
 }
@@ -177,6 +178,10 @@ class HttpApiClient implements GptinoApiClient {
     return this.request(`/sessions/${encodeURIComponent(sessionId)}/terminal`, {
       method: "POST",
     });
+  }
+
+  openLoginTerminal(): Promise<void> {
+    return this.request("/runtime/login-terminal", { method: "POST" });
   }
 
   setRuntimePaused(paused: boolean): Promise<void> {

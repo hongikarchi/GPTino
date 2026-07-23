@@ -1,12 +1,53 @@
 import { useEffect, useState } from "react";
 import { ChatPane } from "./components/ChatPane";
 import { Icon } from "./components/Icons";
-import { OperationsPane } from "./components/OperationsPane";
 import { SessionCanvas } from "./components/SessionCanvas";
 import { useRuntime } from "./hooks/useRuntime";
+import type { CodexAuth } from "./types";
 import "./styles.css";
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+// LLM sign-in indicator (blue = signed in, red = signed out / CLI missing).
+// Codex only for now — a Claude backend is deferred, so a second provider
+// indicator would slot in right next to this one when that lands.
+function LlmAuthIndicator({ auth, busy, onLogin }: { auth: CodexAuth; busy: boolean; onLogin: () => void }) {
+  const loggedIn = auth.status === "logged-in";
+  const detail =
+    auth.detail ??
+    (loggedIn
+      ? "Signed in"
+      : auth.status === "cli-missing"
+        ? "Codex CLI not found"
+        : "Signed out — click to log in");
+  const body = (
+    <>
+      <span className="llm-light" />
+      <div>
+        <strong>Codex</strong>
+        <span>{detail}</span>
+      </div>
+    </>
+  );
+  if (loggedIn) {
+    return (
+      <div className={`llm-auth llm-${auth.status}`} title={`Codex — ${detail}`}>
+        {body}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className={`llm-auth llm-${auth.status}`}
+      onClick={onLogin}
+      disabled={busy}
+      title={`Codex — ${detail}. Click to open a terminal and run 'codex login'.`}
+    >
+      {body}
+    </button>
+  );
+}
 
 export default function App() {
   const { runtime, models, loading, error, demo, busyActions, actions } = useRuntime();
@@ -106,6 +147,13 @@ export default function App() {
               <span>{runtime.healthDetail ?? "Document runtime"}</span>
             </div>
           </div>
+          {runtime.codexAuth ? (
+            <LlmAuthIndicator
+              auth={runtime.codexAuth}
+              busy={busyActions.has("login-terminal")}
+              onLogin={() => void actions.openLoginTerminal()}
+            />
+          ) : null}
         </div>
       </header>
 
@@ -122,6 +170,15 @@ export default function App() {
           <Icon name="pause" />
           <span>Executor paused — active transaction will stop at its next safe boundary.</span>
           <button type="button" onClick={() => void actions.pauseRuntime(false)}>Resume all</button>
+        </div>
+      ) : null}
+
+      {runtime.conflicts.length > 0 ? (
+        <div className="conflict-banner" role="alert">
+          <Icon name="warning" />
+          <span>
+            {runtime.conflicts.length} resource conflict{runtime.conflicts.length > 1 ? "s" : ""} — {runtime.conflicts[0].title}
+          </span>
         </div>
       ) : null}
 
@@ -146,10 +203,32 @@ export default function App() {
           >
             <span>+</span> Session
           </button>
+          <div className="canvas-global-actions">
+            <button
+              type="button"
+              className={`secondary-button ${runtime.paused ? "resume" : ""}`}
+              onClick={() => void actions.pauseRuntime(!runtime.paused)}
+              disabled={busyActions.has("pause-runtime")}
+              title={runtime.paused ? "Resume every session" : "Pause every session at its next safe boundary"}
+            >
+              <Icon name={runtime.paused ? "play" : "pause"} />
+              {runtime.paused ? "Resume all" : "Pause all"}
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              onClick={() => void actions.stopCurrent()}
+              disabled={!runtime.writer || busyActions.has("stop-current")}
+              title="Stop the live single-writer transaction at its next safe boundary"
+            >
+              <Icon name="stop" />
+              Stop current
+            </button>
+          </div>
         </div>
       </section>
 
-      <main className="workspace-grid">
+      <main className="chat-region">
         <ChatPane
           session={selected}
           models={models}
@@ -158,12 +237,6 @@ export default function App() {
           onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
           onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
           onSend={(content) => selected ? actions.sendMessage(selected.id, content) : undefined}
-        />
-        <OperationsPane
-          runtime={runtime}
-          busyActions={busyActions}
-          onPauseRuntime={(paused) => void actions.pauseRuntime(paused)}
-          onStop={() => void actions.stopCurrent()}
         />
       </main>
     </div>

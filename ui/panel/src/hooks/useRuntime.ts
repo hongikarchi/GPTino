@@ -192,6 +192,9 @@ export function useRuntime() {
           (activeClient) => activeClient.setRuntimePaused(paused),
         );
       },
+      openLoginTerminal() {
+        return runAction("login-terminal", undefined, (activeClient) => activeClient.openLoginTerminal());
+      },
       stopCurrent() {
         return runAction("stop-current", undefined, (activeClient) => activeClient.stopCurrent());
       },

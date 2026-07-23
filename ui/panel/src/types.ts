@@ -104,6 +104,13 @@ export interface CurrentSelection {
   observedAt: string;
 }
 
+export type CodexAuthStatus = "logged-in" | "logged-out" | "cli-missing" | "unknown";
+
+export interface CodexAuth {
+  status: CodexAuthStatus;
+  detail?: string;
+}
+
 export interface RuntimeState {
   projectId: string;
   projectName: string;
@@ -121,6 +128,7 @@ export interface RuntimeState {
   conflicts: RuntimeConflict[];
   currentSelection?: CurrentSelection | null;
   contextFolder?: string | null;
+  codexAuth?: CodexAuth;
   lastUpdatedAt: string;
 }
 

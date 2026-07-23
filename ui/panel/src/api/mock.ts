@@ -240,6 +240,7 @@ const demoState: RuntimeState = {
     },
   ],
   contextFolder: "C:\\Users\\user\\AppData\\Local\\GPTino\\projects\\a31f924c\\context",
+  codexAuth: { status: "logged-out", detail: "Signed out — click to log in" },
   currentSelection: {
     rhinoObjectCount: 2,
     rhinoObjectIds: [
@@ -352,6 +353,11 @@ export function createMockApiClient(): GptinoApiClient {
       mutateSession(sessionId, (index) => {
         state.sessions[index].terminalOpen = true;
       });
+    },
+    async openLoginTerminal() {
+      await delay(400);
+      state.codexAuth = { status: "logged-in", detail: "Signed in" };
+      emit();
     },
     async setRuntimePaused(paused) {
       await delay();

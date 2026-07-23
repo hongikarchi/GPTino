@@ -17,6 +17,7 @@ public sealed class RuntimeStateProjector
     private readonly TerminalLauncher? _terminals;
     private readonly ProjectContextStore? _contextStore;
     private readonly SessionActivityLog? _activity;
+    private readonly CodexAuthProbe? _codexAuth;
 
     public RuntimeStateProjector(
         SessionStore store,
@@ -28,7 +29,8 @@ public sealed class RuntimeStateProjector
         EventHub events,
         TerminalLauncher? terminals = null,
         ProjectContextStore? contextStore = null,
-        SessionActivityLog? activity = null)
+        SessionActivityLog? activity = null,
+        CodexAuthProbe? codexAuth = null)
     {
         _store = store;
         _options = options;
@@ -40,6 +42,7 @@ public sealed class RuntimeStateProjector
         _terminals = terminals;
         _contextStore = contextStore;
         _activity = activity;
+        _codexAuth = codexAuth;
     }
 
     public async Task<object> BuildAsync(CancellationToken cancellationToken = default)
@@ -144,6 +147,7 @@ public sealed class RuntimeStateProjector
             .ToArray();
         var writerQueueItem = queueItems.FirstOrDefault(item =>
             item.State is JobState.Executing or JobState.Verifying);
+        var codexAuthSnapshot = _codexAuth?.Read();
         return new
         {
             projectId,
@@ -173,6 +177,9 @@ public sealed class RuntimeStateProjector
             queue = projectedQueue,
             conflicts = projectedConflicts,
             contextFolder = _contextStore?.ContextDirectory,
+            codexAuth = codexAuthSnapshot is null
+                ? null
+                : new { status = codexAuthSnapshot.Wire, detail = codexAuthSnapshot.Detail },
             currentSelection = live?.CurrentSelection is { } selection
                 ? new
                 {

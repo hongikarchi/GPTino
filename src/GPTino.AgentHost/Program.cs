@@ -73,6 +73,8 @@ builder.Services.AddSingleton<DynamicToolDispatcher>();
 builder.Services.AddSingleton<SessionOrchestrator>();
 builder.Services.AddSingleton<RuntimeStateProjector>();
 builder.Services.AddSingleton<TerminalLauncher>();
+builder.Services.AddSingleton<CodexAuthProbe>();
+builder.Services.AddSingleton<CodexLoginLauncher>();
 builder.Services.AddHostedService<ReadySignalService>();
 builder.Services.AddHostedService<ParentProcessMonitor>();
 
@@ -358,6 +360,16 @@ api.MapPost("/runtime/stop-current", async (CancellationToken cancellationToken)
     await backend.StopCurrentAsync(cancellationToken);
     events.Publish();
     return Results.NoContent();
+});
+
+api.MapPost("/runtime/login-terminal", (CodexLoginLauncher loginLauncher) =>
+{
+    if (loginLauncher.TryLaunch(out var message))
+    {
+        events.Publish();
+        return Results.NoContent();
+    }
+    return Results.Content(message, "text/plain", System.Text.Encoding.UTF8, 409);
 });
 
 api.MapGet("/models", async (ModelSelector selector, CancellationToken cancellationToken) =>
