@@ -4037,11 +4037,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     /// Script-content operations are the ones whose Error diagnostics describe the SCRIPT (compile
     /// or runtime failures) rather than the operation: the write itself landed deterministically.
     /// Keyed on OperationKind — the typed contract surface — not on bridge op names or plugin
-    /// diagnostic codes. SetComponentIo/ConvertSocket stay abort-on-error until their rebuild
-    /// error semantics are audited.
+    /// diagnostic codes. Covers the whole python-state family: the Wireify adapter emits Error
+    /// diagnostics only from component runtime messages (script content), while operation-level
+    /// failures arrive as thrown bridge errors and still abort. Live round R3 confirmed compile
+    /// errors surface on setComponentIo responses (the schema write triggers the solve).
     /// </summary>
     private static bool IsScriptContentOperation(OperationKind kind) =>
-        kind is OperationKind.UpdatePythonSource or OperationKind.ExecutePython;
+        kind is OperationKind.UpdatePythonSource or
+            OperationKind.ExecutePython or
+            OperationKind.SetComponentIo or
+            OperationKind.ConvertSocket;
 
     private static ResourceAddress? PythonStateWrite(TypedOperation operation)
     {

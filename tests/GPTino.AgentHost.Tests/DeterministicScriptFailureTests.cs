@@ -242,6 +242,98 @@ public sealed class DeterministicScriptFailureTests
     }
 
     [Fact]
+    public async Task SchemaCompileErrorFailsDeterministicallyWithAppliedView()
+    {
+        // Live round R3: a staged compile error surfaces on the setComponentIo response because
+        // the schema write triggers the solve. It must be an iterable Failed, not RecoveryRequired.
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.CordycepsCanvas,
+                BridgeAdapterOwner.Wireify
+            ]);
+        await using var responder = harness.StartResponder(responseFactory: request => request.Operation switch
+        {
+            "python.inspect" => BridgeOperationResponse.Create(
+                request.OperationId,
+                changed: false,
+                new { componentId = request.Arguments.GetProperty("componentId").GetGuid() },
+                afterFingerprint: InitialFingerprint),
+            "python.setSchema" => BridgeOperationResponse.Create(
+                request.OperationId,
+                changed: true,
+                new { applied = true },
+                beforeFingerprint: InitialFingerprint,
+                afterFingerprint: "python-f1",
+                diagnostics:
+                [
+                    new BridgeDiagnostic(
+                        BridgeDiagnosticSeverity.Error,
+                        "python_error",
+                        "The name 'missingOffset' does not exist in the current context")
+                ]),
+            _ => null
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Schema error"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var resource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentIo,
+            harness.CanvasObjectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "schema.json",
+            new
+            {
+                bridgeOperation = "python.setSchema",
+                arguments = new
+                {
+                    operationId = "set-schema",
+                    componentId = harness.CanvasObjectId,
+                    inputs = new[] { new { name = "spacing", access = "item", typeHint = "double" } },
+                    outputs = new[] { new { name = "pts", access = "list", typeHint = "point3d" } },
+                    preserveIncidentWires = true
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [new ResourceExpectation(resource, InitialFingerprint)],
+            [
+                new TypedOperation(
+                    "set-schema",
+                    OperationKind.SetComponentIo,
+                    AdapterOwner.Wireify,
+                    [],
+                    [resource],
+                    Reversible: true,
+                    artifact)
+            ],
+            [],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "schema-error"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var jobView = await harness.ReadJobViewAsync(jobId);
+
+        Assert.Equal("failed", state);
+        Assert.Equal(JsonValueKind.Object, jobView.GetProperty("applied").ValueKind);
+        Assert.Contains(
+            jobView.GetProperty("diagnostics").EnumerateArray(),
+            item => item.GetProperty("operationId").GetString() == "set-schema" &&
+                item.GetProperty("code").GetString() == "python_error");
+    }
+
+    [Fact]
     public async Task NonScriptErrorDiagnosticStillAborts()
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync();
