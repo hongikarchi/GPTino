@@ -38,6 +38,13 @@ points = pts;   // assign each output socket variable exactly once
   and are `null` until wired. Coalesce then cast: `var n = (int)(count ?? 5.0);`. Casting
   a boxed double straight to `int` throws — go through `double` first or use
   `Convert.ToInt32(count ?? 5.0)`.
+- **Typed geometry inputs**: an input that carries geometry ALSO arrives as `object` unless you
+  gave its socket a geometry type hint. Never pass a raw generic input into a RhinoCommon call
+  expecting a typed argument — `Extrusion.Create(curve, ...)` where `curve` is `object` fails to
+  compile ("cannot convert from 'object' to 'Rhino.Geometry.Curve'"). Either set the socket's
+  typeHint (curve/brep/mesh/...) so it arrives typed, or cast explicitly: `var c = (Curve)curve;`
+  / `var crv = curve as Curve;` with a null check. Build geometry inside the script from scalar
+  inputs when you can, so inputs stay generic and only outputs need geometry hints.
 - **Geometry types**: `using Rhino.Geometry;` and construct explicitly
   (`new Point3d(x, y, z)`, `new Line(a, b)`, `NurbsCurve.Create(...)`). Sockets carrying
   geometry between components need the geometry type hint on BOTH ends (set via

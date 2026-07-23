@@ -2,6 +2,7 @@ using System.Text.Json;
 using GPTino.AgentHost.Api;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
+using GPTino.CordycepsAdapter;
 using GPTino.WireifyAdapter;
 
 namespace GPTino.AgentHost.Tests;
@@ -331,6 +332,141 @@ public sealed class DeterministicScriptFailureTests
             jobView.GetProperty("diagnostics").EnumerateArray(),
             item => item.GetProperty("operationId").GetString() == "set-schema" &&
                 item.GetProperty("code").GetString() == "python_error");
+    }
+
+    [Fact]
+    public async Task SocketRemovingSchemaFailsBeforeAnyWriteInsteadOfRecoveryRequired()
+    {
+        // The component has two input sockets live; a schema declaring only one would remove one.
+        // This must be rejected BEFORE the source write lands (clean Failed, not RecoveryRequired).
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.CordycepsCanvas,
+                BridgeAdapterOwner.Wireify
+            ]);
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return request.Operation == "canvas.snapshot"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    TwoInputScriptSnapshot(harness))
+                : null;
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Socket removal"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var sourceResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentSource,
+            harness.CanvasObjectId.ToString("D"));
+        var ioResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentIo,
+            harness.CanvasObjectId.ToString("D"));
+        var sourceArtifact = await harness.WritePayloadAsync(
+            session,
+            "shrink-source.json",
+            new
+            {
+                bridgeOperation = "python.setSource",
+                arguments = new
+                {
+                    operationId = "shrink-source",
+                    componentId = harness.CanvasObjectId,
+                    expectedSourceSha256 = "gptino:auto",
+                    source = "a = x",
+                    runtime = PythonRuntime.Cpython3,
+                    expireSolution = false
+                }
+            });
+        var schemaArtifact = await harness.WritePayloadAsync(
+            session,
+            "shrink-schema.json",
+            new
+            {
+                bridgeOperation = "python.setSchema",
+                arguments = new
+                {
+                    operationId = "shrink-schema",
+                    componentId = harness.CanvasObjectId,
+                    inputs = new[] { new { name = "x", access = "item", typeHint = "double" } },
+                    outputs = new[] { new { name = "a", access = "item", typeHint = "double" } },
+                    preserveIncidentWires = true
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [
+                new ResourceExpectation(sourceResource, InitialFingerprint),
+                new ResourceExpectation(ioResource, InitialFingerprint)
+            ],
+            [
+                new TypedOperation("shrink-source", OperationKind.UpdatePythonSource, AdapterOwner.Wireify, [], [sourceResource], true, sourceArtifact),
+                new TypedOperation("shrink-schema", OperationKind.SetComponentIo, AdapterOwner.Wireify, [], [ioResource], true, schemaArtifact)
+            ],
+            [],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "socket-removal"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var jobView = await harness.ReadJobViewAsync(jobId);
+
+        Assert.Equal("failed", state);
+        Assert.Contains("append-only", jobView.GetProperty("message").GetString(), StringComparison.Ordinal);
+        // The preflight runs before the write loop, so no source write reached the bridge.
+        lock (writeOps)
+        {
+            Assert.DoesNotContain("python.setSource", writeOps);
+        }
+    }
+
+    private static CanvasSnapshot TwoInputScriptSnapshot(LiveDocumentBackendHarness harness)
+    {
+        CanvasParameterState Param(string name, CanvasParameterDirection direction) => new(
+            harness.CanvasObjectId,
+            Guid.NewGuid(),
+            name,
+            name,
+            direction,
+            "System.Object",
+            "object",
+            CanvasParameterAccess.Item,
+            Optional: false,
+            Array.Empty<CanvasParameterEndpoint>());
+        var component = new CanvasObjectState(
+            harness.CanvasObjectId,
+            Guid.Parse("719467e6-7cf5-4848-99b0-c5dd57e5442c"),
+            "Script",
+            new CanvasPoint(10, 20),
+            new CanvasSize(90, 40),
+            InitialFingerprint)
+        {
+            Inputs = [Param("x", CanvasParameterDirection.Input), Param("y", CanvasParameterDirection.Input)],
+            Outputs = [Param("a", CanvasParameterDirection.Output)],
+            StructureFingerprint = InitialFingerprint,
+            LayoutFingerprint = "layout-2in",
+        };
+        return new CanvasSnapshot(
+            harness.Target.GrasshopperDocumentId,
+            "two-input-document-v1",
+            [component],
+            Array.Empty<WireState>(),
+            Array.Empty<GroupState>());
     }
 
     [Fact]

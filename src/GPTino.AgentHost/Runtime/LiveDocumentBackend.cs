@@ -827,6 +827,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 preparedOperations,
                 before.State.Revision,
                 execution.Token).ConfigureAwait(false);
+            PreflightPythonSchemas(preparedOperations, before);
 
             await EnsureHistoryBaselineAsync(before, execution.Token).ConfigureAwait(false);
             var lease = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
@@ -1842,6 +1843,47 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
         }
     }
+
+    // A setComponentIo schema is append-only: the adapter rejects a socket-count reduction with a
+    // NotSupportedException at execute time, which — because the same ChangeSet's source write has
+    // already landed — dead-ends the job in RecoveryRequired. Catch it here, BEFORE any write, by
+    // comparing the requested socket counts against the component's live sockets in the pre-write
+    // snapshot, so a removal is a clean deterministic failure with no partial state.
+    private static void PreflightPythonSchemas(
+        IReadOnlyList<PreparedOperation> prepared,
+        SnapshotEnvelope before)
+    {
+        foreach (var item in prepared.Where(item =>
+                     string.Equals(item.BridgeOperation, "python.setSchema", StringComparison.Ordinal)))
+        {
+            if (!item.Arguments.TryGetProperty("componentId", out var componentIdElement) ||
+                !componentIdElement.TryGetGuid(out var componentId))
+            {
+                continue;
+            }
+            var component = before.Canvas.Objects.FirstOrDefault(obj => obj.ObjectId == componentId);
+            if (component is null)
+            {
+                continue;
+            }
+            var requestedInputs = CountSchemaSockets(item.Arguments, "inputs");
+            var requestedOutputs = CountSchemaSockets(item.Arguments, "outputs");
+            if (requestedInputs < component.Inputs.Count || requestedOutputs < component.Outputs.Count)
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{item.Operation.OperationId}' would remove sockets from component " +
+                    $"{componentId:D} (schema is append-only): it has {component.Inputs.Count} input(s) and " +
+                    $"{component.Outputs.Count} output(s), but the request declares {requestedInputs} input(s) " +
+                    $"and {requestedOutputs} output(s). List every existing socket in order, then appended " +
+                    "ones; you may rename or retype existing sockets but not remove them.");
+            }
+        }
+    }
+
+    private static int CountSchemaSockets(JsonElement arguments, string property) =>
+        arguments.TryGetProperty(property, out var element) && element.ValueKind == JsonValueKind.Array
+            ? element.GetArrayLength()
+            : 0;
 
     private async Task<byte[]> ReadOperationPayloadBytesAsync(
         Guid sessionId,
