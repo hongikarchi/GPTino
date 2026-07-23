@@ -2,42 +2,42 @@ namespace GPTino.AgentHost.Codex;
 
 internal static class DynamicToolSpecs
 {
-    private const string PayloadGuide =
-        "First call artifact_write with one JSON request object per operation, then set payloadArtifact to that session-relative path. " +
-        "The artifact must be exactly {bridgeOperation,arguments}; bridgeOperation is mandatory and must match this mapping: " +
-        "moveComponent/setLayout=canvas.move {operationId,pivots:{guid:{x,y}},expectedFingerprints:{guid:sha256}}; " +
-        "setValue=canvas.setNumberSlider {operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces}; only Number Slider is supported; " +
-        "connectWire/disconnectWire=canvas.setWire {operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:connect|disconnect,rejectCycles:true}; " +
-        "createComponent=canvas.create {operationId,objectId,componentTypeId,pivot:{x,y},nickName}; " +
-        "deleteComponent=canvas.delete {operationId,objectId,expectedFingerprint}; " +
-        "setGroup=canvas.setGroup {operationId,groupId,name,objectIds,argbColor}; " +
-        "updatePythonSource=python.setSource {operationId,componentId,expectedSourceSha256,source,runtime:cpython3|ironPython2,expireSolution}; " +
-        "setComponentIo=python.setSchema {operationId,componentId,inputs,outputs,preserveIncidentWires}; " +
-        "Python schema may append sockets only (socket removal is unsupported): list every existing socket in order followed by appended sockets. Socket UUIDs are managed by the server: existing sockets keep their id and appended sockets are assigned one, so any placeholder UUID you supply is reconciled by position — you only control each socket's name, access, and type hint. Scalar sockets fed by sliders stay generic (type object/int/double, coerced in-script), but a socket that carries GEOMETRY wired between components must use the geometry type hint (point3d, vector3d, line, curve, plane, mesh, brep, surface, geometry, ...) on both the output and the input, or the receiver gets an untyped/Guid value; " +
-        "convertSocket=python.setTyping {operationId,componentId,inputParameterId,typeHint,access:item|list|tree}; " +
-        "executePython=python.execute {operationId,componentId,expireUpstream,recomputeDocument}; " +
-        "readRuntimeMessages=python.runtimeMessages {componentId}; " +
-        "createRhinoPrimitive=rhino.createPrimitive {operationId,objectId,logicalEntityId,kind,one matching primitive definition,attributes}; " +
-        "transformRhinoObject=rhino.transform {operationId,objectId,expectedFingerprint,matrix:{m00..m33}}; " +
-        "Rhino create/modify/bake/attributes=rhino.upsert {operationId,objectId,logicalEntityId,geometryType,geometryJson,attributesJson,expectedFingerprint}; " +
-        "deleteRhinoObject=rhino.delete {operationId,objectId,expectedFingerprint}. " +
-        "Read operations use {objectId} for canvas/Rhino or {componentId} for Wireify. JSON property and enum names are camelCase. " +
-        "Every operation read needs a readSet fingerprint and every write needs an exact writeSet expectation; unused expectations and extra payload-unrelated writes are rejected. " +
-        "Every typed read operation must keep its writes empty; a read-only ChangeSet also keeps writeSet empty, while a mixed ChangeSet uses writeSet only for its write operations. Canvas points require exactly x/y and Rhino points or vectors exactly x/y/z. " +
-        "Use field='*' and canonical lowercase UUIDs: D format (8-4-4-4-12 with dashes) for object resources. " +
-        "A wire's writeSet resource id is the exact string sourceObjectId/sourceParameterId>targetObjectId/targetParameterId " +
-        "where each id is N format (32 hex, no dashes) — same guids as the wire payload. If a payload-alignment error " +
-        "reports the expected id, declare that exact string and resubmit. " +
-        "Write domains are exact: move/layout=grasshopperComponentLayout; Number Slider setValue=grasshopperComponentValue; component create/delete=grasshopperComponent; wire=grasshopperWire; group=grasshopperGroup; " +
-        "Python source/schema-or-typing/execute=grasshopperComponentSource/grasshopperComponentIo/grasshopperComponentValue; every Rhino mutation=rhinoObject. " +
-        "Python source/I/O/value writes share runtime-sensitive whole-component state: one ChangeSet may write exactly one Python component, those writes must be contiguous, and no other writes may be mixed in. " +
-        "Optimistic-concurrency bookkeeping is automatic: set existing-resource writeSet/readSet expectedFingerprint to 'gptino:auto', expectedSnapshotId to 'gptino:auto', and baseSnapshotRevision to -1 — the server fills them from this session's own last commit, and a foreign change still Blocks. " +
-        "CreateComponent, CreateRhinoPrimitive, CreateRhinoObject, BakeGeometry, ConnectWire, and a new SetGroup use writeSet expectedFingerprint='gptino:absent' for the exact new resource. " +
-        "Value/geometry payload+writeSet fingerprints (setNumberSlider, move, delete, rhino transform/upsert) must be the concrete value, not gptino:auto. For CreateRhinoObject/BakeGeometry only, payload arguments.expectedFingerprint is null. " +
-        "Rhino geometryJson must be native RhinoCommon JSON and match geometryType; attributesJson is native ObjectAttributes JSON, or an empty string for default/new attributes. Distinct Rhino object IDs in one ChangeSet must use distinct case-sensitive logicalEntityId values. " +
-        "Payload fingerprints for existing canvas/Rhino resources must exactly match writeSet, and two operations in one ChangeSet cannot write overlapping domains. " +
-        "Acceptance predicates are optional: submit acceptancePredicates as [] and the server attaches the standard set " +
-        "(creates/bakes verify objectExists, deletes objectAbsent, wires wireExists/wireAbsent, everything else runtimeErrorAbsent).";
+    private static readonly string PayloadGuide = Hosting.InstructionAssets.LoadOrFallback(
+        "payload-guide.md",
+        DefaultPayloadGuide);
+
+    private const string DefaultPayloadGuide = """
+
+        PAYLOADS — first call artifact_write with one JSON object per operation (exactly {"bridgeOperation":"...","arguments":{...}}), then set payloadArtifact to that session-relative path. Property and enum names are camelCase.
+        bridgeOperation mapping:
+        - moveComponent/setLayout -> canvas.move {operationId,pivots:{guid:{x,y}},expectedFingerprints:{guid:sha256}}
+        - setValue -> canvas.setNumberSlider {operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces} (Number Slider only)
+        - connectWire/disconnectWire -> canvas.setWire {operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:connect|disconnect,rejectCycles:true}
+        - createComponent -> canvas.create {operationId,objectId,componentTypeId,pivot:{x,y},nickName}
+        - deleteComponent -> canvas.delete {operationId,objectId,expectedFingerprint}
+        - setGroup -> canvas.setGroup {operationId,groupId,name,objectIds,argbColor}
+        - updatePythonSource -> python.setSource {operationId,componentId,expectedSourceSha256,source,runtime:cpython3|ironPython2,expireSolution}
+        - setComponentIo -> python.setSchema {operationId,componentId,inputs,outputs,preserveIncidentWires}. Appends sockets only (removal unsupported): list every existing socket in order, then appended ones. Socket UUIDs are server-managed and reconciled by position — you control name, access, and typeHint only. Scalars fed by sliders stay generic (coerce in-script); any socket carrying GEOMETRY between components needs the geometry type hint (point3d, vector3d, line, curve, plane, mesh, brep, surface, geometry, ...) on BOTH ends or the receiver gets an untyped/Guid value.
+        - convertSocket -> python.setTyping {operationId,componentId,inputParameterId,typeHint,access:item|list|tree}
+        - executePython -> python.execute {operationId,componentId,expireUpstream,recomputeDocument}
+        - readRuntimeMessages -> python.runtimeMessages {componentId}
+        - createRhinoPrimitive -> rhino.createPrimitive {operationId,objectId,logicalEntityId,kind,one matching primitive definition,attributes}
+        - transformRhinoObject -> rhino.transform {operationId,objectId,expectedFingerprint,matrix:{m00..m33}}
+        - Rhino create/modify/bake/attributes -> rhino.upsert {operationId,objectId,logicalEntityId,geometryType,geometryJson,attributesJson,expectedFingerprint}
+        - deleteRhinoObject -> rhino.delete {operationId,objectId,expectedFingerprint}
+        - reads use {objectId} for canvas/Rhino or {componentId} for Wireify
+        DECLARATIONS:
+        - Every operation read needs a readSet fingerprint; every write needs an exact writeSet expectation. Unused expectations and payload-unrelated writes are rejected. Typed reads keep writes empty; a read-only ChangeSet keeps writeSet empty.
+        - Resource ids: field='*'; lowercase D-format UUIDs (8-4-4-4-12) for object resources. A wire's writeSet id is the exact string sourceObjectId/sourceParameterId>targetObjectId/targetParameterId in N format (32 hex, no dashes) — same guids as the payload. If a payload-alignment error reports the expected id, declare exactly that string and resubmit.
+        - Write domains are exact: move/layout=grasshopperComponentLayout; slider setValue=grasshopperComponentValue; component create/delete=grasshopperComponent; wire=grasshopperWire; group=grasshopperGroup; python source|schema-or-typing|execute=grasshopperComponentSource|grasshopperComponentIo|grasshopperComponentValue; every Rhino mutation=rhinoObject. Two operations in one ChangeSet cannot write overlapping domains.
+        - Python source/I/O/value writes share whole-component state: one ChangeSet writes exactly one Python component, contiguously, with no other writes mixed in.
+        - Canvas points are exactly x/y; Rhino points/vectors exactly x/y/z. Rhino geometryJson must be native RhinoCommon JSON matching geometryType; attributesJson is native ObjectAttributes JSON or "" for defaults. Distinct Rhino object IDs in one ChangeSet use distinct case-sensitive logicalEntityId values.
+        BOOKKEEPING (server-owned):
+        - Set expectedSnapshotId='gptino:auto', baseSnapshotRevision=-1, and existing-resource writeSet/readSet expectedFingerprint='gptino:auto' — the server fills them from this session's own last write; a genuine foreign change still Blocks.
+        - Creates (createComponent, createRhinoPrimitive, createRhinoObject, bakeGeometry, connectWire, a new setGroup) use writeSet expectedFingerprint='gptino:absent'.
+        - Value/geometry payload+writeSet fingerprints (setNumberSlider, move, delete, rhino transform/upsert) must be the concrete value, not gptino:auto; payload fingerprints for existing resources must exactly match writeSet. For createRhinoObject/bakeGeometry only, payload arguments.expectedFingerprint is null.
+        - acceptancePredicates may be [] — the server attaches the standard set (creates/bakes objectExists, deletes objectAbsent, wires wireExists/wireAbsent, everything else runtimeErrorAbsent).
+        """;
 
     public static object[] Create() =>
     [
@@ -129,7 +129,9 @@ internal static class DynamicToolSpecs
                     }),
                 Function(
                     "artifact_write",
-                    "Write code or a structured operation payload into this chat session's isolated draft storage. This never changes Rhino or Grasshopper. " + PayloadGuide,
+                    "Write code or a structured operation payload into this chat session's isolated draft storage. This " +
+                    "never changes Rhino or Grasshopper. Operation payloads are exactly one JSON object " +
+                    "{\"bridgeOperation\":\"...\",\"arguments\":{...}} — the full mapping is documented on change_submit.",
                     new
                     {
                         type = "object",

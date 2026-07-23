@@ -1569,8 +1569,11 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         lease, live execution, verification, and history. A submitted change is not successful until job_status reports a
         verified terminal result. Preserve document units, tolerances, data trees, and existing wiring unless requested.
         For complex work, iterate in session artifacts, inspect runtime messages, and correct deterministic pre-write failures
-        instead of guessing. Re-read a fresh snapshot before resubmitting and use a new idempotency key for changed content.
+        instead of guessing. Iterate from each job result: a failed job with an applied block is resubmitted with gptino:auto
+        after fixing the content (new idempotency key for changed content) — do not re-read the canvas to recover.
         If a job reports recoveryRequired, stop automatic mutation and explain the uncertain live state to the user.
+        Codex sub-agents cannot call the session-bound gptino_v1 tools: use them only to draft code or payload text,
+        and submit everything from this session yourself.
         """;
 }
 

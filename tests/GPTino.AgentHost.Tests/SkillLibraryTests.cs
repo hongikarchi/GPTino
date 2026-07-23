@@ -93,4 +93,19 @@ public sealed class InstructionAssemblerTests
         Assert.Contains("밀리미터", composed, StringComparison.Ordinal);
         Assert.Contains("719467e6-7cf5-4848-99b0-c5dd57e5442c", composed, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void HouseRulesTeachTheJobResultChain()
+    {
+        // The authoritative text ships as instructions/house-rules.md; whichever source loaded,
+        // it must teach the post-Phase-C loop: socket ids from job results, no snapshot_read
+        // round trip, server-attached predicates, and the failed+applied iterate recipe.
+        Assert.Contains("committed.sockets", HouseRules.Text, StringComparison.Ordinal);
+        Assert.Contains("\"acceptancePredicates\":[]", HouseRules.Text, StringComparison.Ordinal);
+        Assert.Contains("applied", HouseRules.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "snapshot_read the component (scope wireify:",
+            HouseRules.Text,
+            StringComparison.Ordinal);
+    }
 }

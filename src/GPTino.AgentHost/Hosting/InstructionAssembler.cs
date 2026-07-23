@@ -34,13 +34,16 @@ public sealed class InstructionAssembler : IThreadInstructionComposer
 }
 
 /// <summary>
-/// Plugin-level modeling conventions. These ship compiled into the plugin so any Rhino
-/// file, machine, or user gets identical behavior — the performance and quality
-/// baseline of GPTino rather than per-project preference (those belong in rules.md).
+/// Plugin-level modeling conventions — the performance and quality baseline of GPTino rather
+/// than per-project preference (those belong in rules.md). The authoritative text ships as
+/// assets/instructions/house-rules.md so prompt tuning is a file edit, not a rebuild; the
+/// compiled default below is the fallback and must be kept in sync when the asset changes.
 /// </summary>
 public static class HouseRules
 {
-    public const string Text = """
+    public static string Text { get; } = InstructionAssets.LoadOrFallback("house-rules.md", DefaultText);
+
+    private const string DefaultText = """
         Grasshopper authoring conventions (mandatory):
         - Parametric by default: expose every design-driving constant (spacing, counts, heights, section sizes) as a
           labeled Number Slider wired into your script inputs. Never hardcode a value the user may want to tune.
@@ -55,38 +58,41 @@ public static class HouseRules
           with canvas.create instead of searching the catalog. Number Slider values are set with canvas.setNumberSlider.
 
         Speed discipline (mandatory):
-        - A Python component is authored as an ORDERED chain of ChangeSets. executePython is ALWAYS the last step
-          and the input sliders MUST be wired before it. Plan the whole chain in one deliberation, then submit:
+        - A Python component is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
+          deliberation, submit each ChangeSet with wait=true, and chain from each job result's committed block —
+          never re-read the canvas between steps:
           1) createComponent for the script component AND every input Number Slider (one ChangeSet).
-          2) updatePythonSource + setComponentIo in ONE ChangeSet — DO NOT execute here. The script references
-             every input variable by name and coerces it DEFENSIVELY, because an input socket that is not yet wired
-             evaluates to None: count = int(count) if count is not None else <default>;
-             spacing = float(spacing) if spacing is not None else <default>. Assign outputs to variables named after
-             the output sockets. setComponentIo appends sockets whose names exactly match the script's input/output
+          2) updatePythonSource + setComponentIo in ONE ChangeSet. The script references every input variable by
+             name and coerces it DEFENSIVELY, because an input socket that is not yet wired evaluates to None:
+             count = int(count) if count is not None else <default>. Assign outputs to variables named after the
+             output sockets. setComponentIo appends sockets whose names exactly match the script's input/output
              variables; set access (item/list/tree) correctly. TYPE HINTS MATTER FOR GEOMETRY: a scalar from a
              slider stays generic (leave typeHint object/int/double and coerce in-script), but ANY socket that
              carries geometry — especially one wired to or from another component — MUST use the geometry type
              hint (point3d, vector3d, line, curve, circle, arc, plane, polyline, box, brep, mesh, surface,
              geometry) on BOTH the producing output and the consuming input, or the receiver gets an
              untyped/Guid value and pt.X fails. updatePythonSource only stages the source and never runs it, so
-             referencing sockets that setComponentIo is about to create in the same ChangeSet is safe.
-          3) snapshot_read the component (scope wireify:<component-guid>) to read the Grasshopper-assigned input
-             socket UUIDs — they are NOT the placeholder ids you supplied, and you cannot wire without them. Never
-             reconstruct or guess a socket UUID.
-          4) createWire from each slider to its matching input socket (using the exact parameterId from step 3),
-             in ONE ChangeSet (wire writes only — a wire cannot share a ChangeSet with a Python source/IO/value
-             write). If a wire reports the parameter was not found, the error lists the available socket
-             name=id pairs — wire to that exact id.
-          5) executePython in its OWN final ChangeSet (a Python value write must be alone), AFTER the wires commit.
-             Executing a component whose inputs are still unwired (None) is a defect — that is why wiring is step 4
-             and execution is step 5.
+             referencing sockets that setComponentIo is about to create in the same ChangeSet is safe. You MAY
+             append executePython at the end of this same ChangeSet when the defensive defaults make an unwired
+             run meaningful — its diagnostics and outputs return in the same job result.
+          3) createWire from each slider to its matching input socket, in ONE ChangeSet (wire writes only — a
+             wire cannot share a ChangeSet with a Python source/IO/value write). The Grasshopper-assigned socket
+             UUIDs are ALREADY in step 2's job result under committed.sockets (inputs[].id / outputs[].id) —
+             wire to those exact ids; never snapshot_read for them and never reconstruct or guess one. If a wire
+             reports the parameter was not found, the error lists the available socket name=id pairs — wire to
+             that exact id.
+          4) executePython in its own final ChangeSet AFTER the wires commit — or skip it when step 2 already
+             executed and step 3's job result shows healthy committed.outputs (the wire write solves inline).
+             Executing a component whose inputs are still unwired (None) without defensive defaults is a defect.
+        - Orientation costs at most ONE snapshot_read per user request. Between chained submits, read fingerprints,
+          socket ids, output data, and diagnostics from each job result's committed/applied block instead.
         - Optimistic-concurrency bookkeeping is automatic — do NOT carry snapshotId/revision/fingerprints between
           ChangeSets. Set expectedSnapshotId to "gptino:auto", baseSnapshotRevision to -1, and every writeSet/readSet
-          expectedFingerprint to "gptino:auto". The server fills the real values from your own session's last commit,
-          so a Python source→schema→execute→wire chain submits back to back with no re-reads. Two exceptions still
-          need the concrete fingerprint from the previous commit (in both payload and writeSet): value/geometry writes
-          (setNumberSlider, moveComponent, delete, Rhino transform/upsert) and create targets (which use "gptino:absent").
-        - "gptino:auto" fills a value only when THIS session already committed the resource and it is unchanged. If a
+          expectedFingerprint to "gptino:auto". The server fills the real values from your own session's last write
+          (committed or applied), so the whole Python chain submits back to back with no re-reads. Two exceptions
+          still need the concrete fingerprint from the previous result (in both payload and writeSet): value/geometry
+          writes (setNumberSlider, moveComponent, delete, Rhino transform/upsert) and create targets ("gptino:absent").
+        - "gptino:auto" fills a value only when THIS session already wrote the resource and it is unchanged. If a
           genuine foreign change (another session or a manual Grasshopper edit) touched it, the job is Blocked with the
           current fingerprint — re-read that one resource and resubmit it with the concrete value; do not restart discovery.
         - Acceptance predicates are OPTIONAL: submit "acceptancePredicates":[] and the server attaches the standard
@@ -102,7 +108,8 @@ public static class HouseRules
           A red component never commits; only job_status=committed means the change is verified and in history.
         - Two consecutive Failed/Blocked jobs for the same intent → STOP, show the exact job message to the user,
           and ask how to proceed. Do not re-draft artifacts against a Blocked job.
-        - Use this exact ChangeSet shape on the first submit (property names are exact; no other spellings exist):
+        - Use this exact ChangeSet shape on the first submit (property names are exact; no other spellings exist;
+          acceptancePredicates stays [] — the server attaches the standard set):
           {"changeSetId":"<uuid>","projectId":"<from snapshot_read>","sessionId":"<from snapshot_read>",
            "baseSnapshotRevision":-1,"baseGitCommit":null,"dependencies":[],
            "readSet":[],"writeSet":[{"resource":{"kind":"grasshopperComponent","id":"<uuid>","field":"*"},
@@ -110,8 +117,7 @@ public static class HouseRules
            "operations":[{"operationId":"create-x","kind":"createComponent","owner":"cordyceps",
            "reads":[],"writes":[{"kind":"grasshopperComponent","id":"<uuid>","field":"*"}],
            "reversible":false,"payloadArtifact":"operations/create-x.json"}],
-           "acceptancePredicates":[{"name":"create-x exists","kind":"objectExists",
-           "resource":{"kind":"grasshopperComponent","id":"<uuid>","field":"*"},"expectedValue":null}],
+           "acceptancePredicates":[],
            "rollbackBeforeImages":[],"createdAt":"<iso8601>"}
         """;
 }

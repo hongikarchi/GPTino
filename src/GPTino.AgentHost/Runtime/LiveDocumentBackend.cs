@@ -449,13 +449,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             !string.Equals(expectedSnapshotId, snapshot.SnapshotId, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"Snapshot changed. Expected '{expectedSnapshotId}', current is '{snapshot.SnapshotId}'.");
+                $"Snapshot changed. Expected '{expectedSnapshotId}', current is '{snapshot.SnapshotId}'. " +
+                "Resubmit with expectedSnapshotId set to the current id above — or use 'gptino:auto' so the " +
+                "server anchors it for you. Do not restart discovery.");
         }
         if (changeSet.BaseSnapshotRevision != ResourceExpectation.AutoBaseRevision &&
             changeSet.BaseSnapshotRevision != snapshot.State.Revision)
         {
             throw new InvalidOperationException(
-                $"ChangeSet base revision {changeSet.BaseSnapshotRevision} does not match current revision {snapshot.State.Revision}.");
+                $"ChangeSet base revision {changeSet.BaseSnapshotRevision} does not match current revision " +
+                $"{snapshot.State.Revision}. Resubmit with baseSnapshotRevision set to -1 (auto) or to the " +
+                "current revision above.");
         }
 
         await RefreshScheduleAsync(cancellationToken).ConfigureAwait(false);
@@ -3087,7 +3091,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             {
                 problems.Add(
                     $"Acceptance predicate '{predicate.Name}' ({predicate.Kind}) was not satisfied. " +
-                    "Use runtimeErrorAbsent for value/move/python writes instead of predicting outcomes.");
+                    "Omit acceptancePredicates ([]) to let the server attach the standard set instead of " +
+                    "predicting outcomes.");
             }
         }
         return problems;
