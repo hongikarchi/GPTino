@@ -100,6 +100,23 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "inspect_outputs",
+                    "Read a component's live output data: per-output DataCount, TypeNames, GeometryBounds, and capped " +
+                    "sample values. Use it to ground input access (item/list/tree), type hints, and to verify a script " +
+                    "produced sensible geometry — never guess the data when you can read it. Committed jobs already " +
+                    "include the same report under committed.outputs; call this for ad-hoc inspection when idle. If a " +
+                    "writer session is active this returns writerActive=true immediately instead of queueing.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            objectId = new { type = "string", format = "uuid", description = "Grasshopper component object id." }
+                        },
+                        required = new[] { "objectId" },
+                        additionalProperties = false
+                    }),
+                Function(
                     "artifact_read",
                     "Read a draft artifact belonging only to this chat session.",
                     new
@@ -125,7 +142,10 @@ internal static class DynamicToolSpecs
                     }),
                 Function(
                     "change_submit",
-                    "Submit a typed ChangeSet to the central single-writer broker. This returns a job id, not success; poll job_status through verification/commit. " + PayloadGuide,
+                    "Submit a typed ChangeSet to the central single-writer broker. Pass wait=true to receive the terminal " +
+                    "result (state, diagnostics, committed view with sockets/outputs) in this same response for fast jobs. " +
+                    "If the returned state is still queued/executing — normal when other sessions are ahead — fall back to " +
+                    "polling job_status; the jobId is always returned. " + PayloadGuide,
                     new
                     {
                         type = "object",
@@ -134,7 +154,8 @@ internal static class DynamicToolSpecs
                             changeSet = ChangeSetSchema(),
                             expectedSnapshotId = new { type = "string", description = "gptino:auto to let the server anchor to the current snapshot, or the exact snapshotId returned by snapshot_read." },
                             idempotencyKey = new { type = "string", description = "Stable unique key for retrying this logically identical submission." },
-                            summary = new { type = "string", description = "Short user-visible queue/history summary." }
+                            summary = new { type = "string", description = "Short user-visible queue/history summary." },
+                            wait = new { type = "boolean", description = "Block briefly (bounded well under the tool deadline) for the terminal result; default false. Timeout is normal, not an error — poll job_status then." }
                         },
                         required = new[] { "changeSet", "expectedSnapshotId", "idempotencyKey", "summary" },
                         additionalProperties = false
@@ -142,8 +163,10 @@ internal static class DynamicToolSpecs
                 Function(
                     "job_status",
                     "Read queue, execution, verification, commit, recovery-required, or failure state for a submitted job. " +
-                    "A committed job includes committed { snapshotId, revision, resources[].fingerprint }: base the next " +
-                    "ChangeSet on these values instead of calling snapshot_read again.",
+                    "Terminal states include diagnostics[] (per-operation errors/warnings/remarks from the live solve). " +
+                    "A committed job includes committed { snapshotId, revision, resources[].fingerprint, sockets, outputs }: " +
+                    "base the next ChangeSet on these fingerprints, wire using the Grasshopper-assigned socket ids in " +
+                    "committed.sockets, and verify results from committed.outputs instead of calling snapshot_read again.",
                     new
                     {
                         type = "object",

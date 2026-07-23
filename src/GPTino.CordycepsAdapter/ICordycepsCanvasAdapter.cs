@@ -108,7 +108,8 @@ public sealed record CanvasOutputParameterInspection(
     string NickName,
     int DataCount,
     IReadOnlyList<string> TypeNames,
-    CanvasBoundingBox3d? GeometryBounds);
+    CanvasBoundingBox3d? GeometryBounds,
+    IReadOnlyList<string> SampleValues);
 
 public sealed record CanvasBoundingBox3d(
     CanvasPoint3d Minimum,

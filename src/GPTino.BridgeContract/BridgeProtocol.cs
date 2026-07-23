@@ -8,7 +8,9 @@ public static class BridgeProtocol
     // v3: StableTargetKey became path-free so a Save As / rename no longer changes the document target
     // identity. Plugin and AgentHost ship together in one package, so this bump only guards against a
     // stale AgentHost surviving an upgrade; both ends must compute the key identically.
-    public const int Version = 3;
+    // v4: CanvasOutputParameterInspection gained SampleValues. JsonOptions disallow unmapped members,
+    // so any payload-shape change MUST bump this version or skew fails as an opaque JsonException.
+    public const int Version = 4;
 
     public const int DefaultMaximumFrameBytes = 8 * 1024 * 1024;
 

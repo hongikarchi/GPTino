@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 using System.Security.Cryptography;
@@ -64,6 +65,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     ILiveDocumentQueueControl, IJobExecutor, ISelectionContextSource
 {
     private static readonly TimeSpan BridgeRequestTimeout = TimeSpan.FromSeconds(45);
+    // The optional change_submit wait must always finish inside the Codex dynamic-tool deadline
+    // (30s, CodexAppServerClient.DynamicToolCallTimeout): the block is capped at SubmitWaitCap and
+    // additionally bounded so the whole tool call stays under SubmitWaitDeadline, leaving headroom
+    // to write the projection. Keep dynamic-tool budget < per-bridge-op budget (BridgeRequestTimeout).
+    private static readonly TimeSpan SubmitWaitDeadline = TimeSpan.FromSeconds(25);
+    private static readonly TimeSpan SubmitWaitCap = TimeSpan.FromSeconds(15);
     private const int MaximumArtifactBytes = 2 * 1024 * 1024;
     private const int MaximumCanonicalNumberCharacters = 4096;
 
@@ -268,12 +275,26 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     public Task<object> InspectCanvasOutputsAsync(
         JsonElement arguments,
-        CancellationToken cancellationToken) =>
-        ReadBridgeQueryAsync(
+        CancellationToken cancellationToken)
+    {
+        // The document gate is writer-preferring, so queuing behind an executing job would stall
+        // this read for the whole write epoch and blow the Codex dynamic-tool deadline. Fail fast
+        // with a recipe instead: committed jobs already carry their post-solve outputs inline.
+        if (WriterSessionId is not null)
+        {
+            return Task.FromResult<object>(new
+            {
+                writerActive = true,
+                message = "A writer session currently holds the document. Read the committed job's " +
+                    "outputs from change_submit/job_status instead, or retry after the queue drains."
+            });
+        }
+        return ReadBridgeQueryAsync(
             BridgeAdapterOwner.CordycepsCanvas,
             "canvas.inspectOutputs",
             arguments,
             cancellationToken);
+    }
 
     private async Task<object> ReadBridgeQueryAsync(
         BridgeAdapterOwner owner,
@@ -357,6 +378,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(session);
+        // Measured from method ENTRY: the pre-enqueue work below (payload preflight, a forced
+        // snapshot behind the document read gate, the durable insert) can itself consume a large
+        // share of the Codex dynamic-tool budget, so any post-enqueue wait must subtract it.
+        var elapsed = Stopwatch.StartNew();
+        var wait = arguments.TryGetProperty("wait", out var waitElement) &&
+            waitElement.ValueKind == JsonValueKind.True;
         var changeSetElement = arguments.GetProperty("changeSet");
         var changeSet = changeSetElement.Deserialize<ChangeSet>(BridgeProtocol.JsonOptions)
             ?? throw new InvalidOperationException("changeSet cannot be null.");
@@ -380,6 +407,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             summary,
             draftOperations);
         var idempotencyScope = IdempotencyScope(session.Id, idempotencyKey);
+        LiveJobEntry? duplicateEntry = null;
         await _submissionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -387,12 +415,22 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 _jobs.TryGetValue(existingId, out var existing))
             {
                 RequireMatchingRequestHash(existing.RequestHash, requestHash, idempotencyKey);
-                return ProjectJob(existing, duplicate: true);
+                duplicateEntry = existing;
             }
         }
         finally
         {
             _submissionGate.Release();
+        }
+        if (duplicateEntry is not null)
+        {
+            // Never wait while holding the submission gate; the optional block happens out here.
+            return await ProjectJobAfterOptionalWaitAsync(
+                duplicateEntry,
+                duplicate: true,
+                wait,
+                elapsed,
+                cancellationToken).ConfigureAwait(false);
         }
 
         SnapshotEnvelope snapshot;
@@ -418,6 +456,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         await RefreshScheduleAsync(cancellationToken).ConfigureAwait(false);
         LiveJobEntry entry;
+        var duplicate = false;
         await _submissionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -425,103 +464,107 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 _jobs.TryGetValue(existingId, out var existing))
             {
                 RequireMatchingRequestHash(existing.RequestHash, requestHash, idempotencyKey);
-                return ProjectJob(existing, duplicate: true);
+                entry = existing;
+                duplicate = true;
             }
-
-            var jobId = Guid.NewGuid();
-            ChangeSet frozenChangeSet;
-            try
+            else
             {
-                frozenChangeSet = await FreezeOperationPayloadsAsync(
-                    session.Id,
-                    jobId,
-                    changeSet,
-                    draftOperations,
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                DeleteUnacceptedReservedJob(session.Id, jobId);
-                throw;
-            }
-
-            var conflicts = DetectQueuedConflicts(frozenChangeSet);
-            var enqueuedAt = DateTimeOffset.UtcNow;
-            var queuedJob = new QueuedJob(
-                jobId,
-                frozenChangeSet,
-                Interlocked.Increment(ref _enqueueSequence),
-                enqueuedAt);
-            entry = new LiveJobEntry(
-                queuedJob,
-                session,
-                summary,
-                idempotencyKey,
-                requestHash,
-                conflicts);
-            DurableJobInsertResult insert;
-            try
-            {
-                insert = await _jobStore.InsertOrReadAsync(
-                    new DurableJobRecord(
-                        jobId,
-                        session.Id,
-                        idempotencyKey,
-                        summary,
-                        frozenChangeSet,
-                        queuedJob.EnqueueSequence,
-                        JobState.Queued,
-                        "queued",
-                        null,
-                        enqueuedAt,
-                        enqueuedAt,
-                        enqueuedAt,
-                        requestHash),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                DeleteUnacceptedReservedJob(session.Id, jobId);
-                throw;
-            }
-            if (!insert.Inserted)
-            {
-                DeleteUnacceptedReservedJob(session.Id, jobId);
-                RequireMatchingRequestHash(
-                    insert.Record.RequestHash,
-                    requestHash,
-                    idempotencyKey);
-                if (_jobs.TryGetValue(insert.Record.JobId, out existing))
+                var jobId = Guid.NewGuid();
+                ChangeSet frozenChangeSet;
+                try
                 {
-                    _idempotency.TryAdd(idempotencyScope, existing.Job.JobId);
-                    return ProjectJob(existing, duplicate: true);
+                    frozenChangeSet = await FreezeOperationPayloadsAsync(
+                        session.Id,
+                        jobId,
+                        changeSet,
+                        draftOperations,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    DeleteUnacceptedReservedJob(session.Id, jobId);
+                    throw;
                 }
 
-                await _jobStore.UpdateStateAsync(
-                    insert.Record.JobId,
-                    JobState.RecoveryRequired,
-                    "recoveryrequired",
-                    DurableJobStore.RestartRecoveryMessage,
-                    cancellationToken).ConfigureAwait(false);
-                var recovered = insert.Record with
+                var conflicts = DetectQueuedConflicts(frozenChangeSet);
+                var enqueuedAt = DateTimeOffset.UtcNow;
+                var queuedJob = new QueuedJob(
+                    jobId,
+                    frozenChangeSet,
+                    Interlocked.Increment(ref _enqueueSequence),
+                    enqueuedAt);
+                entry = new LiveJobEntry(
+                    queuedJob,
+                    session,
+                    summary,
+                    idempotencyKey,
+                    requestHash,
+                    conflicts);
+                DurableJobInsertResult insert;
+                try
                 {
-                    State = JobState.RecoveryRequired,
-                    Phase = "recoveryrequired",
-                    Message = DurableJobStore.RestartRecoveryMessage,
-                    UpdatedAt = DateTimeOffset.UtcNow
-                };
-                entry = CreateRestoredEntry(recovered, session);
-                RegisterRestoredEntry(entry);
-                return ProjectJob(entry, duplicate: true);
-            }
-
-            if (!_jobs.TryAdd(jobId, entry) || !_idempotency.TryAdd(idempotencyScope, jobId))
-            {
-                _jobs.TryRemove(jobId, out _);
-                _idempotency.TryRemove(idempotencyScope, out _);
-                throw new InvalidOperationException(
-                    "The change was durably accepted but could not be registered in the live queue. " +
-                    "Restart AgentHost to expose it as recovery-required.");
+                    insert = await _jobStore.InsertOrReadAsync(
+                        new DurableJobRecord(
+                            jobId,
+                            session.Id,
+                            idempotencyKey,
+                            summary,
+                            frozenChangeSet,
+                            queuedJob.EnqueueSequence,
+                            JobState.Queued,
+                            "queued",
+                            null,
+                            enqueuedAt,
+                            enqueuedAt,
+                            enqueuedAt,
+                            requestHash),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    DeleteUnacceptedReservedJob(session.Id, jobId);
+                    throw;
+                }
+                if (!insert.Inserted)
+                {
+                    DeleteUnacceptedReservedJob(session.Id, jobId);
+                    RequireMatchingRequestHash(
+                        insert.Record.RequestHash,
+                        requestHash,
+                        idempotencyKey);
+                    if (_jobs.TryGetValue(insert.Record.JobId, out existing))
+                    {
+                        _idempotency.TryAdd(idempotencyScope, existing.Job.JobId);
+                        entry = existing;
+                    }
+                    else
+                    {
+                        await _jobStore.UpdateStateAsync(
+                            insert.Record.JobId,
+                            JobState.RecoveryRequired,
+                            "recoveryrequired",
+                            DurableJobStore.RestartRecoveryMessage,
+                            cancellationToken).ConfigureAwait(false);
+                        var recovered = insert.Record with
+                        {
+                            State = JobState.RecoveryRequired,
+                            Phase = "recoveryrequired",
+                            Message = DurableJobStore.RestartRecoveryMessage,
+                            UpdatedAt = DateTimeOffset.UtcNow
+                        };
+                        entry = CreateRestoredEntry(recovered, session);
+                        RegisterRestoredEntry(entry);
+                    }
+                    duplicate = true;
+                }
+                else if (!_jobs.TryAdd(jobId, entry) || !_idempotency.TryAdd(idempotencyScope, jobId))
+                {
+                    _jobs.TryRemove(jobId, out _);
+                    _idempotency.TryRemove(idempotencyScope, out _);
+                    throw new InvalidOperationException(
+                        "The change was durably accepted but could not be registered in the live queue. " +
+                        "Restart AgentHost to expose it as recovery-required.");
+                }
             }
         }
         finally
@@ -529,10 +572,46 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             _submissionGate.Release();
         }
 
-        var ticket = _broker.Enqueue(entry.Job);
-        TrackCompletion(entry, ticket.Completion);
-        _events.Publish();
-        return ProjectJob(entry, duplicate: false);
+        if (!duplicate)
+        {
+            var ticket = _broker.Enqueue(entry.Job);
+            TrackCompletion(entry, ticket.Completion);
+            _events.Publish();
+        }
+        return await ProjectJobAfterOptionalWaitAsync(
+            entry,
+            duplicate,
+            wait,
+            elapsed,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Optionally blocks on the job's completion before projecting, so fast jobs return their
+    /// terminal state (diagnostics, committed view, observations) in the change_submit response
+    /// itself. The wait is bounded well inside the Codex dynamic-tool deadline and measured from
+    /// tool entry; on timeout the caller falls back to job_status polling — that is normal, not an
+    /// error, especially when other sessions' jobs are ahead in the queue.
+    /// </summary>
+    private async Task<object> ProjectJobAfterOptionalWaitAsync(
+        LiveJobEntry entry,
+        bool duplicate,
+        bool wait,
+        Stopwatch elapsed,
+        CancellationToken cancellationToken)
+    {
+        if (wait && IsActive(entry.State))
+        {
+            var remaining = SubmitWaitDeadline - elapsed.Elapsed;
+            var cap = remaining < SubmitWaitCap ? remaining : SubmitWaitCap;
+            if (cap > TimeSpan.Zero)
+            {
+                await Task.WhenAny(
+                    entry.Completion,
+                    Task.Delay(cap, cancellationToken)).ConfigureAwait(false);
+            }
+        }
+        return ProjectJob(entry, duplicate);
     }
 
     public Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken)
@@ -703,6 +782,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         var liveChanged = false;
         var writeMayHaveChanged = false;
+        var diagnostics = new List<JobDiagnostic>();
         try
         {
             var before = await CaptureSnapshotAsync(force: true, execution.Token).ConfigureAwait(false);
@@ -749,7 +829,6 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             _broker.RecordJobState(job.JobId, JobState.Executing);
             _events.Publish();
 
-            var diagnostics = new List<BridgeDiagnostic>();
             var operationObservations = new List<ResourceObservation>();
             var rollingPythonFingerprints = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var prepared in preparedOperations)
@@ -782,7 +861,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 writeMayHaveChanged |= access == BridgeOperationAccess.Write;
                 var response = await SendOperationAsync(request, execution.Token).ConfigureAwait(false);
                 liveChanged |= response.Changed;
-                diagnostics.AddRange(response.Diagnostics);
+                diagnostics.AddRange(response.Diagnostics.Select(item =>
+                    new JobDiagnostic(operation.OperationId, item.Severity, item.Code, item.Message)));
                 if (pythonWrite is not null)
                 {
                     if (string.IsNullOrWhiteSpace(expectedFingerprint) ||
@@ -825,6 +905,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 operationObservations);
             if (verificationProblems.Count > 0)
             {
+                entry.Diagnostics = diagnostics;
                 var message = string.Join(" ", verificationProblems);
                 await SetJobPhaseAsync(
                     entry,
@@ -850,12 +931,30 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             try
             {
                 entry.Committed = BuildCommittedJobView(job.ChangeSet, after);
+                entry.Diagnostics = diagnostics;
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 // Chaining data is observability sugar. The live change is verified and
                 // committed at this point; a projection bug must never demote the job.
                 _logger.LogWarning(exception, "Could not build the committed chaining view for job {JobId}.", job.JobId);
+            }
+            try
+            {
+                // Post-solve observations, captured while this job still holds the write lease so
+                // they are consistent with the commit: the Grasshopper-assigned socket identities of
+                // reshaped components (from the after-snapshot; kills the follow-up snapshot_read)
+                // and a live output inspection per written component (counts/types/bounds/samples).
+                // Same never-demote discipline as the committed view above.
+                entry.Sockets = CollectComponentSockets(job.ChangeSet, after);
+                entry.Outputs = await CollectComponentOutputsAsync(
+                    job.ChangeSet,
+                    after,
+                    execution.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "Could not capture post-solve observations for job {JobId}.", job.JobId);
             }
             try
             {
@@ -900,6 +999,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         catch (OperationCanceledException) when (execution.IsCancellationRequested)
         {
+            entry.Diagnostics ??= diagnostics;
             var state = liveChanged || writeMayHaveChanged ? JobState.RecoveryRequired : JobState.Cancelled;
             var message = liveChanged || writeMayHaveChanged
                 ? "Execution stopped after a live change; review or recovery is required."
@@ -909,6 +1009,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         catch (Exception exception)
         {
+            entry.Diagnostics ??= diagnostics;
             var state = liveChanged || writeMayHaveChanged ? JobState.RecoveryRequired : JobState.Failed;
             await SetJobPhaseAsync(entry, state, exception.Message).ConfigureAwait(false);
             return new JobExecutionResult(job.JobId, state, exception.Message);
@@ -2954,12 +3055,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private static IReadOnlyList<string> Verify(
         ChangeSet changeSet,
         SnapshotEnvelope snapshot,
-        IReadOnlyList<BridgeDiagnostic> diagnostics,
+        IReadOnlyList<JobDiagnostic> diagnostics,
         IReadOnlyList<ResourceObservation> operationObservations)
     {
         var problems = diagnostics
             .Where(item => item.Severity == BridgeDiagnosticSeverity.Error)
-            .Select(item => $"{item.Code}: {item.Message}")
+            .Select(item => $"{item.OperationId}: {item.Code}: {item.Message}")
             .ToList();
         foreach (var predicate in changeSet.AcceptancePredicates)
         {
@@ -3055,6 +3156,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             record.RequestHash,
             Array.Empty<QueuedConflict>());
         entry.SetPhase(record.State, record.Phase, record.Message, record.UpdatedAt);
+        // Restored entries are always terminal (RecoveryRequired); resolve the completion task so a
+        // waiting duplicate submission returns immediately instead of blocking on a job that will
+        // never run again.
+        entry.CompleteWith(new JobExecutionResult(record.JobId, record.State, record.Message));
         return entry;
     }
 
@@ -3101,15 +3206,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             var result = await completion.ConfigureAwait(false);
             await SetJobPhaseAsync(entry, result.State, result.Message).ConfigureAwait(false);
+            entry.CompleteWith(result);
         }
         catch (OperationCanceledException)
         {
-            await SetJobPhaseAsync(
-                entry,
-                JobState.RecoveryRequired,
+            const string message =
                 "AgentHost stopped before this job reached a durable terminal state. " +
-                "No operations will be replayed automatically; inspect the document before recovery.")
-                .ConfigureAwait(false);
+                "No operations will be replayed automatically; inspect the document before recovery.";
+            await SetJobPhaseAsync(entry, JobState.RecoveryRequired, message).ConfigureAwait(false);
+            entry.CompleteWith(new JobExecutionResult(entry.Job.JobId, JobState.RecoveryRequired, message));
         }
         finally
         {
@@ -3144,12 +3249,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private object ProjectJob(LiveJobEntry entry, bool duplicate)
     {
         var committed = entry.Committed;
+        var state = entry.State;
+        // Diagnostics and observations are complete only at a terminal state; non-terminal
+        // job_status polls arrive every few seconds and must stay slim.
+        var terminal = !IsActive(state);
         return new
         {
             jobId = entry.Job.JobId,
             sessionId = entry.Job.ChangeSet.SessionId,
             changeSetId = entry.Job.ChangeSet.ChangeSetId,
-            state = entry.State.ToString().ToLowerInvariant(),
+            state = state.ToString().ToLowerInvariant(),
             phase = entry.Phase,
             message = entry.Message,
             duplicate,
@@ -3166,8 +3275,28 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                         id = item.Resource.Id,
                         field = item.Resource.Field,
                         fingerprint = item.Fingerprint
+                    }).ToArray(),
+                    sockets = entry.Sockets?.Select(component => new
+                    {
+                        componentId = component.ComponentId,
+                        inputs = component.Inputs.Select(ProjectSocket).ToArray(),
+                        outputs = component.Outputs.Select(ProjectSocket).ToArray()
+                    }).ToArray(),
+                    outputs = entry.Outputs?.Select(component => new
+                    {
+                        componentId = component.ComponentId,
+                        inspection = component.Inspection
                     }).ToArray()
                 },
+            diagnostics = terminal
+                ? (entry.Diagnostics ?? Array.Empty<JobDiagnostic>()).Select(item => new
+                {
+                    operationId = item.OperationId,
+                    severity = item.Severity.ToString().ToLowerInvariant(),
+                    code = item.Code,
+                    message = item.Message
+                }).ToArray()
+                : null,
             conflictsWith = entry.Conflicts.Select(item => new
             {
                 jobId = item.OtherJobId,
@@ -3177,6 +3306,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }).ToArray()
         };
     }
+
+    private static object ProjectSocket(JobSocket socket) => new
+    {
+        id = socket.Id,
+        name = socket.Name,
+        nickName = socket.NickName,
+        typeHint = socket.TypeHint,
+        access = socket.Access
+    };
 
     private static CommittedJobView BuildCommittedJobView(ChangeSet changeSet, SnapshotEnvelope after)
     {
@@ -3194,6 +3332,106 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             resources.Add(new CommittedResourceFingerprint(expectation.Resource, current?.Fingerprint));
         }
         return new CommittedJobView(after.SnapshotId, after.State.Revision, resources);
+    }
+
+    private const int MaximumOutputInspectionComponents = 4;
+
+    private static IReadOnlyList<JobComponentSockets> CollectComponentSockets(
+        ChangeSet changeSet,
+        SnapshotEnvelope after)
+    {
+        var components = changeSet.WriteSet
+            .Where(expectation => expectation.Resource.Kind == ResourceKind.GrasshopperComponentIo)
+            .Select(expectation => Guid.TryParse(expectation.Resource.Id, out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        if (components.Length == 0)
+        {
+            return Array.Empty<JobComponentSockets>();
+        }
+
+        var sockets = new List<JobComponentSockets>(components.Length);
+        foreach (var componentId in components)
+        {
+            var state = after.Canvas.Objects.FirstOrDefault(item => item.ObjectId == componentId);
+            if (state is null)
+            {
+                continue;
+            }
+            sockets.Add(new JobComponentSockets(
+                componentId,
+                state.Inputs.Select(ToJobSocket).ToArray(),
+                state.Outputs.Select(ToJobSocket).ToArray()));
+        }
+        return sockets;
+    }
+
+    private static JobSocket ToJobSocket(CanvasParameterState parameter) =>
+        new(
+            parameter.ParameterId,
+            parameter.Name,
+            parameter.NickName,
+            parameter.TypeHint,
+            parameter.Access.ToString().ToLowerInvariant());
+
+    private async Task<IReadOnlyList<JobComponentOutputs>> CollectComponentOutputsAsync(
+        ChangeSet changeSet,
+        SnapshotEnvelope after,
+        CancellationToken cancellationToken)
+    {
+        var components = changeSet.WriteSet
+            .Where(expectation => expectation.Resource.Kind is
+                ResourceKind.GrasshopperComponent or
+                ResourceKind.GrasshopperComponentSource or
+                ResourceKind.GrasshopperComponentIo or
+                ResourceKind.GrasshopperComponentValue)
+            .Select(expectation => Guid.TryParse(expectation.Resource.Id, out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .Take(MaximumOutputInspectionComponents)
+            .ToArray();
+        if (components.Length == 0)
+        {
+            return Array.Empty<JobComponentOutputs>();
+        }
+
+        var outputs = new List<JobComponentOutputs>(components.Length);
+        foreach (var componentId in components)
+        {
+            try
+            {
+                // Direct bridge read: this runs while the executor holds the document WRITE gate, so
+                // going through ReadBridgeQueryAsync (which enters the read gate) would deadlock.
+                var request = new BridgeOperationRequest(
+                    $"read-{Guid.NewGuid():N}",
+                    BridgeAdapterOwner.CordycepsCanvas,
+                    "canvas.inspectOutputs",
+                    BridgeOperationAccess.Read,
+                    after.State.Revision,
+                    ExpectedFingerprint: null,
+                    WriterLeaseToken: null,
+                    JsonSerializer.SerializeToElement(
+                        new { objectId = componentId },
+                        BridgeProtocol.JsonOptions));
+                var response = await SendOperationAsync(request, cancellationToken).ConfigureAwait(false);
+                outputs.Add(new JobComponentOutputs(componentId, response.Result.Clone()));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                // Objects without component outputs (e.g. sliders) or transient bridge issues must
+                // not cost the job its other observations.
+                _logger.LogDebug(
+                    exception,
+                    "Output inspection skipped for component {ComponentId}.",
+                    componentId);
+            }
+        }
+        return outputs;
     }
 
     private void ValidateChangeSet(ChangeSet changeSet, SessionRecord session)
@@ -3839,7 +4077,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 Encoding.ASCII.GetBytes(requestHash)))
         {
             throw new InvalidOperationException(
-                $"Idempotency key '{idempotencyKey}' is already bound to a different accepted request.");
+                $"Idempotency key '{idempotencyKey}' is already bound to a different accepted request. " +
+                "The original job is still tracked: call job_status with the jobId from the first " +
+                "change_submit response instead of resubmitting with regenerated changeSetId/createdAt.");
         }
     }
 
@@ -3953,6 +4193,31 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private sealed record ResourceObservation(ResourceAddress Resource, string? Fingerprint);
 
+    private sealed record JobDiagnostic(
+        string OperationId,
+        BridgeDiagnosticSeverity Severity,
+        string Code,
+        string Message);
+
+    /// <summary>
+    /// The Grasshopper-assigned socket identities of a component this job reshaped, read from the
+    /// post-write snapshot, so the session can wire without a follow-up snapshot_read round trip.
+    /// </summary>
+    private sealed record JobComponentSockets(
+        Guid ComponentId,
+        IReadOnlyList<JobSocket> Inputs,
+        IReadOnlyList<JobSocket> Outputs);
+
+    private sealed record JobSocket(
+        Guid Id,
+        string Name,
+        string NickName,
+        string? TypeHint,
+        string Access);
+
+    /// <summary>Post-solve canvas.inspectOutputs result for one written component.</summary>
+    private sealed record JobComponentOutputs(Guid ComponentId, JsonElement Inspection);
+
     internal readonly record struct ResourceLedgerEntry(
         ResourceAddress Resource, string Fingerprint, Guid SessionId, long Revision);
 
@@ -4000,6 +4265,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         IReadOnlyList<QueuedConflict> conflicts)
     {
         private readonly object _gate = new();
+        private readonly TaskCompletionSource<JobExecutionResult> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private JobState _state = JobState.Queued;
         private string _phase = "queued";
         private string? _message;
@@ -4014,6 +4281,26 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         /// <summary>Written once by the single-writer executor just before Committed.</summary>
         public CommittedJobView? Committed { get; set; }
+
+        /// <summary>
+        /// Written once at a terminal transition: the per-operation bridge diagnostics the
+        /// executor collected, so job_status carries errors/warnings/remarks without another read.
+        /// </summary>
+        public IReadOnlyList<JobDiagnostic>? Diagnostics { get; set; }
+
+        /// <summary>Written once alongside Committed: post-solve socket map for I/O-writing jobs.</summary>
+        public IReadOnlyList<JobComponentSockets>? Sockets { get; set; }
+
+        /// <summary>Written once alongside Committed: post-solve output inspections per written component.</summary>
+        public IReadOnlyList<JobComponentOutputs>? Outputs { get; set; }
+
+        /// <summary>
+        /// Resolves after the terminal phase has been recorded, so an awaiter that wakes always
+        /// projects the terminal state. Duplicate submissions can safely share this task.
+        /// </summary>
+        public Task<JobExecutionResult> Completion => _completion.Task;
+
+        public void CompleteWith(JobExecutionResult result) => _completion.TrySetResult(result);
 
         public JobState State
         {

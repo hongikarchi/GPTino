@@ -114,7 +114,8 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
                     new CanvasBoundingBox3d(
                         new CanvasPoint3d(-5, -5, 0),
                         new CanvasPoint3d(5, 5, 20),
-                        new CanvasPoint3d(10, 10, 20)))
+                        new CanvasPoint3d(10, 10, 20)),
+                    ["Closed Brep"])
             ],
             "outputs-v1");
         var adapter = new FakeCanvasAdapter

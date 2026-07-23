@@ -28,6 +28,8 @@ public interface ILiveDocumentBackend
 
     Task<object> ListRhinoObjectsAsync(JsonElement arguments, CancellationToken cancellationToken);
 
+    Task<object> InspectCanvasOutputsAsync(JsonElement arguments, CancellationToken cancellationToken);
+
     Task<object> SubmitChangeAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken);
 
     Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken);
@@ -55,6 +57,9 @@ public sealed class DisconnectedDocumentBackend : ILiveDocumentBackend
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ListRhinoObjectsAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
+
+    public Task<object> InspectCanvasOutputsAsync(JsonElement arguments, CancellationToken cancellationToken) =>
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> SubmitChangeAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken) =>
@@ -111,6 +116,8 @@ public sealed class DynamicToolDispatcher
                     await _backend.SearchComponentCatalogAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "rhino_list" => DynamicToolResult.Ok(
                     await _backend.ListRhinoObjectsAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
+                "inspect_outputs" => DynamicToolResult.Ok(
+                    await _backend.InspectCanvasOutputsAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "artifact_read" => DynamicToolResult.Ok(await ReadArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "artifact_write" => DynamicToolResult.Ok(await WriteArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "change_submit" => DynamicToolResult.Ok(await SubmitChangeAsync(call, cancellationToken).ConfigureAwait(false)),
@@ -195,6 +202,7 @@ public sealed class DynamicToolDispatcher
                 : "Reading the canvas snapshot",
         "component_catalog" => $"Searching components: {TryString(call.Arguments, "query")}",
         "rhino_list" => "Listing Rhino objects",
+        "inspect_outputs" => "Inspecting component outputs",
         "artifact_read" => $"Reading draft {TryString(call.Arguments, "path")}",
         "artifact_write" => $"Drafting {TryString(call.Arguments, "path")}",
         "change_submit" => $"Submitting: {TryString(call.Arguments, "summary")}",

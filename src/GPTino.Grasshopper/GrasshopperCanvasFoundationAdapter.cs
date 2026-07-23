@@ -655,12 +655,16 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
     private static bool IsRepresentableAtPrecision(decimal value, int decimalPlaces) =>
         decimal.Round(value, decimalPlaces) == value;
 
+    private const int MaximumSampleValuesPerParameter = 5;
+    private const int MaximumSampleValueCharacters = 200;
+
     private static CanvasOutputParameterInspection InspectOutputParameter(
         IGH_Param parameter,
         CancellationToken cancellationToken)
     {
         var count = 0;
         var typeNames = new HashSet<string>(StringComparer.Ordinal);
+        var samples = new List<string>(MaximumSampleValuesPerParameter);
         Rhino.Geometry.BoundingBox? bounds = null;
         foreach (var goo in parameter.VolatileData.AllData(true))
         {
@@ -673,6 +677,13 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             }
 
             typeNames.Add(goo.GetType().FullName ?? goo.GetType().Name);
+            if (samples.Count < MaximumSampleValuesPerParameter)
+            {
+                var text = goo.ToString() ?? string.Empty;
+                samples.Add(text.Length <= MaximumSampleValueCharacters
+                    ? text
+                    : text[..MaximumSampleValueCharacters]);
+            }
             if (goo.ScriptVariable() is not Rhino.Geometry.GeometryBase geometry)
             {
                 continue;
@@ -700,7 +711,8 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             parameter.NickName ?? string.Empty,
             count,
             typeNames.OrderBy(item => item, StringComparer.Ordinal).ToArray(),
-            bounds is { } value ? ToCanvasBounds(value) : null);
+            bounds is { } value ? ToCanvasBounds(value) : null,
+            samples);
     }
 
     private static CanvasBoundingBox3d ToCanvasBounds(Rhino.Geometry.BoundingBox bounds) =>
