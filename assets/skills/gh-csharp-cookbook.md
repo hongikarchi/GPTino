@@ -49,6 +49,18 @@ points = pts;   // assign each output socket variable exactly once
   (`new Point3d(x, y, z)`, `new Line(a, b)`, `NurbsCurve.Create(...)`). Sockets carrying
   geometry between components need the geometry type hint on BOTH ends (set via
   setComponentIo/setTyping), same as Python.
+- **Definite assignment**: initialize every declared local on ALL branches, ideally at declaration
+  (`double t = 0;`) — C# treats "use of unassigned local variable" as a compile error, not a warning.
+- **Raw source payloads**: script source is raw text. Never re-escape newlines — a literal
+  backslash-n sequence lands in the source verbatim and breaks compilation.
+- **No component context in script-mode**: there is NO `ghenv`, NO `Component`, NO `RunScript`
+  this-object. Read the document directly (`Rhino.RhinoDoc.ActiveDoc` and its Layers/Objects tables).
+- **Socket names are C# identifiers**: never name a socket a C# reserved keyword — `out` foremost
+  (the console output socket is not yours to declare). Use plain ASCII identifier names; names with
+  spaces or non-ASCII characters are rejected before anything runs.
+- **Verify RhinoCommon signatures against Rhino 8**: for uncertain APIs (`Unroller`, duplicate/offset
+  families) keep to the documented forms in this cookbook — a wrong overload fails at compile with
+  the exact [line:col]; fix the signature and resubmit rather than guessing variants.
 - **List/tree access**: a `list` input arrives as `IList<object>` (or typed when hinted) —
   iterate and cast per element or hint the socket type. Vectorize inside the script: one
   script processing a whole list beats the solver iterating an item-access component.

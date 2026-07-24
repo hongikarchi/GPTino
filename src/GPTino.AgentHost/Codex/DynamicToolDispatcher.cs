@@ -91,6 +91,7 @@ public sealed class DynamicToolDispatcher
     private readonly SkillLibrary? _skills;
     private readonly SessionActivityLog? _activity;
     private readonly ProjectContextStore? _context;
+    private readonly ProblemLog? _problems;
 
     public DynamicToolDispatcher(
         SessionStore store,
@@ -98,13 +99,15 @@ public sealed class DynamicToolDispatcher
         AgentHostOptions options,
         SkillLibrary? skills = null,
         SessionActivityLog? activity = null,
-        ProjectContextStore? context = null)
+        ProjectContextStore? context = null,
+        ProblemLog? problems = null)
     {
         _store = store;
         _backend = backend;
         _skills = skills;
         _activity = activity;
         _context = context;
+        _problems = problems;
         _artifactRoot = Path.Combine(options.ResolveDataDirectory(), "artifacts");
         Directory.CreateDirectory(_artifactRoot);
     }
@@ -237,7 +240,16 @@ public sealed class DynamicToolDispatcher
         if (string.Equals(session.Role, "planner", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(session.Role, "read-only", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException($"Session role '{session.Role}' cannot submit live changes.");
+            // The guard is by design; the denial must teach the way out and leave a durable
+            // record — it creates no job, so without the problem-log row a full authoring turn
+            // dead-ending here would be invisible to structured records.
+            var message = string.Equals(session.Role, "planner", StringComparison.OrdinalIgnoreCase)
+                ? "This session is in plan mode: change_submit is disabled by design. Present the " +
+                  "plan to the user and ask them to switch this session to auto to apply it."
+                : $"Session role '{session.Role}' cannot submit live changes; present the intended " +
+                  "change to the user and ask them to switch this session to auto to apply it.";
+            _problems?.RecordRoleDenial(session.Id, session.Role, call.Tool, message);
+            throw new InvalidOperationException(message);
         }
         if (session.State == SessionStates.Paused)
         {

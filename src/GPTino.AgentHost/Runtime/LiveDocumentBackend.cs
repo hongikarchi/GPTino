@@ -890,6 +890,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var liveChanged = false;
         var writeMayHaveChanged = false;
         var diagnostics = new List<JobDiagnostic>();
+        // Recovery-manifest bookkeeping: which operations completed their bridge round trip and
+        // which one was in flight when a failure surfaced. The in-flight operation's outcome is
+        // genuinely unknown (its write may or may not have landed) — the manifest reports it as
+        // unknown, never as failed.
+        var completedOperationIds = new List<string>();
+        string? inFlightOperationId = null;
         try
         {
             // The docKey was frozen at submit time; a document closed between enqueue and execution
@@ -934,6 +940,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 before.State.Revision,
                 execution.Token).ConfigureAwait(false);
             PreflightPythonSchemas(preparedOperations, before);
+            PreflightDeterministicAdapterRejections(preparedOperations, before);
 
             await EnsureHistoryBaselineAsync(targetState, before, execution.Token).ConfigureAwait(false);
             var lease = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
@@ -974,8 +981,32 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     prepared.Arguments);
                 request.Validate();
                 writeMayHaveChanged |= access == BridgeOperationAccess.Write;
-                var response = await SendOperationAsync(targetState.Target, request, execution.Token)
-                    .ConfigureAwait(false);
+                inFlightOperationId = operation.OperationId;
+                var operationTimer = Stopwatch.StartNew();
+                BridgeOperationResponse response;
+                try
+                {
+                    response = await SendOperationAsync(targetState.Target, request, execution.Token)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    // Slow-op accounting (Information only): surfaces where the bridge budget went
+                    // in the terminal job view, so a session sees a solve approaching the cap
+                    // BEFORE one times out. Sub-threshold ops stay silent to keep projections slim.
+                    operationTimer.Stop();
+                    if (operationTimer.Elapsed >= OperationDurationDiagnosticThreshold)
+                    {
+                        diagnostics.Add(new JobDiagnostic(
+                            operation.OperationId,
+                            BridgeDiagnosticSeverity.Information,
+                            "op_duration",
+                            FormatOperationDuration(
+                                prepared.BridgeOperation,
+                                operationTimer.Elapsed,
+                                BridgeRequestTimeout)));
+                    }
+                }
                 liveChanged |= response.Changed;
                 diagnostics.AddRange(response.Diagnostics.Select(item =>
                     new JobDiagnostic(operation.OperationId, item.Severity, item.Code, item.Message)));
@@ -1009,6 +1040,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     throw new InvalidOperationException(
                         $"Operation '{operation.OperationId}' reported {error.Code}: {error.Message}");
                 }
+                completedOperationIds.Add(operation.OperationId);
+                inFlightOperationId = null;
             }
 
             await SetJobPhaseAsync(
@@ -1100,11 +1133,21 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 _logger.LogWarning(exception, "Could not capture post-solve observations for job {JobId}.", job.JobId);
             }
             UpdateResourceLedger(before, after, job.ChangeSet.SessionId, job.JobId);
+            // Informational commit quality: runtime warnings and empty solved outputs, appended to
+            // the commit message (and thereby the problem-log row SetJobPhaseAsync writes) so a
+            // "committed but red/empty on canvas" state survives outside the transcript. This is
+            // reporting only — it never demotes the commit.
+            var commitQuality = DescribeCommitQuality(diagnostics, entry.Outputs);
             await SetJobPhaseAsync(
                 entry,
                 JobState.Committed,
-                "Verified and committed to managed history.").ConfigureAwait(false);
-            return new JobExecutionResult(job.JobId, JobState.Committed, "Verified and committed.");
+                commitQuality is null
+                    ? "Verified and committed to managed history."
+                    : $"Verified and committed to managed history. {commitQuality}").ConfigureAwait(false);
+            return new JobExecutionResult(
+                job.JobId,
+                JobState.Committed,
+                commitQuality is null ? "Verified and committed." : $"Verified and committed. {commitQuality}");
         }
         catch (OperationCanceledException) when (execution.IsCancellationRequested)
         {
@@ -1118,10 +1161,23 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         catch (Exception exception)
         {
-            entry.Diagnostics ??= diagnostics;
             var state = liveChanged || writeMayHaveChanged ? JobState.RecoveryRequired : JobState.Failed;
-            await SetJobPhaseAsync(entry, state, exception.Message).ConfigureAwait(false);
-            return new JobExecutionResult(job.JobId, state, exception.Message);
+            var message = exception.Message;
+            if (state == JobState.RecoveryRequired)
+            {
+                // The recovery manifest turns "review the document state" into a deterministic
+                // worklist: which operations verifiably applied, which one was in flight (outcome
+                // honestly unknown — never reported as failed), and which never dispatched.
+                var manifest = BuildRecoveryManifest(
+                    job.ChangeSet.Operations,
+                    completedOperationIds,
+                    inFlightOperationId);
+                message = $"{message} {manifest.Message}";
+                diagnostics.AddRange(manifest.Diagnostics);
+            }
+            entry.Diagnostics ??= diagnostics;
+            await SetJobPhaseAsync(entry, state, message).ConfigureAwait(false);
+            return new JobExecutionResult(job.JobId, state, message);
         }
         finally
         {
@@ -1739,11 +1795,52 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             await connection.SendAsync(frame, cancellationToken).ConfigureAwait(false);
             return await completion.Task.WaitAsync(BridgeRequestTimeout, cancellationToken).ConfigureAwait(false);
         }
+        catch (TimeoutException)
+        {
+            // The default "The operation has timed out." taught nothing: sessions resubmitted the
+            // same heavy solve and froze Rhino again. Name the operation, the budget, and the way
+            // out. The timeout only abandons the pipe wait — the Grasshopper solve keeps running.
+            var operation = payload as BridgeOperationRequest;
+            throw new TimeoutException(BridgeTimeoutMessage(
+                operation?.OperationId,
+                operation?.Operation ?? payloadType,
+                BridgeRequestTimeout));
+        }
         finally
         {
             _pending.TryRemove(frame.MessageId, out _);
         }
     }
+
+    /// <summary>
+    /// Bridge-wait timeout message carrying the operation id, the bridge operation name, and the
+    /// budget, plus recovery guidance. Internal so the message contract is pinned by unit tests
+    /// without paying the live 45s wait.
+    /// </summary>
+    internal static string BridgeTimeoutMessage(
+        string? operationId,
+        string operationName,
+        TimeSpan budget) =>
+        $"Bridge operation '{operationId ?? "(no id)"}' ({operationName}) exceeded its " +
+        $"{budget.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)}s budget. Grasshopper is " +
+        "likely still solving on the UI thread — the write may still land and Rhino may be frozen " +
+        "until the solve finishes. Do NOT resubmit the same heavy solve: reduce sampling/segment " +
+        "counts, split the work into staged components, or wire native Grasshopper components for " +
+        "solver-heavy work. Once Rhino responds, re-read the document state and retry the lighter " +
+        "version.";
+
+    /// <summary>
+    /// Ops slower than this get an Information "op_duration" diagnostic in the terminal job view,
+    /// so a session sees which solves approach the bridge budget before one times out.
+    /// </summary>
+    internal static readonly TimeSpan OperationDurationDiagnosticThreshold = TimeSpan.FromSeconds(5);
+
+    internal static string FormatOperationDuration(
+        string bridgeOperation,
+        TimeSpan elapsed,
+        TimeSpan budget) =>
+        $"{bridgeOperation}: {elapsed.TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture)} ms " +
+        $"of the {budget.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)}s bridge budget.";
 
     private async Task<BridgeOperationResponse> SendOperationAsync(
         DocumentRuntime target,
@@ -2211,7 +2308,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     // NotSupportedException at execute time, which — because the same ChangeSet's source write has
     // already landed — dead-ends the job in RecoveryRequired. Catch it here, BEFORE any write, by
     // comparing the requested socket counts against the component's live sockets in the pre-write
-    // snapshot, so a removal is a clean deterministic failure with no partial state.
+    // snapshot, so a removal is a clean deterministic failure with no partial state. The gate is
+    // the COUNT check (renames stay legal — the adapter reconciles by position); the socket-name
+    // diff exists to make the rejection actionable by naming the live sockets the declaration
+    // missed, especially the script console output 'out' that models cannot see.
     private static void PreflightPythonSchemas(
         IReadOnlyList<PreparedOperation> prepared,
         SnapshotEnvelope before)
@@ -2233,20 +2333,352 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             var requestedOutputs = CountSchemaSockets(item.Arguments, "outputs");
             if (requestedInputs < component.Inputs.Count || requestedOutputs < component.Outputs.Count)
             {
-                throw new InvalidOperationException(
-                    $"Operation '{item.Operation.OperationId}' would remove sockets from component " +
-                    $"{componentId:D} (schema is append-only): it has {component.Inputs.Count} input(s) and " +
-                    $"{component.Outputs.Count} output(s), but the request declares {requestedInputs} input(s) " +
-                    $"and {requestedOutputs} output(s). List every existing socket in order, then appended " +
-                    "ones; you may rename or retype existing sockets but not remove them.");
+                throw new InvalidOperationException(BuildAppendOnlySchemaRejection(
+                    item.Operation.OperationId,
+                    componentId,
+                    component,
+                    SchemaSocketNames(item.Arguments, "inputs"),
+                    SchemaSocketNames(item.Arguments, "outputs"),
+                    requestedInputs,
+                    requestedOutputs));
             }
         }
+    }
+
+    private static string BuildAppendOnlySchemaRejection(
+        string operationId,
+        Guid componentId,
+        CanvasObjectState component,
+        IReadOnlyList<string> declaredInputs,
+        IReadOnlyList<string> declaredOutputs,
+        int requestedInputs,
+        int requestedOutputs)
+    {
+        var liveInputs = component.Inputs.Select(parameter => parameter.Name).ToArray();
+        var liveOutputs = component.Outputs.Select(parameter => parameter.Name).ToArray();
+        var undeclaredInputs = UndeclaredSocketNames(liveInputs, declaredInputs);
+        var undeclaredOutputs = UndeclaredSocketNames(liveOutputs, declaredOutputs);
+        var message = new StringBuilder();
+        message.Append(
+            $"Operation '{operationId}' would remove sockets from component " +
+            $"{componentId:D} (schema is append-only): it has {component.Inputs.Count} input(s) and " +
+            $"{component.Outputs.Count} output(s), but the request declares {requestedInputs} input(s) " +
+            $"and {requestedOutputs} output(s).");
+        message.Append($" Live inputs: {SocketNameList(liveInputs)}.");
+        message.Append($" Live outputs: {SocketNameList(liveOutputs)}.");
+        if (undeclaredInputs.Count > 0)
+        {
+            message.Append($" Undeclared existing input(s): {SocketNameList(undeclaredInputs)}.");
+        }
+        if (undeclaredOutputs.Count > 0)
+        {
+            message.Append($" Undeclared existing output(s): {SocketNameList(undeclaredOutputs)}.");
+        }
+        if (undeclaredOutputs.Contains("out", StringComparer.Ordinal))
+        {
+            message.Append(
+                " 'out' is the script console output — do not declare a socket named 'out' " +
+                "(C# reserved keyword) and keep your own outputs distinct from it; list the " +
+                "existing console socket at its position renamed (e.g. 'console_log') — renaming " +
+                "existing sockets is allowed.");
+        }
+        message.Append(
+            " List every existing socket in order, then appended ones; you may rename or retype " +
+            "existing sockets but not remove them.");
+        return message.ToString();
+    }
+
+    private static string SocketNameList(IReadOnlyList<string> names) =>
+        names.Count == 0 ? "none" : string.Join(", ", names.Select(name => $"'{name}'"));
+
+    private static IReadOnlyList<string> UndeclaredSocketNames(
+        IReadOnlyList<string> liveNames,
+        IReadOnlyList<string> declaredNames)
+    {
+        var declared = new HashSet<string>(declaredNames, StringComparer.Ordinal);
+        return liveNames.Where(name => !declared.Contains(name)).ToArray();
     }
 
     private static int CountSchemaSockets(JsonElement arguments, string property) =>
         arguments.TryGetProperty(property, out var element) && element.ValueKind == JsonValueKind.Array
             ? element.GetArrayLength()
             : 0;
+
+    private static IReadOnlyList<string> SchemaSocketNames(JsonElement arguments, string property) =>
+        arguments.TryGetProperty(property, out var element) && element.ValueKind == JsonValueKind.Array
+            ? element.EnumerateArray()
+                .Select(socket => socket.ValueKind == JsonValueKind.Object &&
+                    socket.TryGetProperty("name", out var name) &&
+                    name.ValueKind == JsonValueKind.String
+                        ? name.GetString() ?? string.Empty
+                        : string.Empty)
+                .Where(name => !string.IsNullOrEmpty(name))
+                .ToArray()
+            : Array.Empty<string>();
+
+    // Script-component type ids, mirrored from src/GPTino.Grasshopper/GrasshopperPythonFoundationAdapter.cs
+    // (Cpython3ComponentGuid / IronPython2ComponentGuid / CSharpComponentGuid, lines 21-27).
+    private static readonly Guid Cpython3ScriptComponentTypeId = new("719467e6-7cf5-4848-99b0-c5dd57e5442c");
+    private static readonly Guid IronPython2ScriptComponentTypeId = new("410755b1-224a-4c1e-a407-bf32fb45ea7e");
+    private static readonly Guid CSharpScriptComponentTypeId = new("b6ba1144-02d6-4a2d-b53c-ec62e290eeb7");
+
+    // C# reserved keywords are illegal script-variable names: RhinoCode's C# codegen rejects them
+    // deterministically at compile time ("Output parameter \"out\" can not use reserved keyword
+    // \"out\" as variable name") — but only AFTER the schema write has landed. Mirrored here so a
+    // C# component's schema is rejected BEFORE any write. Contextual keywords (var, async, ...)
+    // are legal identifiers and stay allowed.
+    private static readonly HashSet<string> CSharpReservedKeywords = new(StringComparer.Ordinal)
+    {
+        "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked",
+        "class", "const", "continue", "decimal", "default", "delegate", "do", "double", "else",
+        "enum", "event", "explicit", "extern", "false", "finally", "fixed", "float", "for",
+        "foreach", "goto", "if", "implicit", "in", "int", "interface", "internal", "is", "lock",
+        "long", "namespace", "new", "null", "object", "operator", "out", "override", "params",
+        "private", "protected", "public", "readonly", "ref", "return", "sbyte", "sealed", "short",
+        "sizeof", "stackalloc", "static", "string", "struct", "switch", "this", "throw", "true",
+        "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using", "virtual",
+        "void", "volatile", "while",
+    };
+
+    // Deterministic adapter rejections that used to surface at execute time — after a sibling
+    // write in the same ChangeSet had landed — and therefore dead-ended as RecoveryRequired.
+    // Validated here against the pre-write snapshot (same pattern as the socket-removal preflight
+    // above) so they land as a clean deterministic Failed with zero writes. STRICTLY NARROWER than
+    // the adapter: anything this method cannot prove the adapter would reject passes through —
+    // objects created inside this ChangeSet, sockets a same-ChangeSet schema write may append,
+    // and every type hint (the adapter accepts ANY hint and degrades unknown ones to a generic
+    // socket — see GrasshopperPythonFoundationAdapter.ResolveSafeType and the accept-all comment
+    // above its allowObject branch — so a hint whitelist here would mint new false declines).
+    private static void PreflightDeterministicAdapterRejections(
+        IReadOnlyList<PreparedOperation> prepared,
+        SnapshotEnvelope before)
+    {
+        foreach (var item in prepared)
+        {
+            switch (item.BridgeOperation)
+            {
+                case "canvas.setWire":
+                    PreflightWireEndpoints(item, prepared, before);
+                    break;
+                case "python.setTyping":
+                    PreflightTypingTarget(item, prepared, before);
+                    break;
+                case "python.setSchema":
+                    PreflightSchemaSocketNames(item, prepared, before);
+                    break;
+            }
+        }
+    }
+
+    private static void PreflightWireEndpoints(
+        PreparedOperation item,
+        IReadOnlyList<PreparedOperation> prepared,
+        SnapshotEnvelope before)
+    {
+        if (!item.Arguments.TryGetProperty("wire", out var wire) ||
+            wire.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+        PreflightWireEndpoint(item, prepared, before, wire, source: true);
+        PreflightWireEndpoint(item, prepared, before, wire, source: false);
+    }
+
+    private static void PreflightWireEndpoint(
+        PreparedOperation item,
+        IReadOnlyList<PreparedOperation> prepared,
+        SnapshotEnvelope before,
+        JsonElement wire,
+        bool source)
+    {
+        if (!wire.TryGetProperty(source ? "sourceObjectId" : "targetObjectId", out var objectElement) ||
+            !objectElement.TryGetGuid(out var objectId) ||
+            !wire.TryGetProperty(source ? "sourceParameterId" : "targetParameterId", out var parameterElement) ||
+            !parameterElement.TryGetGuid(out var parameterId))
+        {
+            return;
+        }
+        var owner = before.Canvas.Objects.FirstOrDefault(obj => obj.ObjectId == objectId);
+        if (owner is null)
+        {
+            // Created inside this ChangeSet: the snapshot cannot see it — let the adapter decide.
+            if (ChangeSetCreatesObject(prepared, objectId))
+            {
+                return;
+            }
+            throw new InvalidOperationException(
+                $"Operation '{item.Operation.OperationId}': Grasshopper {(source ? "source" : "target")} " +
+                $"object {objectId:D} was not found in the pre-write snapshot and no operation in this " +
+                "ChangeSet creates it. Rejected before any write; wire to an existing object id " +
+                "(job results carry socket ids under committed.sockets).");
+        }
+        // A same-ChangeSet schema write may append sockets the snapshot cannot see yet.
+        if (ChangeSetEditsComponentSchema(prepared, objectId))
+        {
+            return;
+        }
+        var side = source ? owner.Outputs : owner.Inputs;
+        if (side.Any(parameter => parameter.ParameterId == parameterId))
+        {
+            return;
+        }
+        var available = side.Count == 0
+            ? "none"
+            : string.Join(", ", side.Select(parameter => $"{parameter.Name}={parameter.ParameterId:D}"));
+        throw new InvalidOperationException(
+            $"Operation '{item.Operation.OperationId}': Grasshopper {(source ? "source" : "target")} " +
+            $"parameter {parameterId:D} on object {objectId:D} was not found in the pre-write snapshot. " +
+            $"Available {(source ? "output" : "input")} sockets: {available}. Rejected before any write; " +
+            "wire to one of the listed name=id pairs.");
+    }
+
+    private static void PreflightTypingTarget(
+        PreparedOperation item,
+        IReadOnlyList<PreparedOperation> prepared,
+        SnapshotEnvelope before)
+    {
+        if (!item.Arguments.TryGetProperty("componentId", out var componentElement) ||
+            !componentElement.TryGetGuid(out var componentId) ||
+            !item.Arguments.TryGetProperty("inputParameterId", out var parameterElement) ||
+            !parameterElement.TryGetGuid(out var parameterId))
+        {
+            return;
+        }
+        var component = before.Canvas.Objects.FirstOrDefault(obj => obj.ObjectId == componentId);
+        if (component is null ||
+            !IsScriptComponentType(component.ComponentTypeId) ||
+            ChangeSetEditsComponentSchema(prepared, componentId))
+        {
+            // Unknown, non-script, or reshaped by this same ChangeSet — let the adapter decide.
+            return;
+        }
+        if (component.Inputs.Any(parameter => parameter.ParameterId == parameterId))
+        {
+            return;
+        }
+        var available = component.Inputs.Count == 0
+            ? "none"
+            : string.Join(", ", component.Inputs.Select(parameter =>
+                $"{parameter.Name}={parameter.ParameterId:D}"));
+        throw new InvalidOperationException(
+            $"Operation '{item.Operation.OperationId}': Python input {parameterId:D} was not found on " +
+            $"component {componentId:D} in the pre-write snapshot. Available input sockets: {available}. " +
+            "Rejected before any write; use one of the listed name=id pairs (job results carry them " +
+            "under committed.sockets).");
+    }
+
+    // Socket names become script variables. Two deterministic adapter/compiler rejections are
+    // caught pre-write: (1) names the adapter's ValidateSchema rejects via IsPythonIdentifier —
+    // mirrored EXACTLY (Unicode letters allowed, spaces/punctuation not) so this preflight never
+    // rejects a name the adapter would accept; (2) on C# components, C# reserved keywords, which
+    // RhinoCode rejects at compile time after the write has landed.
+    private static void PreflightSchemaSocketNames(
+        PreparedOperation item,
+        IReadOnlyList<PreparedOperation> prepared,
+        SnapshotEnvelope before)
+    {
+        if (!item.Arguments.TryGetProperty("componentId", out var componentElement) ||
+            !componentElement.TryGetGuid(out var componentId))
+        {
+            return;
+        }
+        var names = SchemaSocketNames(item.Arguments, "inputs")
+            .Concat(SchemaSocketNames(item.Arguments, "outputs"))
+            .ToArray();
+        foreach (var name in names)
+        {
+            if (!IsSafeScriptIdentifier(name))
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{item.Operation.OperationId}': '{name}' is not a safe Python variable " +
+                    "name. Socket names become script variables — use letters, digits, and underscores, " +
+                    "starting with a letter or underscore (no spaces). Rejected before any write.");
+            }
+        }
+        if (!IsCSharpScriptComponent(componentId, before, prepared))
+        {
+            return;
+        }
+        foreach (var name in names)
+        {
+            if (CSharpReservedKeywords.Contains(name))
+            {
+                var hint = string.Equals(name, "out", StringComparison.Ordinal)
+                    ? "'console_log'"
+                    : $"'{name}_value'";
+                throw new InvalidOperationException(
+                    $"Operation '{item.Operation.OperationId}': '{name}' is a C# reserved keyword and " +
+                    "cannot be a socket/variable name on a C# script component (RhinoCode rejects it at " +
+                    $"compile time). Rename it (e.g. {hint}). Rejected before any write.");
+            }
+        }
+    }
+
+    // Mirrors GrasshopperPythonFoundationAdapter.IsPythonIdentifier exactly — including Unicode
+    // letters — so this preflight never rejects a name the adapter would accept.
+    private static bool IsSafeScriptIdentifier(string value) =>
+        !string.IsNullOrEmpty(value) &&
+        (char.IsLetter(value[0]) || value[0] == '_') &&
+        value.Skip(1).All(character => char.IsLetterOrDigit(character) || character == '_');
+
+    private static bool IsScriptComponentType(Guid componentTypeId) =>
+        componentTypeId == Cpython3ScriptComponentTypeId ||
+        componentTypeId == IronPython2ScriptComponentTypeId ||
+        componentTypeId == CSharpScriptComponentTypeId;
+
+    private static bool IsCSharpScriptComponent(
+        Guid componentId,
+        SnapshotEnvelope before,
+        IReadOnlyList<PreparedOperation> prepared)
+    {
+        var component = before.Canvas.Objects.FirstOrDefault(obj => obj.ObjectId == componentId);
+        if (component is not null && IsScriptComponentType(component.ComponentTypeId))
+        {
+            return component.ComponentTypeId == CSharpScriptComponentTypeId;
+        }
+        foreach (var item in prepared)
+        {
+            if (string.Equals(item.BridgeOperation, "canvas.create", StringComparison.Ordinal) &&
+                item.Arguments.TryGetProperty("objectId", out var objectElement) &&
+                objectElement.TryGetGuid(out var objectId) &&
+                objectId == componentId &&
+                item.Arguments.TryGetProperty("componentTypeId", out var typeElement) &&
+                typeElement.TryGetGuid(out var typeId) &&
+                typeId == CSharpScriptComponentTypeId)
+            {
+                return true;
+            }
+            if (string.Equals(item.BridgeOperation, "python.setSource", StringComparison.Ordinal) &&
+                item.Arguments.TryGetProperty("componentId", out var sourceElement) &&
+                sourceElement.TryGetGuid(out var sourceComponentId) &&
+                sourceComponentId == componentId &&
+                item.Arguments.TryGetProperty("runtime", out var runtime) &&
+                runtime.ValueKind == JsonValueKind.String &&
+                string.Equals(runtime.GetString(), "csharp", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool ChangeSetCreatesObject(
+        IReadOnlyList<PreparedOperation> prepared,
+        Guid objectId) =>
+        prepared.Any(item =>
+            string.Equals(item.BridgeOperation, "canvas.create", StringComparison.Ordinal) &&
+            item.Arguments.TryGetProperty("objectId", out var element) &&
+            element.TryGetGuid(out var id) &&
+            id == objectId);
+
+    private static bool ChangeSetEditsComponentSchema(
+        IReadOnlyList<PreparedOperation> prepared,
+        Guid componentId) =>
+        prepared.Any(item =>
+            string.Equals(item.BridgeOperation, "python.setSchema", StringComparison.Ordinal) &&
+            item.Arguments.TryGetProperty("componentId", out var element) &&
+            element.TryGetGuid(out var id) &&
+            id == componentId);
 
     private async Task<byte[]> ReadOperationPayloadBytesAsync(
         Guid sessionId,
@@ -3617,6 +4049,111 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         return problems;
     }
 
+    /// <summary>
+    /// Informational commit-quality summary: runtime warning count plus the names of solved-empty
+    /// outputs (from the post-solve output inspections), e.g. "1 runtime warning(s); output(s)
+    /// 'Ceiling' empty." Null when there is nothing to report. Strictly informational — the caller
+    /// appends it to the commit message and MUST NOT let it change the job state (an intentionally
+    /// empty output is legal; this only makes the canvas-visible state survive in records).
+    /// </summary>
+    internal static string? DescribeCommitQuality(
+        IReadOnlyList<JobDiagnostic> diagnostics,
+        IReadOnlyList<JobComponentOutputs>? outputs)
+    {
+        try
+        {
+            var warningCount = diagnostics.Count(item =>
+                item.Severity == BridgeDiagnosticSeverity.Warning);
+            var emptyOutputs = new List<string>();
+            foreach (var component in outputs ?? Array.Empty<JobComponentOutputs>())
+            {
+                if (component.Inspection.ValueKind != JsonValueKind.Object ||
+                    !component.Inspection.TryGetProperty("outputs", out var inspected) ||
+                    inspected.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+                foreach (var output in inspected.EnumerateArray())
+                {
+                    if (output.ValueKind != JsonValueKind.Object ||
+                        !output.TryGetProperty("name", out var nameElement) ||
+                        nameElement.ValueKind != JsonValueKind.String ||
+                        !output.TryGetProperty("dataCount", out var countElement) ||
+                        countElement.ValueKind != JsonValueKind.Number ||
+                        countElement.GetInt32() != 0)
+                    {
+                        continue;
+                    }
+                    var name = nameElement.GetString();
+                    // The script console output 'out' is routinely empty; reporting it would be
+                    // noise, not signal.
+                    if (string.IsNullOrWhiteSpace(name) ||
+                        string.Equals(name, "out", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    emptyOutputs.Add(name);
+                }
+            }
+            var parts = new List<string>();
+            if (warningCount > 0)
+            {
+                parts.Add($"{warningCount} runtime warning(s)");
+            }
+            if (emptyOutputs.Count > 0)
+            {
+                var names = string.Join(
+                    ", ",
+                    emptyOutputs.Distinct(StringComparer.Ordinal).Select(name => $"'{name}'"));
+                parts.Add($"output(s) {names} empty");
+            }
+            return parts.Count == 0 ? null : $"{string.Join("; ", parts)}.";
+        }
+        catch (Exception)
+        {
+            // Never-demote discipline: a quality-summary bug must never affect the commit.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// RecoveryRequired manifest: which operations completed their bridge round trip, which one
+    /// was in flight when the failure surfaced (outcome honestly unknown — never reported as
+    /// failed), and which never dispatched. Returned as message text plus the same facts as
+    /// Information diagnostics so the job projection and problem log both carry them.
+    /// </summary>
+    internal static (string Message, IReadOnlyList<JobDiagnostic> Diagnostics) BuildRecoveryManifest(
+        IReadOnlyList<TypedOperation> operations,
+        IReadOnlyList<string> completedOperationIds,
+        string? inFlightOperationId)
+    {
+        var completed = new HashSet<string>(completedOperationIds, StringComparer.Ordinal);
+        var notDispatched = operations
+            .Select(operation => operation.OperationId)
+            .Where(id => !completed.Contains(id) &&
+                !string.Equals(id, inFlightOperationId, StringComparison.Ordinal))
+            .ToArray();
+        var applied = completedOperationIds.Count > 0
+            ? string.Join(", ", completedOperationIds)
+            : "none";
+        var unknown = inFlightOperationId is null
+            ? "none"
+            : $"{inFlightOperationId} (in flight at failure)";
+        var pending = notDispatched.Length > 0 ? string.Join(", ", notDispatched) : "none";
+        var message = $"Applied: {applied}. Unknown outcome: {unknown}. Not dispatched: {pending}.";
+        var manifestDiagnostics = new List<JobDiagnostic>
+        {
+            new(string.Empty, BridgeDiagnosticSeverity.Information, "recovery_applied", applied),
+            new(
+                inFlightOperationId ?? string.Empty,
+                BridgeDiagnosticSeverity.Information,
+                "recovery_unknown",
+                unknown),
+            new(string.Empty, BridgeDiagnosticSeverity.Information, "recovery_not_dispatched", pending),
+        };
+        return (message, manifestDiagnostics);
+    }
+
     private IReadOnlyList<QueuedConflict> DetectQueuedConflicts(ChangeSet changeSet, string targetDocKey)
     {
         // Only jobs writing the SAME Grasshopper document can genuinely contend: sibling docs
@@ -4920,7 +5457,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private sealed record ResourceObservation(ResourceAddress Resource, string? Fingerprint);
 
-    private sealed record JobDiagnostic(
+    internal sealed record JobDiagnostic(
         string OperationId,
         BridgeDiagnosticSeverity Severity,
         string Code,
@@ -4943,7 +5480,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         string Access);
 
     /// <summary>Post-solve canvas.inspectOutputs result for one written component.</summary>
-    private sealed record JobComponentOutputs(Guid ComponentId, JsonElement Inspection);
+    internal sealed record JobComponentOutputs(Guid ComponentId, JsonElement Inspection);
 
     internal readonly record struct ResourceLedgerEntry(
         ResourceAddress Resource, string Fingerprint, Guid SessionId, long Revision);

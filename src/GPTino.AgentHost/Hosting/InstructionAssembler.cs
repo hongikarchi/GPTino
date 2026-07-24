@@ -63,6 +63,24 @@ public static class HouseRules
           '# r:' package requirements in shipped scripts — they block file open on pip resolution; use
           pre-installed packages only. Number Slider values are set with canvas.setNumberSlider.
 
+        Heavy solve discipline (mandatory):
+        - Every bridge operation has a hard 45-second budget. A Grasshopper solve that exceeds it freezes
+          Rhino, dead-ends the job as recoveryRequired, and may leave the document half-applied — treat
+          solve time as a scarce resource exactly like tokens.
+        - Author solver-heavy surface work (NetworkSrf/Patch/Coons, full-surface splitting, multi-alternative
+          panelization) INCREMENTALLY: first execute with deliberately small sampling/segment/count values
+          exposed as sliders, verify committed.outputs, and only then raise the values. Never make the first
+          execution the full-resolution one.
+        - Solver domains stay native: structural/environmental/physics solves and expensive surface fitting
+          belong to native Grasshopper components wired into the definition, not to re-implementations inside
+          one script. Script components are for geometry utilities that finish in seconds.
+        - One heavy execute per ChangeSet, nothing else in it. If a solve times out, do NOT resubmit the
+          same computation — reduce the workload (sampling, counts, extent) or restructure into staged
+          components first, then raise resolution only after a committed low-resolution pass.
+        - Bound your loops: estimate element counts before writing (a 100x100 grid is 10,000 iterations of
+          whatever body you write). Quadratic pairwise passes over thousands of elements belong in RTree
+          queries, not nested loops.
+
         Speed discipline (mandatory):
         - A Python component is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
           deliberation, submit each ChangeSet with wait=true, and chain from each job result's committed block —
@@ -99,11 +117,13 @@ public static class HouseRules
           (committed or applied), so the whole Python chain submits back to back with no re-reads. Two exceptions
           still need the concrete fingerprint from the previous result (in both payload and writeSet): value/geometry
           writes (setNumberSlider, moveComponent, delete, Rhino transform/upsert) and create targets ("gptino:absent").
-        - "gptino:auto" fills a value only when THIS session already wrote the resource and it is unchanged. Editing a
-          PRE-EXISTING component (one you did not create this session) with gptino:auto is Blocked, but the decline
-          message carries the current fingerprint — resubmit that one resource with the concrete value; you do NOT need
-          a snapshot_read. Same for a genuine foreign change (another session or a manual Grasshopper edit): the message
-          gives the current fingerprint, resubmit with it, do not restart discovery.
+        - "gptino:auto" fills a value only when THIS session already wrote the resource in THIS runtime and it is
+          unchanged — the ledger does not survive restarts and never transfers between sessions. A component you
+          authored yesterday, in another session, or in a recovered document is PRE-EXISTING now: its first touch
+          must carry a concrete fingerprint. After ANY auto-decline or stale block, the very next submission MUST
+          use the exact "Current fingerprint" value quoted in the decline message — never resubmit gptino:auto for
+          that resource, never resubmit the old expected value, and never re-read the whole snapshot for it. Two
+          identical declines in a row mean you ignored the quoted value: stop and re-read the message.
         - Acceptance predicates are OPTIONAL: submit "acceptancePredicates":[] and the server attaches the standard
           set automatically (creates/bakes → objectExists; deletes → objectAbsent; wires → wireExists/wireAbsent;
           everything else → runtimeErrorAbsent). If you declare your own, the kinds are exactly:

@@ -105,6 +105,95 @@ public sealed class JobObservationAndWaitTests
     }
 
     [Fact]
+    public async Task CommittedJobMessageCarriesWarningsAndEmptyOutputsWithoutDemotion()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        harness.IncludeNumberSliderValue = true;
+        await using var responder = harness.StartResponder(responseFactory: request => request.Operation switch
+        {
+            "canvas.setNumberSlider" => BridgeOperationResponse.Create(
+                request.OperationId,
+                changed: true,
+                new { applied = true },
+                beforeFingerprint: harness.ObjectFingerprint,
+                afterFingerprint: "slider-after",
+                diagnostics:
+                [
+                    new BridgeDiagnostic(
+                        BridgeDiagnosticSeverity.Warning,
+                        "python_warning",
+                        "37 panel curve(s) could not be mapped")
+                ]),
+            "canvas.inspectOutputs" => BridgeOperationResponse.Create(
+                request.OperationId,
+                changed: false,
+                new
+                {
+                    objectId = request.Arguments.GetProperty("objectId").GetGuid(),
+                    outputs = new object[]
+                    {
+                        new { name = "Ceiling", dataCount = 0 },
+                        new { name = "out", dataCount = 0 },
+                        new { name = "N", dataCount = 3 }
+                    }
+                },
+                afterFingerprint: "outputs-v1"),
+            _ => null
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Commit quality"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var resource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentValue,
+            harness.CanvasObjectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "quality-slider.json",
+            new
+            {
+                bridgeOperation = "canvas.setNumberSlider",
+                arguments = new
+                {
+                    operationId = "quality-slider",
+                    objectId = harness.CanvasObjectId,
+                    expectedFingerprint = harness.ObjectFingerprint,
+                    value = 15m,
+                    minimum = 0m,
+                    maximum = 100m,
+                    decimalPlaces = 0
+                }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "quality-slider",
+                OperationKind.SetValue,
+                AdapterOwner.Cordyceps,
+                [],
+                [resource],
+                Reversible: true,
+                artifact),
+            [new ResourceExpectation(resource, harness.ObjectFingerprint)]);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "quality-slider", wait: true),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var jobView = await harness.ReadJobViewAsync(jobId);
+        var message = jobView.GetProperty("message").GetString();
+
+        // Informational only: warnings and empty outputs enrich the message but NEVER demote.
+        Assert.Equal("committed", state);
+        Assert.Contains("Verified and committed", message, StringComparison.Ordinal);
+        Assert.Contains("1 runtime warning(s)", message, StringComparison.Ordinal);
+        Assert.Contains("output(s) 'Ceiling' empty", message, StringComparison.Ordinal);
+        // The script console output 'out' is routinely empty and stays out of the report.
+        Assert.DoesNotContain("'out'", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task DiagnosticsAreOmittedWhileTheJobIsStillActive()
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync();

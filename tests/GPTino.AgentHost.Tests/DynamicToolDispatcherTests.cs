@@ -3,7 +3,9 @@ using GPTino.AgentHost.Api;
 using GPTino.AgentHost.Codex;
 using GPTino.AgentHost.Data;
 using GPTino.AgentHost.Hosting;
+using GPTino.AgentHost.Runtime;
 using GPTino.Contracts;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace GPTino.AgentHost.Tests;
 
@@ -89,8 +91,33 @@ public sealed class DynamicToolDispatcherTests
             CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Contains("cannot submit live changes", result.Text, StringComparison.OrdinalIgnoreCase);
+        if (role == "planner")
+        {
+            // The planner denial teaches the mode by name and the way out, instead of the bare
+            // role-permission error the model only understood after wasting a full authoring turn.
+            Assert.Contains("plan mode", result.Text, StringComparison.Ordinal);
+            Assert.Contains("change_submit is disabled by design", result.Text, StringComparison.Ordinal);
+            Assert.Contains("Present the plan to the user", result.Text, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains("cannot submit live changes", result.Text, StringComparison.OrdinalIgnoreCase);
+        }
+        Assert.Contains("switch this session to auto", result.Text, StringComparison.Ordinal);
         Assert.Equal(0, backend.SubmitCount);
+
+        // Role denials create no job; the problem log is the only structured record of them.
+        var logPath = Path.Combine(directory.GetPath("data"), "problem-log.jsonl");
+        Assert.True(File.Exists(logPath), "Role denial did not write a problem-log row.");
+        var rows = (await File.ReadAllLinesAsync(logPath))
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => JsonDocument.Parse(line).RootElement.Clone())
+            .ToArray();
+        var denial = Assert.Single(rows, row => row.GetProperty("kind").GetString() == "role-denial");
+        Assert.Equal(session.Id, denial.GetProperty("sessionId").GetGuid());
+        Assert.Equal(role, denial.GetProperty("role").GetString());
+        Assert.Equal("change_submit", denial.GetProperty("tool").GetString());
+        Assert.Equal(result.Text, denial.GetProperty("message").GetString());
     }
 
     [Fact]
@@ -155,7 +182,8 @@ public sealed class DynamicToolDispatcherTests
         await store.InitializeAsync();
         var backend = new FakeLiveDocumentBackend();
         var options = new AgentHostOptions { DataDirectory = directory.GetPath("data") };
-        return (new DynamicToolDispatcher(store, backend, options), store, backend);
+        var problems = new ProblemLog(options, NullLogger<ProblemLog>.Instance);
+        return (new DynamicToolDispatcher(store, backend, options, problems: problems), store, backend);
     }
 
     private static async Task<SessionRecord> BindSessionAsync(SessionStore store, string threadId)
