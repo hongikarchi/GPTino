@@ -11,6 +11,11 @@ using GPTino.AgentHost.Runtime;
 using GPTino.AgentHost.Security;
 using GPTino.BridgeContract;
 
+// Before anything else: drop any disk-file handle inherited from the Rhino parent at spawn. The
+// stdio-redirected launch forces handle inheritance, leaking Rhino's open .3dm handle into this
+// long-lived process and blocking the user's saves. See InheritedHandleGuard.
+var releasedInheritedHandles = InheritedHandleGuard.CloseInheritedDiskHandles();
+
 var packagedWebRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -101,6 +106,13 @@ builder.Services.AddHostedService<ReadySignalService>();
 builder.Services.AddHostedService<ParentProcessMonitor>();
 
 var app = builder.Build();
+if (releasedInheritedHandles.Count > 0)
+{
+    app.Logger.LogInformation(
+        "Released {Count} inherited disk-file handle(s) leaked from the Rhino parent at launch: {Paths}",
+        releasedInheritedHandles.Count,
+        string.Join("; ", releasedInheritedHandles));
+}
 var store = app.Services.GetRequiredService<SessionStore>();
 await store.InitializeAsync();
 app.Services.GetRequiredService<ProjectContextStore>().EnsureScaffolded(
