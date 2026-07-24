@@ -107,6 +107,58 @@ Brep[] union = Brep.CreateBooleanUnion(new[] { brepA, brepB }, tolerance);
 - Check nullable results (`CreateBooleanUnion`, `ToBrep`) — RhinoCommon returns null/empty
   on failure; fail loud by assigning a message output rather than silently emitting nothing.
 
+## Multithreading (Parallel.For) for CPU-bound geometry
+
+Reach for this ONLY when one component does heavy, independent per-item geometry math (thousands of
+items) that would otherwise approach the 45s budget — it uses every core for that one component's
+solve. It does NOT make Grasshopper responsive (the solve still blocks the UI thread until the loop
+joins) and there is NO cross-component parallelism (the graph solves sequentially on one thread).
+Wrong threading CRASHES Rhino, which is worse than a slow solve — follow the hard rules exactly.
+
+Safe pattern — capture doc values on the main thread, preallocate the output array, write only your
+own index:
+
+```csharp
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using Rhino.Geometry;
+
+// Capture EVERYTHING doc-derived on the MAIN thread, before the loop:
+double tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance;
+var input = (IList<Curve>)curves;          // read the (curve-hinted) list input on the main thread
+double dist = (double)(distance ?? 1.0);
+
+var result = new Curve[input.Count];       // preallocate, sized to input
+Parallel.For(0, input.Count, i =>
+{
+    // Worker body: pure Rhino.Geometry only; input is READ-ONLY here.
+    var offsets = input[i].Offset(Plane.WorldXY, dist, tol, CurveOffsetCornerStyle.Sharp);
+    result[i] = (offsets != null && offsets.Length > 0) ? offsets[0] : null;  // write ONLY result[i]
+});
+
+curvesOut = result;   // assemble outputs on the main thread, AFTER the loop
+```
+
+Hard rules (each one prevents an immediate Rhino crash, not just a failed solve):
+- **Only Rhino.Geometry on workers.** Only the Rhino.Geometry namespace is thread-safe; the rest of
+  RhinoCommon is not. Safe worker work: pure Point3d/Vector3d/Plane/Transform math, per-item `new`
+  curve/mesh/brep creation, `Intersection.*`, and Area/VolumeMassProperties on UNCHANGED inputs.
+- **No RhinoDoc from a worker.** Never call `Rhino.RhinoDoc.ActiveDoc` or any document/RhinoObject
+  member inside the loop — capture tolerance/units on the main thread and pass them by value. Doc
+  access off the main thread crashes Rhino immediately.
+- **Preallocate and index-write.** Size an array to the input and write only `result[i]` per
+  iteration — unique indices never collide, so no lock is needed. NEVER `Add` to a shared
+  List/Dictionary/DataTree from workers without a lock; a shared `Add` corrupts the collection.
+- **Shared inputs are read-only.** Never mutate a geometry object another thread can read, and never
+  modify a shared object while another thread evaluates/splits/meshes it — this corrupts native
+  caches and access-violation-crashes. If you must mutate, give each thread its own `Duplicate...()`.
+- **One owner per object.** Do not `Dispose` or let a geometry object be GC'd while another thread
+  still references the same underlying native handle.
+- **Assemble outputs (and any DataTree) on the main thread, after the join** — DataTree writes are
+  not thread-safe.
+- Determinism still applies (no `Random`/`DateTime.Now`) — the parallel loop must produce identical
+  outputs every run for Verify.
+
 ## Data trees (only when branch structure matters)
 
 ```csharp

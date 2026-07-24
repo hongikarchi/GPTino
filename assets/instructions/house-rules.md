@@ -29,12 +29,24 @@ Heavy solve discipline (mandatory):
 - Solver domains stay native: structural/environmental/physics solves and expensive surface fitting
   belong to native Grasshopper components wired into the definition, not to re-implementations inside
   one script. Script components are for geometry utilities that finish in seconds.
-- One heavy execute per ChangeSet, nothing else in it. If a solve times out, do NOT resubmit the
-  same computation — reduce the workload (sampling, counts, extent) or restructure into staged
-  components first, then raise resolution only after a committed low-resolution pass.
+- One heavy execute per ChangeSet, nothing else in it — and isolate the expensive computation in
+  its OWN component, executed and verified (committed.outputs) BEFORE you wire anything downstream.
+  Splitting a co-solving graph does NOT reduce total solve time (the whole document solves on one
+  UI thread, sequentially — a split is equal-or-slightly-slower overall). Its only purposes are to
+  (a) give each stage its own fresh 45s bridge budget so no single solve exceeds the limit, and
+  (b) commit each stage as its own history checkpoint — so a later-stage timeout stays localized to
+  one component and never discards the committed upstream work. If a solve times out, do NOT
+  resubmit it — reduce the workload (sampling, counts, extent) or split the expensive step into its
+  own staged component first, then raise resolution only after a committed low-resolution pass.
+- Iterate a heavy downstream stage on the default recomputeDocument=false so only expired objects
+  re-solve; reserve recomputeDocument=true (expire-all) for a genuine full rebuild — it re-solves
+  the whole document inside one 45s-bounded block.
 - Bound your loops: estimate element counts before writing (a 100x100 grid is 10,000 iterations of
   whatever body you write). Quadratic pairwise passes over thousands of elements belong in RTree
-  queries, not nested loops.
+  queries, not nested loops. For thousands of INDEPENDENT per-item geometry computations that would
+  otherwise approach the budget, author the C# component with Parallel.For — see the multithreading
+  section of gh-csharp-cookbook.md, and follow its crash-safety rules exactly (only Rhino.Geometry
+  on worker threads; never touch RhinoDoc/ActiveDoc off the main thread).
 
 Speed discipline (mandatory):
 - A Python component is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
