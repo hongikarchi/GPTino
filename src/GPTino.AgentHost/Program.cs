@@ -47,7 +47,11 @@ var identity = new RuntimeIdentity(
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(identity);
 builder.Services.AddSingleton(new SessionStore(Path.Combine(options.ResolveDataDirectory(), "runtime.db")));
+builder.Services.AddSingleton(new AttachmentStore(options.ResolveDataDirectory()));
 builder.Services.AddSingleton(new ProjectContextStore(options.ResolveDataDirectory()));
+builder.Services.AddSingleton(new ProjectArchiveReader(
+    ProjectArchiveReader.DefaultProjectsParentDirectory(),
+    options.ResolveDataDirectory()));
 builder.Services.AddSingleton<SkillLibrary>();
 builder.Services.AddSingleton<SessionActivityLog>();
 builder.Services.AddSingleton<IThreadInstructionComposer, InstructionAssembler>();
@@ -55,6 +59,7 @@ builder.Services.AddSingleton<RuntimeControl>();
 builder.Services.AddSingleton<EventHub>();
 builder.Services.AddSingleton<EndpointRegistry>();
 builder.Services.AddSingleton<PanelBootstrapNonceStore>();
+builder.Services.AddSingleton<ProblemLog>();
 builder.Services.AddSingleton<LiveDocumentBackend>();
 builder.Services.AddSingleton<ILiveDocumentBackend>(services =>
     services.GetRequiredService<LiveDocumentBackend>());
@@ -68,6 +73,7 @@ builder.Services.AddSingleton<ICodexSessionClient>(services => services.GetRequi
 builder.Services.AddSingleton<IModelCatalog>(services => services.GetRequiredService<CodexAppServerClient>());
 builder.Services.AddSingleton<MessageRoutingPolicy>();
 builder.Services.AddSingleton<EffectiveModelState>();
+builder.Services.AddSingleton<SessionUsageState>();
 builder.Services.AddSingleton<ModelSelector>();
 builder.Services.AddSingleton<DynamicToolDispatcher>();
 builder.Services.AddSingleton<SessionOrchestrator>();
@@ -374,6 +380,17 @@ api.MapPost("/runtime/login-terminal", (CodexLoginLauncher loginLauncher) =>
 
 api.MapGet("/models", async (ModelSelector selector, CancellationToken cancellationToken) =>
     Results.Ok(await selector.ReadModelsAsync(cancellationToken)));
+
+api.MapGet("/archive", async (ProjectArchiveReader archive, CancellationToken cancellationToken) =>
+    Results.Ok(await archive.ListProjectsAsync(cancellationToken)));
+
+api.MapGet("/archive/{fingerprint}/sessions/{sessionId:guid}/messages", async (
+    string fingerprint,
+    Guid sessionId,
+    int? limit,
+    ProjectArchiveReader archive,
+    CancellationToken cancellationToken) =>
+    Results.Ok(await archive.ReadMessagesAsync(fingerprint, sessionId, limit ?? 500, cancellationToken)));
 
 api.MapGet("/health", () =>
 {

@@ -13,6 +13,9 @@
     <PackageReference Include="Grasshopper" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="..\..\assets\icons\gptino-24.png" Link="EmbeddedResources\gptino-24.png" LogicalName="GPTino.Grasshopper.AssemblyIcon.png" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../GPTino.BridgeContract/GPTino.BridgeContract.csproj" />
     <ProjectReference Include="../GPTino.WireifyAdapter/GPTino.WireifyAdapter.csproj" />
     <ProjectReference Include="../GPTino.CordycepsAdapter/GPTino.CordycepsAdapter.csproj" />

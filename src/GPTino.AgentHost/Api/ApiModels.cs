@@ -40,7 +40,13 @@ public sealed record ReorderSessionsRequest(
     IReadOnlyList<Guid> OrderedSessionIds,
     long OrderVersion);
 
-public sealed record SendMessageRequest(string Content, string? ClientMessageId = null);
+public sealed record SendMessageRequest(
+    string Content,
+    string? ClientMessageId = null,
+    IReadOnlyList<IncomingAttachment>? Attachments = null);
+
+/// <summary>A file the panel attached to a message, carried as Base64 over the loopback API.</summary>
+public sealed record IncomingAttachment(string FileName, string MediaType, string DataBase64);
 
 public sealed record SetPausedRequest(bool Paused);
 
@@ -72,5 +78,31 @@ public sealed record ModelView(
     IReadOnlyList<string> ReasoningEfforts);
 
 public sealed record AcceptedTurn(Guid SessionId, long MessageId, string State);
+
+public sealed record ArchivedSession(
+    Guid Id,
+    string Name,
+    string State,
+    DateTimeOffset UpdatedAt,
+    int MessageCount);
+
+public sealed record ArchivedProject(
+    string Fingerprint,
+    string? ProjectName,
+    string? RhinoFile,
+    string? GrasshopperFile,
+    DateTimeOffset? CreatedAt,
+    DateTimeOffset? LastActivityAt,
+    int SessionCount,
+    bool Current,
+    bool Available,
+    IReadOnlyList<ArchivedSession> Sessions);
+
+public sealed record ArchivedMessage(
+    long Id,
+    string Role,
+    string Content,
+    string? Phase,
+    DateTimeOffset CreatedAt);
 
 public sealed record ApiError(string Code, string Message);

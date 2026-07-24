@@ -101,16 +101,31 @@ describe("deriveGraph", () => {
     const idleModel = deriveGraph(idle);
     expect(edge(idleModel, "commit:grasshopper").animated).toBe(false);
     expect(edge(idleModel, "commit:rhino").animated).toBe(false);
+
+    // The live server serializes an idle writer as an explicit null, not undefined.
+    const nullWriter = createDemoRuntimeState();
+    nullWriter.writer = null;
+    const nullModel = deriveGraph(nullWriter);
+    expect(node(nullModel, "orchestrator").orchestrator?.live).toBe(false);
+    expect(edge(nullModel, "commit:grasshopper").animated).toBe(false);
+    expect(edge(nullModel, "commit:rhino").animated).toBe(false);
   });
 
-  it("surfaces the pushed Rhino selection on the Rhino doc node", () => {
+  it("surfaces the pushed selection on both document nodes", () => {
     const model = deriveGraph(createDemoRuntimeState());
-    expect(node(model, "doc:rhino").detail).toBe("2 selected · Facade::Panels");
-    expect(node(model, "doc:gh").detail).toBeUndefined();
+    expect(node(model, "doc:rhino").detail).toBe("2 selected · layer Facade::Panels");
+    expect(node(model, "doc:gh").detail).toBe("3 selected · Panel Grid…");
+    expect(node(model, "doc:gh").tooltip).toContain("Panel Grid, Offset, Area");
 
     const cleared = createDemoRuntimeState();
     cleared.currentSelection = null;
     expect(node(deriveGraph(cleared), "doc:rhino").detail).toBeUndefined();
+    expect(node(deriveGraph(cleared), "doc:gh").detail).toBeUndefined();
+
+    const rhinoOnly = createDemoRuntimeState();
+    delete rhinoOnly.currentSelection!.grasshopperObjectCount;
+    delete rhinoOnly.currentSelection!.grasshopperObjects;
+    expect(node(deriveGraph(rhinoOnly), "doc:gh").detail).toBeUndefined();
   });
 
   it("is deterministic and keeps every node inside the canvas bounds", () => {

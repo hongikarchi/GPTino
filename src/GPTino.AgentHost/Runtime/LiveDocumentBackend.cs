@@ -55,7 +55,9 @@ public sealed record LiveProblemItem(
     string Summary,
     JobState State,
     string? Message,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    ResourceAddress? Resource = null,
+    ConflictKind? ConflictKind = null);
 
 /// <summary>
 /// Owns the authenticated Rhino named-pipe connection and the only live-document writer.
@@ -83,6 +85,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private readonly AsyncDocumentGate _documentGate = new();
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<BridgeFrame>> _pending = new();
     private readonly ConcurrentDictionary<Guid, LiveJobEntry> _jobs = new();
+    private readonly ProblemLog? _problemLog;
     private readonly ConcurrentDictionary<string, Guid> _idempotency = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<Guid, Task> _completionObservers = new();
     private readonly SessionStore _store;
@@ -117,12 +120,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         SessionStore store,
         AgentHostOptions options,
         EventHub events,
-        ILogger<LiveDocumentBackend> logger)
+        ILogger<LiveDocumentBackend> logger,
+        ProblemLog? problemLog = null)
     {
         _store = store;
         _options = options;
         _events = events;
         _logger = logger;
+        _problemLog = problemLog;
         _sessionOrder = new SessionOrderSnapshot(options.ProjectId, Array.Empty<Guid>(), 0);
         _broker = new SingleWriterBroker(this, ReadSessionOrder, ReadSessionStates);
         var dataRoot = options.ResolveDataDirectory();
@@ -495,6 +500,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 }
 
                 var conflicts = DetectQueuedConflicts(frozenChangeSet);
+                foreach (var queuedConflict in conflicts)
+                {
+                    _problemLog?.RecordQueuedConflict(
+                        jobId,
+                        session.Id,
+                        queuedConflict.OtherJobId,
+                        queuedConflict.Conflict);
+                }
                 var enqueuedAt = DateTimeOffset.UtcNow;
                 var queuedJob = new QueuedJob(
                     jobId,
@@ -753,13 +766,20 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 JobState.RecoveryRequired or JobState.Blocked or JobState.Failed)
             .OrderByDescending(entry => entry.UpdatedAt)
             .Take(boundedLimit)
-            .Select(entry => new LiveProblemItem(
-                entry.Job.JobId,
-                entry.Job.ChangeSet.SessionId,
-                entry.Summary,
-                entry.State,
-                entry.Message,
-                entry.UpdatedAt))
+            .Select(entry =>
+            {
+                var blocking = entry.BlockingConflicts?.FirstOrDefault(conflict => conflict.Resource is not null)
+                    ?? entry.BlockingConflicts?.FirstOrDefault();
+                return new LiveProblemItem(
+                    entry.Job.JobId,
+                    entry.Job.ChangeSet.SessionId,
+                    entry.Summary,
+                    entry.State,
+                    entry.Message,
+                    entry.UpdatedAt,
+                    blocking?.Resource,
+                    blocking?.Kind);
+            })
             .ToArray();
     }
 
@@ -819,7 +839,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             if (conflicts.Count > 0)
             {
                 var message = string.Join(" ", conflicts.Select(conflict => conflict.Message));
-                await SetJobPhaseAsync(entry, JobState.Blocked, message).ConfigureAwait(false);
+                await SetJobPhaseAsync(entry, JobState.Blocked, message, conflicts).ConfigureAwait(false);
                 return new JobExecutionResult(job.JobId, JobState.Blocked, message);
             }
 
@@ -3200,16 +3220,35 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private async Task SetJobPhaseAsync(
         LiveJobEntry entry,
         JobState state,
-        string? message)
+        string? message,
+        IReadOnlyList<ChangeConflict>? blockingConflicts = null)
     {
         var phase = state.ToString().ToLowerInvariant();
+        // Terminal states can be re-asserted (executor sets them, then the broker's completion
+        // observer sets the same state again); only genuine transitions go to the problem log.
+        var isRepeat = state == entry.State &&
+            string.Equals(message, entry.Message, StringComparison.Ordinal);
         await _jobStore.UpdateStateAsync(
             entry.Job.JobId,
             state,
             phase,
             message,
             CancellationToken.None).ConfigureAwait(false);
+        if (blockingConflicts is not null)
+        {
+            entry.BlockingConflicts = blockingConflicts;
+        }
         entry.SetPhase(state, phase, message);
+        if (!isRepeat)
+        {
+            _problemLog?.RecordJobState(
+                entry.Job.JobId,
+                entry.Session.Id,
+                entry.Summary,
+                state,
+                message,
+                blockingConflicts);
+        }
     }
 
     private static LiveJobEntry CreateRestoredEntry(
@@ -4523,6 +4562,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         public string IdempotencyKey { get; } = idempotencyKey;
         public string RequestHash { get; } = requestHash;
         public IReadOnlyList<QueuedConflict> Conflicts { get; } = conflicts;
+
+        /// <summary>
+        /// Written once when the job goes Blocked: the structured conflicts that stopped it, so
+        /// the panel can show the concrete resource instead of only the flattened prose message.
+        /// </summary>
+        public IReadOnlyList<ChangeConflict>? BlockingConflicts { get; set; }
 
         /// <summary>Written once by the single-writer executor just before Committed.</summary>
         public CommittedJobView? Committed { get; set; }

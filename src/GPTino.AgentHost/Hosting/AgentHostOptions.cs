@@ -37,6 +37,19 @@ public sealed class AgentHostOptions
 
     public int? ParentProcessId { get; init; }
 
+    /// <summary>
+    /// Working directory handed to codex threads. Never the user's project folder: every command
+    /// codex executes inherits the thread cwd, and a child-process cwd handle on the project folder
+    /// blocks Rhino from renaming its temp save file over the .3dm ("read-only / temporary file"
+    /// save failures) — the same failure class the app-server process cwd fix already covers.
+    /// </summary>
+    public string ResolveThreadWorkspaceDirectory()
+    {
+        var workspace = Path.Combine(ResolveDataDirectory(), "workspace");
+        Directory.CreateDirectory(workspace);
+        return workspace;
+    }
+
     public string ResolveDataDirectory()
     {
         if (!string.IsNullOrWhiteSpace(DataDirectory))

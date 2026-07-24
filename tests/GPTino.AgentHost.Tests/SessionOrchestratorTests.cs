@@ -111,6 +111,63 @@ public sealed class SessionOrchestratorTests
     }
 
     [Fact]
+    public async Task AttachmentsPersistShortLinesAndCarryPathsOnlyInTheTurnInput()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient
+        {
+            ReadTurn = (_, _, _) => Task.FromResult<CodexTurnReadResult?>(Completed("done"))
+        };
+        var attachmentStore = new AttachmentStore(directory.GetPath("data"));
+        using var harness = await CreateHarnessAsync(directory, client, attachmentStore: attachmentStore);
+
+        await harness.Orchestrator.SubmitMessageAsync(
+            harness.Session.Id,
+            new SendMessageRequest(
+                "read the attached note",
+                "attach-1",
+                [
+                    new IncomingAttachment(
+                        "note.txt",
+                        "text/plain",
+                        Convert.ToBase64String("hello attachment"u8.ToArray()))
+                ]),
+            CancellationToken.None);
+
+        await WaitForStateAsync(harness.Store, harness.Session.Id, SessionStates.Idle);
+        var startedTurn = Assert.Single(client.StartedTurns);
+        Assert.StartsWith("read the attached note\n<gptino_attachments>", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("note.txt (text/plain): ", startedTurn.Message, StringComparison.Ordinal);
+        Assert.EndsWith("</gptino_attachments>", startedTurn.Message, StringComparison.Ordinal);
+
+        var messages = await harness.Store.ReadMessagesAsync(harness.Session.Id);
+        var user = Assert.Single(messages, message => message.Role == "user");
+        Assert.Equal("read the attached note\n[Attached: note.txt]", user.Content);
+        Assert.DoesNotContain(directory.Path, user.Content, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RejectedAttachmentsLeaveNoPersistedMessage()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient();
+        var attachmentStore = new AttachmentStore(directory.GetPath("data"));
+        using var harness = await CreateHarnessAsync(directory, client, attachmentStore: attachmentStore);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => harness.Orchestrator.SubmitMessageAsync(
+            harness.Session.Id,
+            new SendMessageRequest(
+                "smuggle an executable",
+                "attach-reject-1",
+                [new IncomingAttachment("tool.exe", "application/x-msdownload", Convert.ToBase64String([0x4D, 0x5A]))]),
+            CancellationToken.None));
+
+        var messages = await harness.Store.ReadMessagesAsync(harness.Session.Id);
+        Assert.Empty(messages);
+        Assert.Equal(0, client.StartTurnCount);
+    }
+
+    [Fact]
     public async Task CompletionNotificationStillPerformsFinalReadAndDeduplicatesItsItem()
     {
         using var directory = new TestDirectory();
@@ -612,7 +669,8 @@ public sealed class SessionOrchestratorTests
         int restartCycles = 2,
         TimeSpan? readTimeout = null,
         int maxParallelTurns = 1,
-        ISelectionContextSource? selectionContext = null)
+        ISelectionContextSource? selectionContext = null,
+        AttachmentStore? attachmentStore = null)
     {
         var databasePath = directory.GetPath("runtime.db");
         var store = new SessionStore(databasePath);
@@ -643,7 +701,8 @@ public sealed class SessionOrchestratorTests
             new EventHub(),
             lifetime,
             NullLogger<SessionOrchestrator>.Instance,
-            selectionContext);
+            selectionContext,
+            attachments: attachmentStore ?? new AttachmentStore(directory.GetPath("data")));
         return new OrchestratorHarness(databasePath, store, session, orchestrator, lifetime);
     }
 

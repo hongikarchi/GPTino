@@ -7,6 +7,8 @@ export type IconName =
   | "chevron"
   | "drag"
   | "expand"
+  | "history"
+  | "paperclip"
   | "pause"
   | "play"
   | "send"
@@ -30,6 +32,16 @@ const paths: Record<IconName, ReactNode> = {
     </>
   ),
   expand: <path d="M8 3H3v5m13-5h5v5M8 21H3v-5m18 0v5h-5" />,
+  history: (
+    <>
+      <path d="M3 12a9 9 0 1 0 2.6-6.3L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l3.5 2" />
+    </>
+  ),
+  paperclip: (
+    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+  ),
   pause: (
     <>
       <path d="M8 5v14" />

@@ -7,6 +7,7 @@ description: >-
   A document-bound multi-session Codex orchestrator for Rhino 8 and Grasshopper.
   GPTino serializes live writes while allowing concurrent analysis and drafting.
 url: https://github.com/hongikarchi/GPTino
+icon: icon.png
 keywords:
 - rhino
 - grasshopper

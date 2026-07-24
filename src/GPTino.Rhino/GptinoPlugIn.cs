@@ -28,13 +28,21 @@ public sealed class GptinoPlugIn : PlugIn
         var runtimeInitializationStarted = false;
         try
         {
-            Panels.RegisterPanel(
-                this,
-                typeof(GptinoPanel),
-                "GPTino",
-                GetType().Assembly,
-                string.Empty,
-                PanelType.PerDoc);
+            var panelIcon = TryLoadPanelIcon();
+            if (panelIcon is not null)
+            {
+                Panels.RegisterPanel(this, typeof(GptinoPanel), "GPTino", panelIcon, PanelType.PerDoc);
+            }
+            else
+            {
+                Panels.RegisterPanel(
+                    this,
+                    typeof(GptinoPanel),
+                    "GPTino",
+                    GetType().Assembly,
+                    string.Empty,
+                    PanelType.PerDoc);
+            }
             SubscribeDocumentEvents();
             runtimeInitializationStarted = true;
             GptinoRuntimeHost.Instance.RegisterRhinoSceneAdapter(
@@ -166,6 +174,35 @@ public sealed class GptinoPlugIn : PlugIn
         }
     }
 
+    // Kept for the process lifetime: Icon.FromHandle does not own the HICON, so the handle
+    // (created once by GetHicon) must stay valid as long as the panel tab shows it.
+    private static System.Drawing.Icon? _panelIcon;
+
+    private static System.Drawing.Icon? TryLoadPanelIcon()
+    {
+        if (_panelIcon is not null)
+        {
+            return _panelIcon;
+        }
+        try
+        {
+            using var stream = typeof(GptinoPlugIn).Assembly
+                .GetManifestResourceStream("GPTino.Rhino.PanelIcon.png");
+            if (stream is null)
+            {
+                return null;
+            }
+            using var bitmap = new System.Drawing.Bitmap(stream);
+            _panelIcon = System.Drawing.Icon.FromHandle(bitmap.GetHicon());
+            return _panelIcon;
+        }
+        catch (Exception exception)
+        {
+            DevelopmentDiagnosticTrace.TryWriteException("Rhino", "panel-icon-load-failed", exception);
+            return null;
+        }
+    }
+
     private static void TryDisposeRuntime(string failureEvent)
     {
         try
@@ -185,7 +222,9 @@ public sealed class GptinoPlugIn : PlugIn
 
     private static void OnEndSaveDocument(object? sender, global::Rhino.DocumentSaveEventArgs args)
     {
-        if (!args.ExportSelected)
+        // Rhino raises EndSaveDocument for its periodic autosave too, with FileName pointing at
+        // the autosave copy; adopting that path would poison the document identity.
+        if (!args.ExportSelected && !RhinoAutoSavePaths.IsAutoSavePath(args.FileName))
         {
             // Pass args.FileName (the authoritative save target) rather than reading RhinoDoc.Path, which
             // can still report the pre-Save-As path at EndSaveDocument time and would register a stale path.

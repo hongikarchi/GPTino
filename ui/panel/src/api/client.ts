@@ -1,4 +1,6 @@
 import type {
+  ArchiveMessage,
+  ArchiveProject,
   MessageRequest,
   ModelInfo,
   ModelProfile,
@@ -26,6 +28,8 @@ export interface GptinoApiClient {
   openLoginTerminal(): Promise<void>;
   setRuntimePaused(paused: boolean): Promise<void>;
   stopCurrent(): Promise<void>;
+  listArchive(): Promise<ArchiveProject[]>;
+  readArchiveMessages(fingerprint: string, sessionId: string, limit?: number): Promise<ArchiveMessage[]>;
 }
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
@@ -195,6 +199,15 @@ class HttpApiClient implements GptinoApiClient {
     return this.request("/runtime/stop-current", { method: "POST" });
   }
 
+  listArchive(): Promise<ArchiveProject[]> {
+    return this.request<ArchiveProject[]>("/archive");
+  }
+
+  readArchiveMessages(fingerprint: string, sessionId: string, limit = 500): Promise<ArchiveMessage[]> {
+    return this.request<ArchiveMessage[]>(
+      `/archive/${encodeURIComponent(fingerprint)}/sessions/${encodeURIComponent(sessionId)}/messages?limit=${limit}`,
+    );
+  }
 }
 
 export function createApiClient(): GptinoApiClient {

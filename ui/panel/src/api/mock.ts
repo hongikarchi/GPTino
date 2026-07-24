@@ -1,5 +1,7 @@
 import type { GptinoApiClient } from "./client";
 import type {
+  ArchiveMessage,
+  ArchiveProject,
   ChatMessage,
   MessageRequest,
   ModelInfo,
@@ -74,6 +76,15 @@ const demoState: RuntimeState = {
       paused: false,
       terminalOpen: true,
       unread: 1,
+      usage: {
+        totalTokens: 812_400,
+        contextWindow: 272_000,
+        contextUsedTokens: 104_500,
+        rateLimits: [
+          { label: "5h", usedPercent: 34, resetsAt: minutesAgo(-140) },
+          { label: "weekly", usedPercent: 12 },
+        ],
+      },
       currentActivity: "Submitting: Rebuild panel boundaries",
       activity: [
         { at: minutesAgo(13), kind: "turn", summary: "Turn started — gpt-5.6-sol (xhigh)", ok: true, durationMs: 0 },
@@ -120,6 +131,11 @@ const demoState: RuntimeState = {
       effectiveModel: "gpt-5.6-terra",
       reasoning: "low",
       paused: false,
+      usage: {
+        totalTokens: 96_100,
+        contextWindow: 272_000,
+        contextUsedTokens: 22_300,
+      },
       activity: [
         { at: minutesAgo(9), kind: "turn", summary: "Turn started — gpt-5.6-terra (low)", ok: true, durationMs: 0 },
         { at: minutesAgo(8), kind: "change_submit", summary: "Submitting: Connect staged sockets", ok: true, durationMs: 180 },
@@ -230,6 +246,9 @@ const demoState: RuntimeState = {
       detail: "Atrium boundary 7F2A changed after snapshot r39.",
       sessionIds: ["option-b"],
       resource: "Rhino object · 7F2A",
+      resolution:
+        "Re-read the object to adopt the manual edit as the new baseline, or ask the session to regenerate from the current geometry.",
+      observedAt: minutesAgo(35),
     },
     {
       id: "conflict-8",
@@ -237,6 +256,8 @@ const demoState: RuntimeState = {
       detail: "Facade rationalization and wire cleanup both stage GH group 'panel-grid'.",
       sessionIds: ["facade", "wires"],
       resource: "GH group · panel-grid",
+      resolution: "The queue serializes both writes; pause one session if the order matters.",
+      observedAt: minutesAgo(8),
     },
   ],
   contextFolder: "C:\\Users\\user\\AppData\\Local\\GPTino\\projects\\a31f924c\\context",
@@ -248,9 +269,87 @@ const demoState: RuntimeState = {
       "b2416cd8-55f7-4f39-a9d3-08a1c4e7d992",
     ],
     activeLayer: "Facade::Panels",
+    grasshopperObjectCount: 3,
+    grasshopperObjects: [
+      { id: "c1d2e3f4-0000-4a4a-b1b1-000000000001", nickName: "Panel Grid" },
+      { id: "c1d2e3f4-0000-4a4a-b1b1-000000000002", nickName: "Offset" },
+      { id: "c1d2e3f4-0000-4a4a-b1b1-000000000003", nickName: "Area" },
+    ],
     observedAt: minutesAgo(0),
   },
   lastUpdatedAt: now.toISOString(),
+};
+
+const hoursAgo = (hours: number) => minutesAgo(hours * 60);
+const daysAgo = (days: number) => hoursAgo(days * 24);
+
+// Read-only archive demo data: the current root plus two orphaned roots — one
+// readable (the pre-crash tower study) and one whose runtime.db cannot be opened.
+const demoArchive: ArchiveProject[] = [
+  {
+    fingerprint: "A31F924C7D0B45E2",
+    projectName: "Tower study / Option A",
+    rhinoFile: "C:\\Projects\\Tower\\Tower_Study_A.3dm",
+    grasshopperFile: "C:\\Projects\\Tower\\Facade_Paneling.gh",
+    createdAt: daysAgo(6),
+    lastActivityAt: minutesAgo(2),
+    sessionCount: 2,
+    current: true,
+    available: true,
+    sessions: [
+      { id: "arch-cur-1", name: "Facade rationalization", state: "running", updatedAt: minutesAgo(2), messageCount: 3 },
+      { id: "arch-cur-2", name: "Wire cleanup", state: "waiting", updatedAt: minutesAgo(8), messageCount: 2 },
+    ],
+  },
+  {
+    fingerprint: "5B8E02D1C4F7A960",
+    projectName: "Tower_Study_A (autosave)",
+    rhinoFile: "C:\\Projects\\Tower\\Tower_Study_A_recovered.3dm",
+    grasshopperFile: "C:\\Projects\\Tower\\Facade_Paneling.gh",
+    createdAt: daysAgo(3),
+    lastActivityAt: daysAgo(1),
+    sessionCount: 2,
+    current: false,
+    available: true,
+    sessions: [
+      { id: "arch-old-1", name: "Facade rationalization", state: "failed", updatedAt: daysAgo(1), messageCount: 4 },
+      { id: "arch-old-2", name: "Atrium massing", state: "idle", updatedAt: daysAgo(2), messageCount: 2 },
+    ],
+  },
+  {
+    fingerprint: "9C4D77E10AB2F358",
+    projectName: "Bridge deck concept",
+    rhinoFile: "C:\\Projects\\Bridge\\Deck_Concept.3dm",
+    grasshopperFile: "C:\\Projects\\Bridge\\Deck_Ribs.gh",
+    createdAt: daysAgo(19),
+    lastActivityAt: null,
+    sessionCount: 0,
+    current: false,
+    available: false,
+    sessions: [],
+  },
+];
+
+const demoArchiveMessages: Record<string, ArchiveMessage[]> = {
+  "5B8E02D1C4F7A960/arch-old-1": [
+    { id: 1, role: "user", content: "Rationalize the facade into four repeatable panel families without moving the primary grid.", phase: null, createdAt: daysAgo(1.2) },
+    { id: 2, role: "assistant", content: "I mapped 126 unique panels and staged a remap to four families in a shadow definition. Running the verification solve now.", phase: "draft", createdAt: daysAgo(1.15) },
+    { id: 3, role: "assistant", content: "The shadow solve passed area and closure checks. Submitting the typed geometry changes to the live document.", phase: "commit", createdAt: daysAgo(1.1) },
+    { id: 4, role: "system", content: "The previous turn was interrupted by an AgentHost restart; review the document state before retrying.", phase: "recovery", createdAt: daysAgo(1) },
+  ],
+  "5B8E02D1C4F7A960/arch-old-2": [
+    { id: 5, role: "user", content: "Sketch two atrium massing options with the same usable floor area.", phase: null, createdAt: daysAgo(2.1) },
+    { id: 6, role: "assistant", content: "Both options are drafted on the GPTino-managed layers; option two keeps the softer corner transition you asked about.", phase: null, createdAt: daysAgo(2) },
+  ],
+  "A31F924C7D0B45E2/arch-cur-1": [
+    { id: 7, role: "user", content: "Keep the existing tower silhouette, but rationalize the facade into four repeatable panel families.", phase: null, createdAt: minutesAgo(18) },
+    { id: 8, role: "assistant", content: "I found 126 unique panels driven mainly by edge tolerance. I can reduce them to four families without moving the primary grid.", phase: null, createdAt: minutesAgo(13) },
+    { id: 9, role: "assistant", content: "The shadow solve passed. Applying the typed geometry changes before committing revision 18.", phase: "commit", createdAt: minutesAgo(2) },
+  ],
+  "A31F924C7D0B45E2/arch-cur-2": [
+    { id: 10, role: "user", content: "Connect the three numbered outputs to the matching inputs and keep the existing data-tree paths.", phase: null, createdAt: minutesAgo(9) },
+    { id: 11, role: "assistant", content: "Targets and socket types are unambiguous. The ChangeSet is ready and waiting for the current writer.", phase: null, createdAt: minutesAgo(8) },
+  ],
 };
 
 const clone = <T,>(value: T): T => structuredClone(value);
@@ -338,10 +437,18 @@ export function createMockApiClient(): GptinoApiClient {
     async sendMessage(sessionId, request: MessageRequest) {
       await delay(220);
       mutateSession(sessionId, (index) => {
+        // Mirror the AgentHost transcript shape: attachments become short "[Attached: name]" lines.
+        const attachmentLines = (request.attachments ?? []).map(
+          (attachment) => `[Attached: ${attachment.fileName}]`,
+        );
+        const content =
+          attachmentLines.length === 0
+            ? request.content
+            : [request.content, ...attachmentLines].filter((line) => line.length > 0).join("\n");
         const message: ChatMessage = {
           id: request.clientMessageId ?? crypto.randomUUID(),
           role: "user",
-          content: request.content,
+          content,
           createdAt: new Date().toISOString(),
         };
         state.sessions[index].messages.push(message);
@@ -363,6 +470,18 @@ export function createMockApiClient(): GptinoApiClient {
       await delay();
       state.paused = paused;
       emit();
+    },
+    async listArchive() {
+      await delay(160);
+      return clone(demoArchive);
+    },
+    async readArchiveMessages(fingerprint: string, sessionId: string, limit = 500) {
+      await delay(180);
+      const messages = demoArchiveMessages[`${fingerprint}/${sessionId}`];
+      if (!messages) {
+        throw new Error(`Session ${sessionId} was not found in archive project '${fingerprint}'.`);
+      }
+      return clone(messages.slice(-limit));
     },
     async stopCurrent() {
       await delay(250);

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ArchiveBrowser } from "./components/ArchiveBrowser";
 import { ChatPane } from "./components/ChatPane";
 import { Icon } from "./components/Icons";
 import { SessionCanvas } from "./components/SessionCanvas";
@@ -11,6 +12,8 @@ const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 // LLM sign-in indicator (blue = signed in, red = signed out / CLI missing).
 // Codex only for now — a Claude backend is deferred, so a second provider
 // indicator would slot in right next to this one when that lands.
+// When signed in the detail line collapses into the tooltip; the extra text is
+// only worth its space while it is a call to action.
 function LlmAuthIndicator({ auth, busy, onLogin }: { auth: CodexAuth; busy: boolean; onLogin: () => void }) {
   const loggedIn = auth.status === "logged-in";
   const detail =
@@ -20,19 +23,13 @@ function LlmAuthIndicator({ auth, busy, onLogin }: { auth: CodexAuth; busy: bool
       : auth.status === "cli-missing"
         ? "Codex CLI not found"
         : "Signed out — click to log in");
-  const body = (
-    <>
-      <span className="llm-light" />
-      <div>
-        <strong>Codex</strong>
-        <span>{detail}</span>
-      </div>
-    </>
-  );
   if (loggedIn) {
     return (
       <div className={`llm-auth llm-${auth.status}`} title={`Codex — ${detail}`}>
-        {body}
+        <span className="llm-light" />
+        <div>
+          <strong>Codex</strong>
+        </div>
       </div>
     );
   }
@@ -44,7 +41,11 @@ function LlmAuthIndicator({ auth, busy, onLogin }: { auth: CodexAuth; busy: bool
       disabled={busy}
       title={`Codex — ${detail}. Click to open a terminal and run 'codex login'.`}
     >
-      {body}
+      <span className="llm-light" />
+      <div>
+        <strong>Codex</strong>
+        <span>{detail}</span>
+      </div>
     </button>
   );
 }
@@ -52,6 +53,8 @@ function LlmAuthIndicator({ auth, busy, onLogin }: { auth: CodexAuth; busy: bool
 export default function App() {
   const { runtime, models, loading, error, demo, busyActions, actions } = useRuntime();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [conflictsOpen, setConflictsOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   useEffect(() => {
     if (!runtime?.sessions.length) return;
@@ -93,13 +96,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="document-header">
-        <div className="brand-lockup">
-          <div className="brand-mark">G</div>
-          <div>
-            <strong>GPTino</strong>
-            <span>Rhino orchestration</span>
-          </div>
-        </div>
+        <div className="brand-mark" title="GPTino — Rhino orchestration">G</div>
 
         <div className="project-lockup">
           <div className="project-name-row">
@@ -128,24 +125,19 @@ export default function App() {
         <div className="runtime-summary">
           <div
             className="revision-block"
-            title="Live document revision — increments each time a committed change is applied to the live Rhino/Grasshopper document."
+            title={
+              "Live: document revision — increments each time a committed change is applied to the live Rhino/Grasshopper document.\n" +
+              "Git: managed history commit — a git-backed provenance trail of every verified change, reviewable and rollbackable."
+            }
           >
-            <span>Live</span>
-            <strong>r{runtime.revision}</strong>
+            <b>live</b> r{runtime.revision} · <b>git</b> {runtime.gitRevision == null ? "—" : `#${runtime.gitRevision}`}
           </div>
           <div
-            className="revision-block"
-            title="Managed history commit — GPTino keeps a git-backed provenance trail of every verified change so it can be reviewed or rolled back."
+            className={`connection-state health-${runtime.health}`}
+            title={runtime.healthDetail ?? "Document runtime"}
           >
-            <span>Git</span>
-            <strong>{runtime.gitRevision === undefined ? "—" : `#${runtime.gitRevision}`}</strong>
-          </div>
-          <div className={`connection-state health-${runtime.health}`}>
             <span className="connection-light" />
-            <div>
-              <strong>{runtime.health}</strong>
-              <span>{runtime.healthDetail ?? "Document runtime"}</span>
-            </div>
+            <strong>{runtime.health}</strong>
           </div>
           {runtime.codexAuth ? (
             <LlmAuthIndicator
@@ -154,6 +146,15 @@ export default function App() {
               onLogin={() => void actions.openLoginTerminal()}
             />
           ) : null}
+          <button
+            type="button"
+            className="history-button"
+            onClick={() => setArchiveOpen(true)}
+            title="Browse what earlier GPTino sessions did — every project data root on this machine, read-only"
+          >
+            <Icon name="history" />
+            Past sessions
+          </button>
         </div>
       </header>
 
@@ -174,15 +175,47 @@ export default function App() {
       ) : null}
 
       {runtime.conflicts.length > 0 ? (
-        <div className="conflict-banner" role="alert">
-          <Icon name="warning" />
-          <span title={runtime.conflicts[0].detail || undefined}>
-            {runtime.conflicts.length} resource conflict{runtime.conflicts.length > 1 ? "s" : ""} — {runtime.conflicts[0].title}
-            {runtime.conflicts[0].detail ? (
-              <span className="conflict-detail"> · {runtime.conflicts[0].detail}</span>
-            ) : null}
-          </span>
-        </div>
+        <>
+          <button
+            type="button"
+            className="conflict-banner"
+            role="alert"
+            aria-expanded={conflictsOpen}
+            onClick={() => setConflictsOpen((open) => !open)}
+            title={conflictsOpen ? "Hide conflict details" : "Show conflict details"}
+          >
+            <Icon name="warning" />
+            <span>
+              {runtime.conflicts.length} resource conflict{runtime.conflicts.length > 1 ? "s" : ""} — {runtime.conflicts[0].title}
+            </span>
+            <Icon name="chevron" className={`banner-caret ${conflictsOpen ? "open" : ""}`} width={13} height={13} />
+          </button>
+          {conflictsOpen ? (
+            <div className="conflict-drawer">
+              {runtime.conflicts.map((conflict) => {
+                const sessionTitles = conflict.sessionIds
+                  .map((id) => runtime.sessions.find((session) => session.id === id)?.title ?? id)
+                  .join(" ↔ ");
+                return (
+                  <div className="conflict-card" key={conflict.id}>
+                    <div className="conflict-icon"><Icon name="warning" /></div>
+                    <div>
+                      <strong>{conflict.title}</strong>
+                      <p className="conflict-problem">{conflict.detail}</p>
+                      {conflict.resolution ? (
+                        <p className="conflict-solution"><b>Solution</b> — {conflict.resolution}</p>
+                      ) : null}
+                      <div className="conflict-meta">
+                        {conflict.resource ? <span>{conflict.resource}</span> : null}
+                        {sessionTitles ? <span>{sessionTitles}</span> : null}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+        </>
       ) : null}
 
       <section className="canvas-row" aria-label="Session graph">
@@ -234,14 +267,23 @@ export default function App() {
       <main className="chat-region">
         <ChatPane
           session={selected}
+          conflicts={runtime.conflicts}
           models={models}
           busyActions={busyActions}
           onMode={(mode) => selected && void actions.setMode(selected.id, mode)}
           onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
           onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
-          onSend={(content) => selected ? actions.sendMessage(selected.id, content) : undefined}
+          onSend={(content, attachments) => selected ? actions.sendMessage(selected.id, content, attachments) : undefined}
         />
       </main>
+
+      {archiveOpen ? (
+        <ArchiveBrowser
+          onClose={() => setArchiveOpen(false)}
+          listArchive={actions.listArchive}
+          readMessages={actions.readArchiveMessages}
+        />
+      ) : null}
     </div>
   );
 }

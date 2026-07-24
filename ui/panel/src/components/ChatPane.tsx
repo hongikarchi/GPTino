@@ -1,17 +1,106 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import type { ChatMessage, GptinoSession, ModelInfo, ModelProfile, SessionActivity, SessionMode } from "../types";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+} from "react";
+import type {
+  ChatMessage,
+  GptinoSession,
+  MessageAttachment,
+  ModelInfo,
+  ModelProfile,
+  RuntimeConflict,
+  SessionActivity,
+  SessionMode,
+  SessionUsage,
+} from "../types";
 import { Icon } from "./Icons";
 import { StatusBadge } from "./StatusBadge";
 
 interface ChatPaneProps {
   session: GptinoSession | undefined;
+  conflicts: RuntimeConflict[];
   models: ModelInfo[];
   busyActions: Set<string>;
   onMode(mode: SessionMode): void;
   onModel(profile: ModelProfile): void;
   onPinModel(model: string | null): void;
-  onSend(content: string): Promise<void> | void;
+  /** Resolves false when the send failed (the composer restores its draft). */
+  onSend(content: string, attachments?: MessageAttachment[]): Promise<boolean | void> | void;
 }
+
+/** One staged composer attachment; the bytes stay in the File until send encodes them. */
+interface PendingAttachment {
+  id: string;
+  file: File;
+  fileName: string;
+  mediaType: string;
+  size: number;
+}
+
+// Mirrors the AgentHost AttachmentStore limits so violations surface before the round-trip.
+const MAX_ATTACHMENTS = 4;
+const MAX_TOTAL_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const ALLOWED_MEDIA_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "text/plain",
+  "text/markdown",
+  "application/json",
+  "text/csv",
+  "application/pdf",
+]);
+// Windows often reports no MIME type for text-ish extensions; map them before rejecting.
+const EXTENSION_MEDIA_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  txt: "text/plain",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  json: "application/json",
+  csv: "text/csv",
+  pdf: "application/pdf",
+};
+const ATTACHMENT_ACCEPT = [...ALLOWED_MEDIA_TYPES, ".md", ".markdown", ".txt", ".json", ".csv"].join(",");
+
+const resolveMediaType = (file: File): string | undefined => {
+  if (ALLOWED_MEDIA_TYPES.has(file.type)) return file.type;
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return EXTENSION_MEDIA_TYPES[extension];
+};
+
+const formatBytes = (bytes: number) =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : bytes >= 1024
+      ? `${Math.round(bytes / 1024)} KB`
+      : `${bytes} B`;
+
+const encodeAttachment = (item: PendingAttachment): Promise<MessageAttachment> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read "${item.fileName}".`));
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      resolve({
+        fileName: item.fileName,
+        mediaType: item.mediaType,
+        dataBase64: comma >= 0 ? result.slice(comma + 1) : result,
+      });
+    };
+    reader.readAsDataURL(item.file);
+  });
 
 type StreamItem =
   | { type: "message"; at: number; message: ChatMessage }
@@ -27,9 +116,70 @@ const profiles: { value: ModelProfile; label: string; description: string }[] = 
 const formatTime = (value: string) =>
   new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 
-export function ChatPane({ session, models, busyActions, onMode, onModel, onPinModel, onSend }: ChatPaneProps) {
+const compactTokens = (value: number) =>
+  value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${Math.round(value / 1_000)}k` : `${value}`;
+
+// Context-left chip: green while roomy, amber past 70% used, red past 90%.
+function UsageChip({ usage }: { usage: SessionUsage }) {
+  const { contextWindow, contextUsedTokens, totalTokens, rateLimits } = usage;
+  // The server serializes absent values as explicit nulls, so every guard is
+  // null-inclusive (`!= null`), never `!== undefined`.
+  const hasContext = contextWindow != null && contextWindow > 0 && contextUsedTokens != null;
+  const usedPercent = hasContext ? Math.min(100, Math.round((contextUsedTokens! / contextWindow!) * 100)) : undefined;
+  const worstLimit = (rateLimits ?? []).reduce<{ label: string; usedPercent: number } | null>(
+    (worst, limit) => (worst === null || limit.usedPercent > worst.usedPercent ? limit : worst),
+    null,
+  );
+  if (usedPercent === undefined && totalTokens == null && !worstLimit) return null;
+
+  const tone = usedPercent !== undefined && usedPercent >= 90 ? "critical" : usedPercent !== undefined && usedPercent >= 70 ? "warn" : "";
+  const title = [
+    hasContext
+      ? `Context: ${compactTokens(contextUsedTokens!)} of ${compactTokens(contextWindow!)} tokens used (${usedPercent}%) — ${compactTokens(Math.max(0, contextWindow! - contextUsedTokens!))} left`
+      : null,
+    totalTokens != null ? `Session total: ${compactTokens(totalTokens)} tokens` : null,
+    ...(rateLimits ?? []).map(
+      (limit) => `Rate limit ${limit.label}: ${Math.round(limit.usedPercent)}% used${limit.resetsAt ? ` · resets ${formatTime(limit.resetsAt)}` : ""}`,
+    ),
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return (
+    <span className={`usage-chip ${tone}`} title={title}>
+      {usedPercent !== undefined ? (
+        <>
+          <b>ctx</b> {100 - usedPercent}% left
+        </>
+      ) : totalTokens != null ? (
+        <>
+          <b>tok</b> {compactTokens(totalTokens)}
+        </>
+      ) : null}
+      {worstLimit ? (
+        <>
+          {" · "}
+          <b>{worstLimit.label}</b> {Math.round(worstLimit.usedPercent)}%
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+export function ChatPane({ session, conflicts, models, busyActions, onMode, onModel, onPinModel, onSend }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   const streamRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pasteCounter = useRef(0);
+  const submitGate = useRef(false);
+
+  const sessionConflicts = useMemo(
+    () => (session ? conflicts.filter((conflict) => conflict.sessionIds.includes(session.id)) : []),
+    [conflicts, session],
+  );
 
   const stream = useMemo<StreamItem[]>(() => {
     if (!session) return [];
@@ -59,11 +209,105 @@ export function ChatPane({ session, models, busyActions, onMode, onModel, onPinM
   }
 
   const sending = busyActions.has(`message:${session.id}`);
+
+  const addFiles = (incoming: File[]) => {
+    if (incoming.length === 0) return;
+    const next = [...pending];
+    let total = next.reduce((sum, item) => sum + item.size, 0);
+    let error: string | null = null;
+    for (const file of incoming) {
+      if (next.length >= MAX_ATTACHMENTS) {
+        error = `A message can carry at most ${MAX_ATTACHMENTS} attachments.`;
+        break;
+      }
+      const mediaType = resolveMediaType(file);
+      if (!mediaType) {
+        error = `"${file.name}" is not a supported type (images, text, Markdown, JSON, CSV, PDF).`;
+        continue;
+      }
+      if (file.size === 0) {
+        error = `"${file.name}" is empty.`;
+        continue;
+      }
+      if (total + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
+        error = "Attachments exceed the 8 MiB limit per message.";
+        continue;
+      }
+      total += file.size;
+      next.push({ id: crypto.randomUUID(), file, fileName: file.name, mediaType, size: file.size });
+    }
+    setPending(next);
+    setAttachmentError(error);
+  };
+
+  const removeAttachment = (id: string) => {
+    setPending((current) => current.filter((item) => item.id !== id));
+    setAttachmentError(null);
+  };
+
+  const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
+    addFiles(Array.from(event.target.files ?? []));
+    event.target.value = "";
+  };
+
+  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = Array.from(event.clipboardData?.items ?? []).filter(
+      (item) => item.kind === "file" && item.type.startsWith("image/"),
+    );
+    if (images.length === 0 || sending) return;
+    event.preventDefault();
+    const files: File[] = [];
+    for (const item of images) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      pasteCounter.current += 1;
+      files.push(new File([file], `pasted-${pasteCounter.current}.png`, { type: file.type || "image/png" }));
+    }
+    addFiles(files);
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (sending || session.paused) return;
+    event.preventDefault();
+    setDragging(true);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    if (sending || session.paused) return;
+    addFiles(Array.from(event.dataTransfer?.files ?? []));
+  };
+
   const submit = async () => {
     const content = draft.trim();
-    if (!content || sending) return;
-    setDraft("");
-    await onSend(content);
+    if ((!content && pending.length === 0) || sending || submitGate.current) return;
+    submitGate.current = true;
+    try {
+      // Snapshot what this submit sends: attachments pasted mid-encode stay
+      // staged for the next send, and a failed send restores the draft.
+      const toSend = [...pending];
+      let attachments: MessageAttachment[] | undefined;
+      if (toSend.length > 0) {
+        try {
+          attachments = await Promise.all(toSend.map(encodeAttachment));
+        } catch (encodeError) {
+          setAttachmentError(encodeError instanceof Error ? encodeError.message : "Could not read an attachment.");
+          return;
+        }
+      }
+      const savedDraft = draft;
+      setDraft("");
+      setAttachmentError(null);
+      const ok = await onSend(content, attachments);
+      if (ok === false) {
+        setDraft(savedDraft);
+        return;
+      }
+      setPending((current) => current.filter((item) => !toSend.some((sent) => sent.id === item.id)));
+    } finally {
+      submitGate.current = false;
+    }
   };
 
   const handleComposerKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -82,16 +326,33 @@ export function ChatPane({ session, models, busyActions, onMode, onModel, onPinM
     <section className="chat-pane" aria-label={`${session.title} chat`}>
       <header className="chat-header">
         <div className="chat-title-block">
-          <span className="eyebrow">Active session</span>
           <div className="chat-title-row">
             <h2>{session.title}</h2>
             <StatusBadge status={session.status} />
           </div>
           <p>{session.summary}</p>
         </div>
+        {session.usage ? <UsageChip usage={session.usage} /> : null}
       </header>
 
       <div className="chat-stream" ref={streamRef} aria-live="polite">
+        {session.status === "blocked" && sessionConflicts.length > 0 ? (
+          <div className="blocked-callout" role="alert">
+            {sessionConflicts.map((conflict) => (
+              <div key={conflict.id}>
+                <strong>
+                  <Icon name="warning" /> {conflict.title}
+                </strong>
+                <p>{conflict.detail}</p>
+                {conflict.resolution ? (
+                  <p className="conflict-solution">
+                    <b>Solution</b> — {conflict.resolution}
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
         {stream.map((item) =>
           item.type === "message" ? (
             <article
@@ -188,26 +449,78 @@ export function ChatPane({ session, models, busyActions, onMode, onModel, onPinM
           </span>
         </div>
 
-        <div className="composer">
+        <div
+          className={`composer ${dragging ? "dragging" : ""}`}
+          onDragOver={handleDragOver}
+          onDragLeave={() => setDragging(false)}
+          onDrop={handleDrop}
+        >
+          {pending.length > 0 ? (
+            <div className="attachment-strip" aria-label="Pending attachments">
+              {pending.map((item) => (
+                <span className="attachment-chip" key={item.id}>
+                  <span className="chip-name" title={item.fileName}>
+                    {item.fileName}
+                  </span>
+                  <span className="chip-size">{formatBytes(item.size)}</span>
+                  <button
+                    type="button"
+                    className="chip-remove"
+                    onClick={() => removeAttachment(item.id)}
+                    disabled={sending}
+                    aria-label={`Remove ${item.fileName}`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleComposerKey}
+            onPaste={handlePaste}
             placeholder={session.paused ? "Session is paused — resume it to continue" : "Describe the next modeling change…"}
             aria-label="Message GPTino"
             rows={3}
             disabled={session.paused}
           />
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            accept={ATTACHMENT_ACCEPT}
+            onChange={handleFileInput}
+            aria-hidden="true"
+            tabIndex={-1}
+          />
+          <button
+            type="button"
+            className="attach-button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={sending || session.paused}
+            aria-label="Attach files"
+            title="Attach files — images, text, Markdown, JSON, CSV, PDF (max 4, 8 MB total). Paste or drop also works."
+          >
+            <Icon name="paperclip" />
+          </button>
           <button
             type="button"
             className="send-button"
             onClick={() => void submit()}
-            disabled={!draft.trim() || sending || session.paused}
+            disabled={(!draft.trim() && pending.length === 0) || sending || session.paused}
             aria-label="Send instruction"
           >
             <Icon name="send" />
           </button>
         </div>
+        {attachmentError ? (
+          <div className="attachment-error" role="alert">
+            {attachmentError}
+          </div>
+        ) : null}
         <div className="composer-hint">
           <span>Ctrl ↵ to send</span>
           <span>Shift ⇥ toggles Plan / Auto</span>

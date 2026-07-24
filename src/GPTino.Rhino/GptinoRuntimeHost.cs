@@ -195,6 +195,17 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
 
         var normalizedPath = Path.GetFullPath(rawPath);
+        if (RhinoAutoSavePaths.IsAutoSavePath(normalizedPath))
+        {
+            // A document living at an autosave path (crash recovery, or the user opening the
+            // autosave copy directly) must not become the registered identity; the waiting page
+            // tells the user to Save As so the real path binds instead.
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Rhino",
+                "rhino-document-autosave-ignored",
+                $"serial={documentSerial}");
+            return;
+        }
         bool changed;
         int observedCount;
         lock (_observationGate)

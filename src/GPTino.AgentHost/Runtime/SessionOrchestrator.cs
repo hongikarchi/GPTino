@@ -39,6 +39,8 @@ public sealed class SessionOrchestrator : IDisposable
     private readonly ConcurrentDictionary<Guid, ActiveTurn> _activeTurns = new();
     private readonly ISelectionContextSource? _selectionContext;
     private readonly SessionActivityLog? _activity;
+    private readonly SessionUsageState? _usage;
+    private readonly AttachmentStore _attachments;
     private readonly CancellationToken _shutdown;
     private readonly TimeSpan _turnPollInterval;
     private readonly TimeSpan _turnReadTimeout;
@@ -58,10 +60,14 @@ public sealed class SessionOrchestrator : IDisposable
         IHostApplicationLifetime lifetime,
         ILogger<SessionOrchestrator> logger,
         ISelectionContextSource? selectionContext = null,
-        SessionActivityLog? activity = null)
+        SessionActivityLog? activity = null,
+        SessionUsageState? usage = null,
+        AttachmentStore? attachments = null)
     {
         _selectionContext = selectionContext;
         _activity = activity;
+        _usage = usage;
+        _attachments = attachments ?? new AttachmentStore(options.ResolveDataDirectory());
         _store = store;
         _codex = codex;
         _models = models;
@@ -91,10 +97,19 @@ public sealed class SessionOrchestrator : IDisposable
         {
             throw new SessionPausedException(sessionId);
         }
+        // Attachments are validated and saved before the message row exists, so a rejected batch
+        // returns 400 without persisting anything. On a duplicate ClientMessageId retry the append
+        // below deduplicates the message and no turn is spawned; the re-saved files are inert.
+        var attachments = request.Attachments is { Count: > 0 }
+            ? await _attachments.SaveAsync(sessionId, request.Attachments, cancellationToken).ConfigureAwait(false)
+            : null;
+        var persistedContent = attachments is null
+            ? request.Content
+            : BuildPersistedAttachmentContent(request.Content, attachments);
         var append = await _store.AppendMessageOnceAsync(
             sessionId,
             "user",
-            request.Content,
+            persistedContent,
             clientMessageId: request.ClientMessageId,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         if (!append.Created)
@@ -103,7 +118,8 @@ public sealed class SessionOrchestrator : IDisposable
         }
         await _store.SetSessionStateAsync(sessionId, SessionStates.Waiting, request.Content, cancellationToken).ConfigureAwait(false);
         _events.Publish();
-        _ = Task.Run(() => RunTurnAsync(sessionId, request.Content, _shutdown), CancellationToken.None);
+        var attachmentsBlock = attachments is null ? null : BuildAttachmentsTurnBlock(attachments);
+        _ = Task.Run(() => RunTurnAsync(sessionId, request.Content, attachmentsBlock, _shutdown), CancellationToken.None);
         return new AcceptedTurn(sessionId, append.Message.Id, SessionStates.Waiting);
     }
 
@@ -162,7 +178,11 @@ public sealed class SessionOrchestrator : IDisposable
         }
     }
 
-    private async Task RunTurnAsync(Guid sessionId, string content, CancellationToken cancellationToken)
+    private async Task RunTurnAsync(
+        Guid sessionId,
+        string content,
+        string? attachmentsBlock,
+        CancellationToken cancellationToken)
     {
         var sessionGate = _sessionGates.GetOrAdd(sessionId, static _ => new SemaphoreSlim(1, 1));
         var parallelAcquired = false;
@@ -232,7 +252,7 @@ public sealed class SessionOrchestrator : IDisposable
                 if (string.IsNullOrWhiteSpace(threadId))
                 {
                     threadId = await _codex.StartThreadAsync(
-                        _options.ProjectDirectory,
+                        _options.ResolveThreadWorkspaceDirectory(),
                         selection.Model,
                         cancellationToken).ConfigureAwait(false);
                     await _store.SetThreadIdAsync(sessionId, threadId, cancellationToken).ConfigureAwait(false);
@@ -243,7 +263,7 @@ public sealed class SessionOrchestrator : IDisposable
                     {
                         await _codex.ResumeThreadAsync(
                             threadId,
-                            _options.ProjectDirectory,
+                            _options.ResolveThreadWorkspaceDirectory(),
                             selection.Model,
                             cancellationToken).ConfigureAwait(false);
                     }
@@ -264,7 +284,7 @@ public sealed class SessionOrchestrator : IDisposable
                 {
                     turnId = await _codex.StartTurnAsync(
                         threadId,
-                        ComposeTurnInput(content),
+                        ComposeTurnInput(content, attachmentsBlock),
                         selection.Model,
                         selection.Effort,
                         cancellationToken).ConfigureAwait(false);
@@ -282,7 +302,7 @@ public sealed class SessionOrchestrator : IDisposable
                         cancellationToken).ConfigureAwait(false);
                     turnId = await _codex.StartTurnAsync(
                         threadId,
-                        ComposeTurnInput(content),
+                        ComposeTurnInput(content, attachmentsBlock),
                         selection.Model,
                         selection.Effort,
                         cancellationToken).ConfigureAwait(false);
@@ -360,7 +380,7 @@ public sealed class SessionOrchestrator : IDisposable
         CancellationToken cancellationToken)
     {
         var replacementThreadId = await _codex.StartThreadAsync(
-            _options.ProjectDirectory,
+            _options.ResolveThreadWorkspaceDirectory(),
             model,
             cancellationToken).ConfigureAwait(false);
         await _store.SetThreadIdAsync(sessionId, replacementThreadId, cancellationToken).ConfigureAwait(false);
@@ -443,10 +463,16 @@ public sealed class SessionOrchestrator : IDisposable
     /// Prepends the user's live selection (Rhino viewport and Grasshopper canvas) as a tagged,
     /// one-line context hint. Applied only to the Codex turn input — after routing, so context
     /// wording never influences model escalation — and only when a selection exists. Ids are
-    /// hints, not fingerprints: writes still require snapshot_read fingerprints.
+    /// hints, not fingerprints: writes still require snapshot_read fingerprints. When the message
+    /// carried attachments, the tagged attachment block is appended after the user content —
+    /// turn input only, never the persisted transcript row.
     /// </summary>
-    private string ComposeTurnInput(string content)
+    private string ComposeTurnInput(string content, string? attachmentsBlock = null)
     {
+        if (!string.IsNullOrEmpty(attachmentsBlock))
+        {
+            content = content.Length > 0 ? $"{content}\n{attachmentsBlock}" : attachmentsBlock;
+        }
         var selection = _selectionContext?.CurrentSelection;
         var digest = _selectionContext?.CurrentCanvasDigest;
         var grasshopperObjects = selection?.GrasshopperObjects;
@@ -517,6 +543,46 @@ public sealed class SessionOrchestrator : IDisposable
         }
         builder.Append("</gptino_context>").Append('\n');
         builder.Append(content);
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// The transcript row keeps only short "[Attached: name]" lines so the chat stays readable;
+    /// absolute paths never enter the persisted conversation.
+    /// </summary>
+    private static string BuildPersistedAttachmentContent(
+        string content,
+        IReadOnlyList<SavedAttachment> attachments)
+    {
+        var builder = new StringBuilder(content);
+        foreach (var attachment in attachments)
+        {
+            if (builder.Length > 0)
+            {
+                builder.Append('\n');
+            }
+            builder.Append("[Attached: ").Append(attachment.FileName).Append(']');
+        }
+        return builder.ToString();
+    }
+
+    private static string BuildAttachmentsTurnBlock(IReadOnlyList<SavedAttachment> attachments)
+    {
+        var builder = new StringBuilder();
+        builder.Append("<gptino_attachments>\n");
+        builder.Append("The user attached local files, readable from disk:\n");
+        foreach (var attachment in attachments)
+        {
+            builder.Append("- ")
+                .Append(attachment.FileName)
+                .Append(" (")
+                .Append(attachment.MediaType)
+                .Append("): ")
+                .Append(attachment.AbsolutePath)
+                .Append('\n');
+        }
+        builder.Append("View image files with your image-viewing tool; read text files directly from the path.\n");
+        builder.Append("</gptino_attachments>");
         return builder.ToString();
     }
 
@@ -1010,6 +1076,53 @@ public sealed class SessionOrchestrator : IDisposable
             {
                 _earlyTurnCompletions[turnId] = completion;
             }
+            // Usage telemetry runs strictly AFTER the completion signal: it touches the store
+            // (fallible I/O) and must never be able to swallow a turn-completion notification.
+            await RecordUsageAsync(parameters, turn).ConfigureAwait(false);
+            return;
+        }
+
+        // Token-count style notifications (thread/tokenCount and CLI-version variants) carry the
+        // cumulative usage, the context-window size, and account rate limits — everything the
+        // panel's remaining-context display needs.
+        if (method.EndsWith("tokenCount", StringComparison.OrdinalIgnoreCase) ||
+            method.EndsWith("token_count", StringComparison.OrdinalIgnoreCase))
+        {
+            await RecordUsageAsync(parameters, parameters).ConfigureAwait(false);
+            return;
+        }
+
+        _logger.LogDebug("Unhandled codex notification {Method}.", method);
+    }
+
+    private async Task RecordUsageAsync(JsonElement parameters, JsonElement usageCarrier)
+    {
+        if (_usage is null)
+        {
+            return;
+        }
+        try
+        {
+            var snapshot = SessionUsageState.TryParse(usageCarrier);
+            if (snapshot is null)
+            {
+                return;
+            }
+            var threadId = ReadString(parameters, "threadId") ?? ReadString(parameters, "thread_id");
+            if (threadId is null)
+            {
+                return;
+            }
+            var session = await _store.FindSessionByThreadAsync(threadId).ConfigureAwait(false);
+            if (session is not null && _usage.Update(session.Id, snapshot))
+            {
+                _events.Publish();
+            }
+        }
+        catch (Exception exception)
+        {
+            // Telemetry only — a transient store failure must not disturb notification handling.
+            _logger.LogDebug(exception, "Usage telemetry update failed.");
         }
     }
 

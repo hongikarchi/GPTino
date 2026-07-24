@@ -12,6 +12,9 @@
     <PackageReference Include="RhinoCommon" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="..\..\assets\icons\gptino-48.png" Link="EmbeddedResources\gptino-48.png" LogicalName="GPTino.Rhino.PanelIcon.png" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../GPTino.BridgeContract/GPTino.BridgeContract.csproj" />
     <ProjectReference Include="../GPTino.CordycepsAdapter/GPTino.CordycepsAdapter.csproj" />
   </ItemGroup>

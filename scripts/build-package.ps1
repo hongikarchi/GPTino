@@ -280,6 +280,9 @@ foreach ($legalFile in @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot $legalFile) -Destination (Join-Path $stageRoot $legalFile)
 }
 
+# The Package Manager listing icon; manifest.yml references it as `icon: icon.png`.
+Copy-Item -LiteralPath (Join-Path $repoRoot 'assets\icons\gptino-256.png') -Destination (Join-Path $stageRoot 'icon.png')
+
 $nugetRoot = $env:NUGET_PACKAGES
 if ([string]::IsNullOrWhiteSpace($nugetRoot)) {
     $nugetRoot = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.nuget\packages'
@@ -309,6 +312,7 @@ foreach ($copy in $legalCopies) {
 
 $requiredFiles = @(
     'manifest.yml',
+    'icon.png',
     'LICENSE',
     'NOTICE',
     'THIRD_PARTY_NOTICES',

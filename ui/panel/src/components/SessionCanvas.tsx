@@ -29,9 +29,40 @@ interface NodeDrag {
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
 const DRAG_THRESHOLD = 6;
+/* The default view never renders below 1:1 (CSS px per canvas unit), so the 10px+
+   SVG text classes keep their full on-screen size on narrow panels; the canvas
+   pans (with a right-edge fade cue) instead of shrinking. Double-click toggles
+   between this readable default and a fit-everything view. */
+const MIN_READABLE_SCALE = 1;
+/* Extra canvas units above the content in the clamped view so the absolutely
+   positioned toolbar does not cover the first node's title row. */
+const CLAMPED_TOP_HEADROOM = 16;
 
 const truncate = (value: string, max: number) =>
   value.length > max ? `${value.slice(0, max - 1)}…` : value;
+
+/* Character counts cannot bound pixel width once CJK text is involved (a Hangul
+   glyph is ~2× a Latin one), so node labels truncate by half-width columns. */
+const columnsOf = (value: string): number => {
+  let columns = 0;
+  for (const ch of value) {
+    columns += ch.charCodeAt(0) > 0x2e7f ? 2 : 1;
+  }
+  return columns;
+};
+
+const truncateColumns = (value: string, maxColumns: number): string => {
+  if (columnsOf(value) <= maxColumns) return value;
+  let result = "";
+  let columns = 0;
+  for (const ch of value) {
+    const width = ch.charCodeAt(0) > 0x2e7f ? 2 : 1;
+    if (columns + width > maxColumns - 1) break;
+    result += ch;
+    columns += width;
+  }
+  return `${result}…`;
+};
 
 function elapsedLabel(startedAt: string, nowMs: number): string {
   const started = Date.parse(startedAt);
@@ -116,21 +147,23 @@ function SessionNode({
     >
       <title>{sessionTooltip(node)}</title>
       <rect className="gnode-box" width={node.w} height={node.h} rx={8} />
-      <text className="gnode-rank" x={10} y={17}>{node.rank}</text>
-      <text className="gnode-title" x={24} y={17}>{truncate(session.title, 21)}</text>
+      <text className="gnode-rank" x={10} y={20}>{node.rank}</text>
+      <text className="gnode-title" x={30} y={20}>
+        {truncateColumns(session.title, session.terminalOpen ? 20 : node.warning ? 23 : 25)}
+      </text>
       {session.terminalOpen ? (
-        <text className="gnode-terminal" x={node.w - 26} y={17}>{"❯_"}</text>
+        <text className="gnode-terminal" x={node.w - 32} y={20}>{"❯_"}</text>
       ) : null}
       {node.warning ? (
-        <text className="gnode-warning" x={node.w - 12} y={17}>!</text>
+        <text className="gnode-warning" x={node.w - 13} y={20}>!</text>
       ) : null}
-      <circle className="gnode-status-dot" cx={13} cy={33} r={3} />
-      <text className="gnode-status" x={22} y={36}>{session.status}</text>
-      <text className="gnode-chips" x={10} y={53}>
-        {truncate(`${session.pinnedModel ?? session.modelProfile} · ${session.mode}`, 26)}
+      <circle className="gnode-status-dot" cx={14} cy={39} r={3.5} />
+      <text className="gnode-status" x={24} y={43}>{session.status}</text>
+      <text className="gnode-chips" x={10} y={61}>
+        {truncate(`${session.pinnedModel ?? session.modelProfile} · ${session.mode}`, 28)}
       </text>
       {node.sublabel ? (
-        <text className="gnode-sub" x={10} y={65}>{truncate(node.sublabel, 30)}</text>
+        <text className="gnode-sub" x={10} y={77}>{truncateColumns(node.sublabel, 33)}</text>
       ) : null}
       {selected ? (
         <g
@@ -144,13 +177,13 @@ function SessionNode({
           onPointerDown={(event) => event.stopPropagation()}
         >
           <title>{session.paused ? "Resume" : "Pause"}</title>
-          <circle cx={node.w - 18} cy={node.h - 12} r={8} />
+          <circle cx={node.w - 18} cy={node.h - 13} r={9} />
           {session.paused ? (
-            <path className="gnode-action-glyph" d={`M ${node.w - 21} ${node.h - 16} l 6 4 l -6 4 Z`} />
+            <path className="gnode-action-glyph" d={`M ${node.w - 21} ${node.h - 17.5} l 7 4.5 l -7 4.5 Z`} />
           ) : (
             <>
-              <line className="gnode-action-glyph" x1={node.w - 20.5} y1={node.h - 15} x2={node.w - 20.5} y2={node.h - 9} />
-              <line className="gnode-action-glyph" x1={node.w - 15.5} y1={node.h - 15} x2={node.w - 15.5} y2={node.h - 9} />
+              <line className="gnode-action-glyph" x1={node.w - 20.5} y1={node.h - 17} x2={node.w - 20.5} y2={node.h - 9} />
+              <line className="gnode-action-glyph" x1={node.w - 15.5} y1={node.h - 17} x2={node.w - 15.5} y2={node.h - 9} />
             </>
           )}
         </g>
@@ -177,45 +210,47 @@ function OrchestratorNode({ node, nowMs }: { node: GraphNode; nowMs: number }) {
             : "Single-writer broker — idle"}
       </title>
       <rect className="gnode-box" width={node.w} height={node.h} rx={10} />
-      <circle className="gnode-lamp" cx={16} cy={19} r={4} />
-      <text className="gnode-heading" x={28} y={23}>ORCHESTRATOR</text>
-      <text className="gnode-subheading" x={28} y={36}>single writer</text>
+      <circle className="gnode-lamp" cx={17} cy={20} r={4.5} />
+      <text className="gnode-heading" x={30} y={25}>ORCHESTRATOR</text>
       {info.paused ? (
-        <text className="gnode-writer" x={14} y={62}>Paused</text>
+        <text className="gnode-writer" x={14} y={56}>Paused</text>
       ) : info.live ? (
         <>
-          <text className="gnode-writer" x={14} y={60}>
-            {truncate(info.writerSessionTitle ?? "Executing", 22)}
+          <text className="gnode-writer" x={14} y={54}>
+            {truncateColumns(info.writerSessionTitle ?? "Executing", 30)}
           </text>
-          <text className="gnode-phase" x={14} y={74}>
-            {truncate(`${info.writerPhase ?? "Executing"}${elapsed ? ` · ${elapsed}` : ""}`, 26)}
+          <text className="gnode-phase" x={14} y={70}>
+            {truncateColumns(`${info.writerPhase ?? "Executing"}${elapsed ? ` · ${elapsed}` : ""}`, 34)}
           </text>
         </>
       ) : (
-        <text className="gnode-writer idle" x={14} y={62}>Idle — waiting for jobs</text>
+        <text className="gnode-writer idle" x={14} y={56}>Idle — waiting for jobs</text>
       )}
       <text className="gnode-footer" x={14} y={node.h - 12}>
-        {`QUEUE ${info.queueDepth} · r${info.revision}`}
+        {`QUEUE ${info.queueDepth}`}
       </text>
     </g>
   );
 }
 
 function DocNode({ node }: { node: GraphNode }) {
+  const tooltip = [`${node.label} — ${node.sublabel ?? ""}`, node.tooltip ?? node.detail]
+    .filter(Boolean)
+    .join("\n");
   return (
     <g className={`gnode gnode-doc doc-${node.docTarget}`} transform={`translate(${node.x}, ${node.y})`}>
-      <title>{`${node.label} · ${node.sublabel ?? ""}`}</title>
+      <title>{tooltip}</title>
       <rect className="gnode-box" width={node.w} height={node.h} rx={8} />
-      <rect className="gnode-doc-mark" x={10} y={node.h / 2 - 13} width={26} height={26} rx={6} />
-      <text className="gnode-doc-glyph" x={23} y={node.h / 2 + 4}>
+      <rect className="gnode-doc-mark" x={10} y={node.h / 2 - 14} width={28} height={28} rx={6} />
+      <text className="gnode-doc-glyph" x={24} y={node.h / 2 + 4}>
         {node.docTarget === "rhino" ? "R" : "GH"}
       </text>
-      <text className="gnode-title" x={46} y={node.h / 2 - (node.detail ? 10 : 3)}>{node.label}</text>
-      <text className="gnode-sub" x={46} y={node.h / 2 + (node.detail ? 3 : 12)}>
-        {truncate(node.sublabel ?? "", 15)}
+      <text className="gnode-title" x={50} y={node.detail ? 22 : 30}>{node.label}</text>
+      <text className="gnode-sub" x={50} y={node.detail ? 36 : 46}>
+        {truncateColumns(node.sublabel ?? "", 24)}
       </text>
       {node.detail ? (
-        <text className="gnode-detail" x={46} y={node.h / 2 + 16}>{truncate(node.detail, 18)}</text>
+        <text className="gnode-detail" x={50} y={51}>{truncate(node.detail, 22)}</text>
       ) : null}
     </g>
   );
@@ -236,8 +271,39 @@ export function SessionCanvas({
   const [dragState, setDragState] = useState<{ sessionId: string; dy: number } | null>(null);
   const draggedRef = useRef(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null);
 
-  const fit: ViewBox = { x: 0, y: 0, w: model.width, h: model.height };
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const update = () => {
+      const rect = svg.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) setContainerSize({ w: rect.width, h: rect.height });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, []);
+
+  const fullFit = useMemo<ViewBox>(
+    () => ({ x: 0, y: 0, w: model.width, h: model.height }),
+    [model.width, model.height],
+  );
+  const fit = useMemo<ViewBox>(() => {
+    if (containerSize) {
+      const fitScale = Math.min(containerSize.w / model.width, containerSize.h / model.height);
+      if (fitScale < MIN_READABLE_SCALE) {
+        // Anchor top-left (with toolbar headroom) so the session column and the
+        // first node's title stay visible; pan right/down for the rest.
+        const w = containerSize.w / MIN_READABLE_SCALE;
+        const h = containerSize.h / MIN_READABLE_SCALE;
+        return { x: 0, y: -CLAMPED_TOP_HEADROOM, w, h };
+      }
+    }
+    return fullFit;
+  }, [containerSize, model.width, model.height, fullFit]);
+  const clamped = fit.w < model.width || fit.h < model.height;
   const view = viewBox ?? fit;
 
   useEffect(() => {
@@ -252,11 +318,14 @@ export function SessionCanvas({
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
       setViewBox((current) => {
-        const base = current ?? { x: 0, y: 0, w: model.width, h: model.height };
+        const base = current ?? fit;
         const factor = event.deltaY > 0 ? 1.12 : 1 / 1.12;
-        const zoom = model.width / (base.w * factor);
-        const clampedW =
-          zoom > MAX_ZOOM ? model.width / MAX_ZOOM : zoom < MIN_ZOOM ? model.width / MIN_ZOOM : base.w * factor;
+        // Clamp monotonically relative to the current view: when the clamped
+        // default is already tighter than the absolute zoom bound, zoom-in is a
+        // no-op instead of a jump outward to the bound.
+        const minW = Math.min(base.w, model.width / MAX_ZOOM);
+        const maxW = Math.max(base.w, model.width / MIN_ZOOM);
+        const clampedW = Math.min(maxW, Math.max(minW, base.w * factor));
         const rect = svg.getBoundingClientRect();
         const px = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
         const py = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
@@ -271,7 +340,7 @@ export function SessionCanvas({
     };
     svg.addEventListener("wheel", handleWheel, { passive: false });
     return () => svg.removeEventListener("wheel", handleWheel);
-  }, [model.width, model.height]);
+  }, [model.width, model.height, fit]);
 
   const clientDyToView = (clientDy: number): number => {
     const svg = svgRef.current;
@@ -388,12 +457,18 @@ export function SessionCanvas({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
-      onDoubleClick={() => setViewBox(null)}
+      onDoubleClick={() =>
+        setViewBox((current) => (current === null && clamped ? fullFit : null))
+      }
     >
       <defs>
         <pattern id="gptino-grid" width={22} height={22} patternUnits="userSpaceOnUse">
           <circle cx={1.4} cy={1.4} r={0.8} className="grid-dot" />
         </pattern>
+        <linearGradient id="gptino-edge-fade" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor="#0c0e0f" stopOpacity="0" />
+          <stop offset="1" stopColor="#0c0e0f" stopOpacity="0.9" />
+        </linearGradient>
       </defs>
       <rect
         className="canvas-backdrop"
@@ -426,6 +501,18 @@ export function SessionCanvas({
       {docNodes.map((node) => (
         <DocNode key={node.id} node={node} />
       ))}
+      {view.x + view.w < model.width - 1 ? (
+        <g pointerEvents="none">
+          <title>More to the right — drag to pan, double-click to fit everything.</title>
+          <rect
+            x={view.x + view.w - 34}
+            y={view.y}
+            width={34}
+            height={view.h}
+            fill="url(#gptino-edge-fade)"
+          />
+        </g>
+      ) : null}
     </svg>
   );
 }

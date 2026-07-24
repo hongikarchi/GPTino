@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient, createMockApiClient, type GptinoApiClient } from "../api/client";
 import { moveById, shiftById } from "../order";
-import type { ModelInfo, ModelProfile, RuntimeState, SessionMode } from "../types";
+import type { MessageAttachment, ModelInfo, ModelProfile, RuntimeState, SessionMode } from "../types";
 
 type OptimisticUpdate = (current: RuntimeState) => RuntimeState;
 
@@ -68,8 +68,10 @@ export function useRuntime() {
     };
   }, [replaceClient]);
 
+  // Resolves true when the API call succeeded; callers that staged local state
+  // (e.g. the composer draft) use the false result to restore it.
   const runAction = useCallback(
-    async (key: string, optimistic: OptimisticUpdate | undefined, action: (client: GptinoApiClient) => Promise<void>) => {
+    async (key: string, optimistic: OptimisticUpdate | undefined, action: (client: GptinoApiClient) => Promise<void>): Promise<boolean> => {
       const before = runtime;
       if (optimistic) setRuntime((current) => (current ? optimistic(current) : current));
       setBusyActions((current) => new Set(current).add(key));
@@ -78,9 +80,11 @@ export function useRuntime() {
         await action(clientRef.current!);
         const next = await clientRef.current!.getRuntime();
         setRuntime(next);
+        return true;
       } catch (actionError) {
         if (before) setRuntime(before);
         setError(actionError instanceof Error ? actionError.message : "The GPTino action failed");
+        return false;
       } finally {
         setBusyActions((current) => {
           const next = new Set(current);
@@ -119,6 +123,17 @@ export function useRuntime() {
       if (displaced) reorder(sessionId, displaced);
     },
     [reorder, runtime],
+  );
+
+  // Archive reads never mutate runtime state, so they bypass runAction's
+  // optimistic-update / refetch machinery. Stable identities on purpose: the
+  // archive overlay keys its fetch effects on these, and they must not re-fire
+  // every time a runtime event re-memoizes `actions`.
+  const listArchive = useCallback(() => clientRef.current!.listArchive(), []);
+  const readArchiveMessages = useCallback(
+    (fingerprint: string, sessionId: string, limit?: number) =>
+      clientRef.current!.readArchiveMessages(fingerprint, sessionId, limit),
+    [],
   );
 
   const updateSession = useCallback(
@@ -162,9 +177,16 @@ export function useRuntime() {
           (activeClient) => activeClient.setSessionModel(sessionId, modelProfile, model),
         );
       },
-      async sendMessage(sessionId: string, content: string) {
+      async sendMessage(sessionId: string, content: string, attachments?: MessageAttachment[]) {
         const clientMessageId = crypto.randomUUID();
         const createdAt = new Date().toISOString();
+        // The backend persists attachments as short "[Attached: name]" lines; the optimistic
+        // message mirrors that so the transcript does not jump when the server row arrives.
+        const attachmentLines = (attachments ?? []).map((attachment) => `[Attached: ${attachment.fileName}]`);
+        const optimisticContent =
+          attachmentLines.length === 0
+            ? content
+            : [content, ...attachmentLines].filter((line) => line.length > 0).join("\n");
         return runAction(
           `message:${sessionId}`,
           updateSession(sessionId, (session) => ({
@@ -172,10 +194,15 @@ export function useRuntime() {
             status: session.paused ? session.status : "drafting",
             messages: [
               ...session.messages,
-              { id: clientMessageId, role: "user", content, createdAt, pending: true },
+              { id: clientMessageId, role: "user", content: optimisticContent, createdAt, pending: true },
             ],
           })),
-          (activeClient) => activeClient.sendMessage(sessionId, { content, clientMessageId }),
+          (activeClient) =>
+            activeClient.sendMessage(sessionId, {
+              content,
+              clientMessageId,
+              ...(attachments && attachments.length > 0 ? { attachments } : {}),
+            }),
         );
       },
       openTerminal(sessionId: string) {
@@ -198,8 +225,10 @@ export function useRuntime() {
       stopCurrent() {
         return runAction("stop-current", undefined, (activeClient) => activeClient.stopCurrent());
       },
+      listArchive,
+      readArchiveMessages,
     }),
-    [reorder, runAction, shift, updateSession],
+    [listArchive, readArchiveMessages, reorder, runAction, shift, updateSession],
   );
 
   return {

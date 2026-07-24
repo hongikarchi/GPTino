@@ -8,9 +8,18 @@ namespace GPTino.Grasshopper;
 
 public sealed class GptinoAssemblyInfo : GH_AssemblyInfo
 {
+    private static Bitmap? _icon;
+
     public override string Name => "GPTino";
 
-    public override Bitmap Icon => null!;
+    public override Bitmap Icon => _icon ??= LoadAssemblyIcon();
+
+    private static Bitmap LoadAssemblyIcon()
+    {
+        using var stream = typeof(GptinoAssemblyInfo).Assembly
+            .GetManifestResourceStream("GPTino.Grasshopper.AssemblyIcon.png");
+        return stream is null ? null! : new Bitmap(stream);
+    }
 
     public override string Description =>
         "Document-bound Grasshopper bridge for the GPTino modeling orchestrator.";

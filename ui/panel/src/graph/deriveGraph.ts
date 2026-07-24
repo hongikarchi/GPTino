@@ -28,6 +28,8 @@ export interface GraphNode {
   warning?: string;
   docTarget?: DocTarget;
   detail?: string;
+  /** Full, untruncated hover text when the rendered detail line is clipped. */
+  tooltip?: string;
   orchestrator?: OrchestratorInfo;
 }
 
@@ -55,16 +57,16 @@ export interface GraphModel {
   height: number;
 }
 
-const SESSION_W = 176;
-const SESSION_H = 72;
+const SESSION_W = 208;
+const SESSION_H = 86;
 const SESSION_X = 24;
 const SESSION_GAP = 14;
-const ORCH_W = 190;
-const ORCH_H = 118;
-const ORCH_X = 320;
-const DOC_W = 160;
-const DOC_H = 64;
-const DOC_X = 630;
+const ORCH_W = 210;
+const ORCH_H = 116;
+const ORCH_X = 300;
+const DOC_W = 190;
+const DOC_H = 70;
+const DOC_X = 578;
 const DOC_GAP = 24;
 const MARGIN = 24;
 const CANVAS_W = DOC_X + DOC_W + MARGIN;
@@ -147,7 +149,7 @@ export function deriveGraph(state: RuntimeState): GraphModel {
     label: "Orchestrator",
     sublabel: `Queue ${state.queue.length}`,
     orchestrator: {
-      live: state.writer !== undefined,
+      live: state.writer != null,
       paused: state.paused,
       queueDepth: state.queue.length,
       revision: state.revision,
@@ -168,10 +170,17 @@ export function deriveGraph(state: RuntimeState): GraphModel {
     label: "Rhino",
     sublabel: shortFile(state.rhinoFile),
     detail: selection
-      ? `${selection.rhinoObjectCount} selected${selection.activeLayer ? ` · ${selection.activeLayer}` : ""}`
+      ? `${selection.rhinoObjectCount} selected${selection.activeLayer ? ` · layer ${selection.activeLayer}` : ""}`
+      : undefined,
+    tooltip: selection
+      ? `${selection.rhinoObjectCount} object${selection.rhinoObjectCount === 1 ? "" : "s"} selected${selection.activeLayer ? `\nActive layer: ${selection.activeLayer}` : ""}`
       : undefined,
     docTarget: "rhino",
   };
+  const ghSelected = selection?.grasshopperObjectCount;
+  const ghNickNames = (selection?.grasshopperObjects ?? [])
+    .map(({ nickName }) => nickName)
+    .filter(Boolean);
   const ghDoc: GraphNode = {
     id: "doc:gh",
     kind: "doc",
@@ -181,6 +190,14 @@ export function deriveGraph(state: RuntimeState): GraphModel {
     h: DOC_H,
     label: "Grasshopper",
     sublabel: shortFile(state.grasshopperFile),
+    detail:
+      ghSelected !== undefined
+        ? `${ghSelected} selected${ghNickNames.length > 0 ? ` · ${ghNickNames[0]}${ghSelected > 1 ? "…" : ""}` : ""}`
+        : undefined,
+    tooltip:
+      ghSelected !== undefined
+        ? `${ghSelected} component${ghSelected === 1 ? "" : "s"} selected${ghNickNames.length > 0 ? `\n${ghNickNames.join(", ")}` : ""}`
+        : undefined,
     docTarget: "grasshopper",
   };
   nodes.push(rhinoDoc, ghDoc);
@@ -248,8 +265,8 @@ export function deriveGraph(state: RuntimeState): GraphModel {
     ? state.queue.find((item) => item.id === state.writer?.jobId)
     : undefined;
   const writerTarget = writerQueueItem?.target;
-  const animateRhino = state.writer !== undefined && (writerTarget === undefined || writerTarget === "rhino" || writerTarget === "both");
-  const animateGh = state.writer !== undefined && (writerTarget === undefined || writerTarget === "grasshopper" || writerTarget === "both");
+  const animateRhino = state.writer != null && (writerTarget == null || writerTarget === "rhino" || writerTarget === "both");
+  const animateGh = state.writer != null && (writerTarget == null || writerTarget === "grasshopper" || writerTarget === "both");
 
   for (const [doc, animated] of [
     [rhinoDoc, animateRhino],
