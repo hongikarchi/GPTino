@@ -1569,6 +1569,44 @@ button.llm-auth:hover strong {
 .archive-transcript-header {
   padding: 10px 16px;
   border-bottom: 1px solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.archive-transcript-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.archive-import-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #526334;
+  border-radius: 6px;
+  color: var(--lime);
+  background: var(--surface-3);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.archive-import-button:hover:not(:disabled) {
+  border-color: var(--lime);
+}
+
+.archive-import-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.archive-import-button svg {
+  width: 13px;
+  height: 13px;
 }
 
 .archive-transcript-header strong {
@@ -1601,6 +1639,143 @@ button.llm-auth:hover strong {
 .archive-placeholder svg { width: 22px; height: 22px; }
 .archive-placeholder strong { color: var(--muted); font-size: var(--fs-body); }
 .archive-placeholder span { font-size: var(--fs-sec); }
+
+/* Session-completion toasts — bottom-right stack. Success reuses the lime
+   solution vocabulary; attention reuses the red error/conflict vocabulary. */
+
+.toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: min(340px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.42);
+  pointer-events: auto;
+  animation: toast-in 160ms ease-out;
+}
+
+.toast-success {
+  border-color: rgb(183 225 102 / 0.35);
+  background: linear-gradient(rgb(183 225 102 / 0.06), transparent), var(--surface-2);
+}
+
+.toast-attention {
+  border-color: rgb(225 111 98 / 0.45);
+  background: linear-gradient(rgb(225 111 98 / 0.08), transparent), var(--surface-2);
+}
+
+.toast-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toast-body:hover { background: rgb(255 255 255 / 0.03); }
+
+.toast-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+}
+
+.toast-icon svg { width: 14px; height: 14px; }
+.toast-success .toast-icon { color: var(--lime); background: rgb(183 225 102 / 0.12); }
+.toast-attention .toast-icon { color: var(--red); background: rgb(225 111 98 / 0.12); }
+
+.toast-check { font-size: var(--fs-body); font-weight: 800; line-height: 1; }
+
+.toast-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toast-title {
+  font-size: var(--fs-sec);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-kind {
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.toast-success .toast-kind { color: var(--lime); }
+.toast-attention .toast-kind { color: var(--red); }
+
+.toast-detail {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.toast-dismiss {
+  flex: 0 0 auto;
+  width: 24px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--dim);
+  background: transparent;
+  font-size: var(--fs-title);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toast-dismiss:hover { color: var(--text); background: rgb(255 255 255 / 0.05); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Canvas unread accent — a session finished (or needs attention) while unviewed. */
+.gnode-unread {
+  fill: var(--lime);
+  animation: unread-pulse 1.8s ease-in-out infinite;
+}
+.gnode-session.status-blocked .gnode-unread { fill: var(--red); }
+
+@keyframes unread-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
 
 @media (max-width: 1120px) {
   .canvas-row { height: clamp(180px, 26vh, 280px); }

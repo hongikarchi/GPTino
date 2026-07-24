@@ -32,6 +32,8 @@ export interface GptinoApiClient {
   stopCurrent(): Promise<void>;
   listArchive(): Promise<ArchiveProject[]>;
   readArchiveMessages(fingerprint: string, sessionId: string, limit?: number): Promise<ArchiveMessage[]>;
+  /** Fork an archived session into the current project as a new live session (new thread, seeded context). */
+  importArchiveSession(fingerprint: string, sessionId: string): Promise<void>;
 }
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
@@ -216,6 +218,13 @@ class HttpApiClient implements GptinoApiClient {
   readArchiveMessages(fingerprint: string, sessionId: string, limit = 500): Promise<ArchiveMessage[]> {
     return this.request<ArchiveMessage[]>(
       `/archive/${encodeURIComponent(fingerprint)}/sessions/${encodeURIComponent(sessionId)}/messages?limit=${limit}`,
+    );
+  }
+
+  importArchiveSession(fingerprint: string, sessionId: string): Promise<void> {
+    return this.request(
+      `/archive/${encodeURIComponent(fingerprint)}/sessions/${encodeURIComponent(sessionId)}/import`,
+      { method: "POST" },
     );
   }
 }

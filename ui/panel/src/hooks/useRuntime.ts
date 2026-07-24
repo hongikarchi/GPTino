@@ -11,6 +11,12 @@ export function useRuntime() {
   const client = clientRef.current;
 
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
+  // Server-truth snapshot, set ONLY at the three points a snapshot arrives from the
+  // server (initial load, subscribe callback, post-action refetch) — never on an
+  // optimistic write or a rollback. The completion detector consumes this instead of
+  // `runtime` so a client-only optimistic status (e.g. "drafting") can never manufacture
+  // a false completion edge.
+  const [serverRuntime, setServerRuntime] = useState<RuntimeState | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +35,7 @@ export function useRuntime() {
         const initial = await activeClient.getRuntime();
         if (disposed) return;
         setRuntime(initial);
+        setServerRuntime(initial);
         setLoading(false);
         setError(null);
         void activeClient
@@ -41,7 +48,10 @@ export function useRuntime() {
           });
         unsubscribe = activeClient.subscribe(
           (next) => {
-            if (!disposed) setRuntime(next);
+            if (!disposed) {
+              setRuntime(next);
+              setServerRuntime(next);
+            }
           },
           (subscriptionError) => {
             if (!disposed) setError(subscriptionError.message);
@@ -80,8 +90,11 @@ export function useRuntime() {
         await action(clientRef.current!);
         const next = await clientRef.current!.getRuntime();
         setRuntime(next);
+        setServerRuntime(next);
         return true;
       } catch (actionError) {
+        // Rollback restores the optimistic-merged view only; serverRuntime is left
+        // untouched so a failed action never emits a phantom completion edge.
         if (before) setRuntime(before);
         setError(actionError instanceof Error ? actionError.message : "The GPTino action failed");
         return false;
@@ -234,12 +247,22 @@ export function useRuntime() {
       },
       listArchive,
       readArchiveMessages,
+      // Import mutates runtime state (a new session appears), so — unlike the read-only archive
+      // callbacks — it goes through runAction whose post-action getRuntime() pulls the new session in.
+      importArchiveSession(fingerprint: string, sessionId: string) {
+        return runAction(
+          `import:${sessionId}`,
+          undefined,
+          (activeClient) => activeClient.importArchiveSession(fingerprint, sessionId),
+        );
+      },
     }),
     [listArchive, readArchiveMessages, reorder, runAction, shift, updateSession],
   );
 
   return {
     runtime,
+    serverRuntime,
     models,
     loading,
     error,

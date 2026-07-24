@@ -4,6 +4,7 @@ import type {
   ArchiveProject,
   ChatMessage,
   MessageRequest,
+  MessageRole,
   ModelInfo,
   ModelProfile,
   RuntimeState,
@@ -477,6 +478,22 @@ export function createMockApiClient(): GptinoApiClient {
         state.sessions[index].messages.push(message);
         state.sessions[index].status = state.sessions[index].paused ? "paused" : "drafting";
       });
+      // Demo only: a live AgentHost drives the real drafting→idle transition. Here we
+      // fake it after a beat so ?demo=1 exercises the completion toast, browser
+      // notification, and canvas unread dot end-to-end.
+      window.setTimeout(() => {
+        mutateSession(sessionId, (index) => {
+          const session = state.sessions[index];
+          if (session.paused || session.status !== "drafting") return;
+          session.status = "idle";
+          session.messages.push({
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "Done — the requested change is applied and verified. Revision committed.",
+            createdAt: new Date().toISOString(),
+          });
+        });
+      }, 4_000);
     },
     async openTerminal(sessionId) {
       await delay();
@@ -505,6 +522,46 @@ export function createMockApiClient(): GptinoApiClient {
         throw new Error(`Session ${sessionId} was not found in archive project '${fingerprint}'.`);
       }
       return clone(messages.slice(-limit));
+    },
+    async importArchiveSession(fingerprint: string, sessionId: string) {
+      await delay(220);
+      // Mirror the server: a NEW session named "<name> (imported)" with a leading stale-reference
+      // banner and the copied transcript — no thread carried over, ready for a fresh first turn.
+      const project = demoArchive.find((entry) => entry.fingerprint === fingerprint);
+      const archived = project?.sessions.find((entry) => entry.id === sessionId);
+      const label = project?.projectName ?? fingerprint;
+      const copied = demoArchiveMessages[`${fingerprint}/${sessionId}`] ?? [];
+      const banner: ChatMessage = {
+        id: `m-import-${crypto.randomUUID()}`,
+        role: "system",
+        content:
+          `Imported from project '${label}' (${fingerprint}), session '${archived?.name ?? sessionId}'. ` +
+          "This history was recorded against a different Rhino/Grasshopper document: every component " +
+          "id, wire, and geometry reference below is stale. Re-discover the current canvas state via a " +
+          "snapshot before acting on any of it.",
+        createdAt: new Date().toISOString(),
+      };
+      state.sessions.push({
+        id: `session-${crypto.randomUUID()}`,
+        title: `${archived?.name ?? "Imported session"} (imported)`,
+        summary: "Imported from a past project",
+        status: "idle",
+        mode: "auto",
+        modelProfile: "auto",
+        paused: false,
+        boundGrasshopperDocId: null,
+        messages: [
+          banner,
+          ...copied.map((message) => ({
+            id: `m-import-${crypto.randomUUID()}`,
+            role: message.role as MessageRole,
+            content: message.content,
+            createdAt: message.createdAt,
+          })),
+        ],
+      });
+      state.orderVersion += 1;
+      emit();
     },
     async stopCurrent() {
       await delay(250);

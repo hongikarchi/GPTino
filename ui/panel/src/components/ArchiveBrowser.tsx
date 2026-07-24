@@ -6,6 +6,8 @@ interface ArchiveBrowserProps {
   onClose(): void;
   listArchive(): Promise<ArchiveProject[]>;
   readMessages(fingerprint: string, sessionId: string, limit?: number): Promise<ArchiveMessage[]>;
+  /** Fork the selected archived session into the current project. Resolves true on success. */
+  importSession(fingerprint: string, sessionId: string): Promise<boolean>;
 }
 
 interface SelectedSession {
@@ -52,7 +54,7 @@ const roleLabel = (role: string) =>
 const projectLabel = (project: ArchiveProject) =>
   project.projectName ?? shortFile(project.rhinoFile) ?? project.fingerprint;
 
-export function ArchiveBrowser({ onClose, listArchive, readMessages }: ArchiveBrowserProps) {
+export function ArchiveBrowser({ onClose, listArchive, readMessages, importSession }: ArchiveBrowserProps) {
   const [projects, setProjects] = useState<ArchiveProject[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [listAttempt, setListAttempt] = useState(0);
@@ -60,6 +62,21 @@ export function ArchiveBrowser({ onClose, listArchive, readMessages }: ArchiveBr
   const [selected, setSelected] = useState<SelectedSession | null>(null);
   const [transcript, setTranscript] = useState<ArchiveMessage[] | null>(null);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const handleImport = async () => {
+    if (!selected || importing) return;
+    setImporting(true);
+    setImportError(null);
+    const ok = await importSession(selected.fingerprint, selected.sessionId);
+    if (ok) {
+      onClose();
+      return;
+    }
+    setImporting(false);
+    setImportError("Could not import this session into the current project.");
+  };
 
   useEffect(() => {
     const handleKey = (event: globalThis.KeyboardEvent) => {
@@ -93,6 +110,8 @@ export function ArchiveBrowser({ onClose, listArchive, readMessages }: ArchiveBr
     let disposed = false;
     setTranscript(null);
     setTranscriptError(null);
+    setImportError(null);
+    setImporting(false);
     readMessages(selected.fingerprint, selected.sessionId)
       .then((messages) => {
         if (!disposed) setTranscript(messages);
@@ -214,9 +233,26 @@ export function ArchiveBrowser({ onClose, listArchive, readMessages }: ArchiveBr
           ) : (
             <>
               <header className="archive-transcript-header">
-                <strong>{selected.sessionName}</strong>
-                <span>{selected.projectName} · read-only</span>
+                <div className="archive-transcript-title">
+                  <strong>{selected.sessionName}</strong>
+                  <span>{selected.projectName} · read-only</span>
+                </div>
+                <button
+                  type="button"
+                  className="archive-import-button"
+                  onClick={() => void handleImport()}
+                  disabled={importing}
+                  title="Create a new session in the current project seeded with this conversation. Its component ids and geometry are stale and will be re-discovered before any change."
+                >
+                  <Icon name="history" />
+                  {importing ? "Importing…" : "Import into current project"}
+                </button>
               </header>
+              {importError !== null ? (
+                <div className="archive-error" role="alert">
+                  <span>{importError}</span>
+                </div>
+              ) : null}
               {transcriptError !== null ? (
                 <div className="archive-error" role="alert">
                   <span>{transcriptError}</span>

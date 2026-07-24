@@ -3,9 +3,27 @@ import { ArchiveBrowser } from "./components/ArchiveBrowser";
 import { ChatPane } from "./components/ChatPane";
 import { Icon } from "./components/Icons";
 import { SessionCanvas } from "./components/SessionCanvas";
+import { ToastStack } from "./components/Toast";
 import { useRuntime } from "./hooks/useRuntime";
+import { useSessionCompletion } from "./hooks/useSessionCompletion";
+import { ensureNotificationPermission } from "./notifications";
 import type { CodexAuth, GrasshopperDocInfo } from "./types";
 import "./styles.css";
+
+const NOTIFY_ASKED_KEY = "gptino.notify.asked";
+
+// Request notification permission at most once per browser, on the first message
+// send — a real user gesture, and the exact moment the user starts work they may
+// later want to be pinged about. A declined answer is remembered by the browser.
+function requestNotifyPermissionOnce() {
+  try {
+    if (localStorage.getItem(NOTIFY_ASKED_KEY)) return;
+    localStorage.setItem(NOTIFY_ASKED_KEY, "1");
+  } catch {
+    // localStorage can be unavailable in a locked-down WebView; fall through and ask.
+  }
+  void ensureNotificationPermission();
+}
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
@@ -117,8 +135,9 @@ function NewSessionPopover({
 }
 
 export default function App() {
-  const { runtime, models, loading, error, demo, busyActions, actions } = useRuntime();
+  const { runtime, serverRuntime, models, loading, error, demo, busyActions, actions } = useRuntime();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const completion = useSessionCompletion(serverRuntime, selectedId, setSelectedId);
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
@@ -150,6 +169,13 @@ export default function App() {
       setSelectedId(runtime.sessions[0].id);
     }
   }, [runtime, selectedId]);
+
+  // Viewing a session clears its unread dot. Keyed on serverRuntime too so a
+  // completion that lands on the already-selected session clears on the next snapshot.
+  const { markSeen } = completion;
+  useEffect(() => {
+    if (selectedId) markSeen(selectedId);
+  }, [selectedId, serverRuntime, markSeen]);
 
   if (loading) {
     return (
@@ -316,6 +342,7 @@ export default function App() {
         <SessionCanvas
           runtime={runtime}
           selectedId={selectedId}
+          unseenIds={completion.unseen}
           onSelect={setSelectedId}
           onReorder={actions.reorder}
           onPauseToggle={(id, paused) => void actions.pauseSession(id, paused)}
@@ -380,7 +407,11 @@ export default function App() {
           onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
           onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
           onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
-          onSend={(content, attachments) => selected ? actions.sendMessage(selected.id, content, attachments) : undefined}
+          onSend={(content, attachments) => {
+            if (!selected) return undefined;
+            requestNotifyPermissionOnce();
+            return actions.sendMessage(selected.id, content, attachments);
+          }}
         />
       </main>
 
@@ -389,8 +420,18 @@ export default function App() {
           onClose={() => setArchiveOpen(false)}
           listArchive={actions.listArchive}
           readMessages={actions.readArchiveMessages}
+          importSession={actions.importArchiveSession}
         />
       ) : null}
+
+      <ToastStack
+        toasts={completion.toasts}
+        onDismiss={completion.dismissToast}
+        onOpen={(id) => {
+          setSelectedId(id);
+          completion.markSeen(id);
+        }}
+      />
     </div>
   );
 }

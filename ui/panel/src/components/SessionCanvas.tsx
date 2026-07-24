@@ -7,6 +7,8 @@ import { deriveGraph } from "../graph/deriveGraph";
 interface SessionCanvasProps {
   runtime: RuntimeState;
   selectedId: string | null;
+  /** Session ids with an unacknowledged completion — drawn as an accent dot. */
+  unseenIds: ReadonlySet<string>;
   onSelect(id: string): void;
   onReorder(sourceId: string, targetId: string): void;
   onPauseToggle(id: string, paused: boolean): void;
@@ -116,6 +118,7 @@ function Wire({ edge, selected }: { edge: GraphEdge; selected?: boolean }) {
 function SessionNode({
   node,
   selected,
+  unread,
   dragOffset,
   boundDocName,
   onSelect,
@@ -124,6 +127,8 @@ function SessionNode({
 }: {
   node: GraphNode;
   selected: boolean;
+  /** True when this session has an unacknowledged completion. */
+  unread: boolean;
   dragOffset: number;
   /** Short file name of the session's bound GH doc — only set when several GH docs exist. */
   boundDocName?: string;
@@ -133,6 +138,7 @@ function SessionNode({
 }) {
   const session = node.session;
   if (!session) return null;
+  const showUnread = unread && !selected;
 
   const handleKeyDown = (event: ReactKeyboardEvent<SVGGElement>) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -143,7 +149,7 @@ function SessionNode({
 
   return (
     <g
-      className={`gnode gnode-session status-${session.status}${selected ? " selected" : ""}${session.paused ? " paused" : ""}${node.warning ? " warning" : ""}${dragOffset !== 0 ? " dragging" : ""}`}
+      className={`gnode gnode-session status-${session.status}${selected ? " selected" : ""}${session.paused ? " paused" : ""}${node.warning ? " warning" : ""}${showUnread ? " unread" : ""}${dragOffset !== 0 ? " dragging" : ""}`}
       transform={`translate(${node.x}, ${node.y + dragOffset})`}
       role="button"
       tabIndex={0}
@@ -165,6 +171,7 @@ function SessionNode({
       ) : null}
       <circle className="gnode-status-dot" cx={14} cy={39} r={3.5} />
       <text className="gnode-status" x={24} y={43}>{session.status}</text>
+      {showUnread ? <circle className="gnode-unread" cx={node.w - 13} cy={39} r={4} /> : null}
       <text className="gnode-chips" x={10} y={61}>
         {truncateColumns(
           `${session.pinnedModel ?? session.modelProfile} · ${session.mode}${boundDocName ? ` · ${boundDocName}` : ""}`,
@@ -268,6 +275,7 @@ function DocNode({ node }: { node: GraphNode }) {
 export function SessionCanvas({
   runtime,
   selectedId,
+  unseenIds,
   onSelect,
   onReorder,
   onPauseToggle,
@@ -517,6 +525,7 @@ export function SessionCanvas({
           key={node.id}
           node={node}
           selected={node.session?.id === selectedId}
+          unread={node.session ? unseenIds.has(node.session.id) : false}
           dragOffset={dragState && dragState.sessionId === node.session?.id ? dragState.dy : 0}
           boundDocName={
             multiGh && node.session?.boundGrasshopperDocId != null

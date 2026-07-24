@@ -431,6 +431,27 @@ api.MapGet("/archive/{fingerprint}/sessions/{sessionId:guid}/messages", async (
     CancellationToken cancellationToken) =>
     Results.Ok(await archive.ReadMessagesAsync(fingerprint, sessionId, limit ?? 500, cancellationToken)));
 
+api.MapPost("/archive/{fingerprint}/sessions/{sessionId:guid}/import", async (
+    string fingerprint,
+    Guid sessionId,
+    ProjectArchiveReader archive,
+    SessionStore sessionStore,
+    ILiveDocumentQueueControl queue,
+    CancellationToken cancellationToken) =>
+{
+    // Read-only from the foreign root, then a deterministic seed and one transactional insert into
+    // the live runtime.db. The POST /sessions ritual (RefreshScheduleAsync + events.Publish) makes
+    // the new session appear over SSE without any client refetch. A missing project/session is a 404
+    // (KeyNotFoundException) and an unreadable root is a 409 (InvalidOperationException) via the
+    // shared exception middleware.
+    var export = await archive.ReadSessionForImportAsync(fingerprint, sessionId, cancellationToken);
+    var seed = ImportedSessionSeedBuilder.Build(fingerprint, export);
+    var session = await sessionStore.ImportSessionAsync(seed, cancellationToken);
+    await queue.RefreshScheduleAsync(cancellationToken);
+    events.Publish();
+    return Results.Created($"/api/v1/sessions/{session.Id:D}", session);
+});
+
 api.MapGet("/health", () =>
 {
     var codexProcess = codex.ReadProcessIdentity();

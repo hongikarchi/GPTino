@@ -17,6 +17,10 @@ namespace GPTino.AgentHost.Data;
 /// </summary>
 public sealed partial class ProjectArchiveReader
 {
+    // The import export clamps at the same 1000-row window as the archive reads; the banner
+    // discloses when older history falls outside it.
+    private const int MaxImportWindow = 1000;
+
     private readonly string _projectsParentDirectory;
     private readonly string _currentDataDirectory;
 
@@ -127,6 +131,113 @@ public sealed partial class ProjectArchiveReader
                 $"The archive database for project '{fingerprint}' cannot be read right now: {exception.Message}",
                 exception);
         }
+    }
+
+    /// <summary>
+    /// Reads one archived session for import into the live runtime: its name, last-active date,
+    /// total message count, and the newest message window (clamped identically to the archive
+    /// reads). Strictly read-only — the foreign root is opened Mode=ReadOnly/Pooling=false and is
+    /// never written. Degrades exactly like <see cref="ReadMessagesAsync"/>: a missing project or
+    /// session is a KeyNotFoundException (404); an unreadable database is an InvalidOperationException.
+    /// </summary>
+    public async Task<ArchivedSessionExport> ReadSessionForImportAsync(
+        string fingerprint,
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        var rootPath = ResolveRootPath(fingerprint)
+            ?? throw new KeyNotFoundException($"Archive project '{fingerprint}' was not found.");
+        var databasePath = Path.Combine(rootPath, "runtime.db");
+        if (!File.Exists(databasePath))
+        {
+            throw new KeyNotFoundException($"Archive project '{fingerprint}' has no runtime database.");
+        }
+
+        try
+        {
+            await using var connection = await OpenReadOnlyAsync(databasePath, cancellationToken).ConfigureAwait(false);
+            var header = await ReadSessionHeaderAsync(connection, sessionId, cancellationToken).ConfigureAwait(false)
+                ?? throw new KeyNotFoundException(
+                    $"Session {sessionId:D} was not found in archive project '{fingerprint}'.");
+            var total = await ReadSessionMessageCountAsync(connection, sessionId, cancellationToken).ConfigureAwait(false);
+            var messages = await ReadSessionWindowAsync(connection, sessionId, MaxImportWindow, cancellationToken).ConfigureAwait(false);
+            var manifest = ReadManifest(rootPath);
+            return new ArchivedSessionExport(
+                fingerprint,
+                manifest?.ProjectName,
+                header.Name,
+                header.UpdatedAt,
+                total,
+                messages);
+        }
+        catch (Exception exception) when (IsUnreadable(exception))
+        {
+            throw new InvalidOperationException(
+                $"The archive database for project '{fingerprint}' cannot be read right now: {exception.Message}",
+                exception);
+        }
+    }
+
+    private static async Task<(string Name, DateTimeOffset UpdatedAt)?> ReadSessionHeaderAsync(
+        SqliteConnection connection,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT name, updated_at FROM sessions WHERE id=$id;";
+        command.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        return (reader.GetString(0), DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture));
+    }
+
+    private static async Task<int> ReadSessionMessageCountAsync(
+        SqliteConnection connection,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM messages WHERE session_id=$session;";
+        command.Parameters.AddWithValue("$session", sessionId.ToString("D"));
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<IReadOnlyList<ArchivedMessage>> ReadSessionWindowAsync(
+        SqliteConnection connection,
+        Guid sessionId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id,role,content,phase,created_at
+            FROM (
+                SELECT id,role,content,phase,created_at
+                FROM messages
+                WHERE session_id=$session
+                ORDER BY id DESC
+                LIMIT $limit
+            ) AS newest
+            ORDER BY id;
+            """;
+        command.Parameters.AddWithValue("$session", sessionId.ToString("D"));
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 1000));
+        var messages = new List<ArchivedMessage>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            messages.Add(new ArchivedMessage(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture)));
+        }
+        return messages;
     }
 
     private async Task<ArchivedProject> ReadProjectAsync(

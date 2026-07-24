@@ -727,6 +727,63 @@ public sealed class SessionOrchestratorTests
         Assert.DoesNotContain(messages, message => message.Role == "system" && message.Phase == "error");
     }
 
+    [Fact]
+    public async Task ImportedContextSeedIsPrependedOnlyOnTheThreadCreatingTurn()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient
+        {
+            ReadTurn = (_, _, _) => Task.FromResult<CodexTurnReadResult?>(Completed("done"))
+        };
+        using var harness = await CreateHarnessAsync(directory, client);
+        var imported = await harness.Store.ImportSessionAsync(BuildImportedSeed());
+
+        await harness.Orchestrator.SubmitMessageAsync(
+            imported.Id,
+            new SendMessageRequest("continue the work", "import-turn-1"),
+            CancellationToken.None);
+
+        await WaitForStateAsync(harness.Store, imported.Id, SessionStates.Idle);
+        var startedTurn = Assert.Single(client.StartedTurns);
+        // The seed leads the input and the user's request trails it.
+        Assert.Contains("IMPORTED SEED MARKER", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("prior request", startedTurn.Message, StringComparison.Ordinal);
+        Assert.EndsWith("continue the work", startedTurn.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ImportedContextSeedIsNotResentOnceTheThreadExists()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient
+        {
+            ReadTurn = (_, _, _) => Task.FromResult<CodexTurnReadResult?>(Completed("done"))
+        };
+        using var harness = await CreateHarnessAsync(directory, client);
+        var imported = await harness.Store.ImportSessionAsync(BuildImportedSeed());
+        // A thread already exists (e.g. the first turn already ran), so the resume branch runs and
+        // the seed — still present as a transcript row — is deliberately not injected again.
+        await harness.Store.SetThreadIdAsync(imported.Id, "existing-thread");
+
+        await harness.Orchestrator.SubmitMessageAsync(
+            imported.Id,
+            new SendMessageRequest("second request", "import-turn-2"),
+            CancellationToken.None);
+
+        await WaitForStateAsync(harness.Store, imported.Id, SessionStates.Idle);
+        var startedTurn = Assert.Single(client.StartedTurns);
+        Assert.DoesNotContain("IMPORTED SEED MARKER", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Equal("second request", startedTurn.Message);
+        Assert.Equal("existing-thread", startedTurn.ThreadId);
+    }
+
+    private static ImportedSessionSeed BuildImportedSeed() =>
+        new(
+            "Facade (imported)",
+            "Imported banner — every id below is stale.",
+            [new ImportedMessage("user", "prior request", null, DateTimeOffset.UtcNow.AddDays(-1))],
+            "=== IMPORTED SEED MARKER ===\nuser: prior request\n=== End ===");
+
     private static CodexTurnReadResult Completed(string text) =>
         new("turn-1", "completed", null, [new CodexAgentMessage("item-1", text, "final_answer")]);
 

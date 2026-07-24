@@ -256,6 +256,7 @@ public sealed class SessionOrchestrator : IDisposable
                         selection.Model,
                         cancellationToken).ConfigureAwait(false);
                     await _store.SetThreadIdAsync(sessionId, threadId, cancellationToken).ConfigureAwait(false);
+                    content = await PrependImportedContextAsync(sessionId, content, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
@@ -454,6 +455,29 @@ public sealed class SessionOrchestrator : IDisposable
             Current user request:
             {{currentMessage}}
             """;
+    }
+
+    /// <summary>
+    /// Imported sessions carry a server-synthesized "imported-context" seed row: the deterministic
+    /// replay of a prior project's transcript. It reaches the model exactly once — on the FIRST turn,
+    /// which is necessarily the turn that creates this session's Codex thread (imported sessions start
+    /// with codex_thread_id NULL). Gating on the just-created-thread branch keeps every later turn from
+    /// re-injecting it and costs ordinary sessions only one no-op read on their own first turn. The
+    /// local `content` then flows into ComposeTurnInput at both StartTurn call sites.
+    ///
+    /// Risk-#1 decision (documented): at-most-once, best-effort on the first new-thread turn. If
+    /// StartThreadAsync persists the thread id but the turn then fails, the retry resumes the existing
+    /// thread and the seed is NOT re-sent — the transcript still shows it, but the model does not
+    /// receive it. Guaranteed re-delivery would need a consumed-flag or moving SetThreadIdAsync after a
+    /// successful StartTurnAsync; both are deferred in favor of this simpler, safe-by-default behavior.
+    /// </summary>
+    private async Task<string> PrependImportedContextAsync(
+        Guid sessionId,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        var seed = await _store.ReadImportedContextAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        return string.IsNullOrEmpty(seed) ? content : $"{seed}\n\n{content}";
     }
 
     private const int MaximumContextSelectionIds = 32;

@@ -169,6 +169,143 @@ public sealed class SessionStore
         }
     }
 
+    /// <summary>
+    /// Imports one archived session as a brand-new live session in a single transaction: the session
+    /// row (fresh id, "(imported)" name, modeler/auto, Idle, sort_order MAX+1, codex_thread_id NULL —
+    /// never copy the archived thread id, it is UNIQUE and still owned by the source root — and
+    /// gh_doc NULL for default-document resolution), then, in rowid/display order, the stale-reference
+    /// banner, the copied transcript rows (verbatim role/content/phase/createdAt, client_message_id
+    /// NULL to avoid the per-session uniqueness index), and the trailing model-visible context seed.
+    /// Purely additive data motion — no canvas op, no adapter call, nothing touches any document.
+    /// </summary>
+    public async Task<SessionRecord> ImportSessionAsync(
+        ImportedSessionSeed seed,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(seed);
+        if (string.IsNullOrWhiteSpace(seed.Name))
+        {
+            throw new ArgumentException("Imported session name is required.", nameof(seed));
+        }
+
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = connection.BeginTransaction();
+            var order = await ReadScalarLongAsync(
+                connection,
+                transaction,
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM sessions;",
+                cancellationToken).ConfigureAwait(false);
+            var id = Guid.NewGuid();
+            var now = DateTimeOffset.UtcNow;
+            const string role = "modeler";
+            const string profile = "auto";
+
+            await using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = """
+                    INSERT INTO sessions(id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc)
+                    VALUES($id,$name,$role,$profile,NULL,$state,$order,NULL,NULL,$created,$updated,NULL);
+                    """;
+                command.Parameters.AddWithValue("$id", id.ToString("D"));
+                command.Parameters.AddWithValue("$name", seed.Name);
+                command.Parameters.AddWithValue("$role", role);
+                command.Parameters.AddWithValue("$profile", profile);
+                command.Parameters.AddWithValue("$state", SessionStates.Idle);
+                command.Parameters.AddWithValue("$order", order);
+                command.Parameters.AddWithValue("$created", now.ToString("O"));
+                command.Parameters.AddWithValue("$updated", now.ToString("O"));
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            // Insertion order == rowid order == transcript display order (reads sort by id, not by
+            // created_at), so the banner leads and the seed trails even though the copied rows carry
+            // older createdAt values that predate this session.
+            await InsertImportedMessageAsync(
+                connection, transaction, id, "system", seed.BannerContent,
+                ImportedSessionPhases.Banner, now, cancellationToken).ConfigureAwait(false);
+            foreach (var message in seed.Messages)
+            {
+                await InsertImportedMessageAsync(
+                    connection, transaction, id, message.Role, message.Content,
+                    message.Phase, message.CreatedAt, cancellationToken).ConfigureAwait(false);
+            }
+            await InsertImportedMessageAsync(
+                connection, transaction, id, "system", seed.ContextSeedContent,
+                ImportedSessionPhases.ContextSeed, now, cancellationToken).ConfigureAwait(false);
+
+            transaction.Commit();
+            return new SessionRecord(
+                id,
+                seed.Name,
+                role,
+                profile,
+                null,
+                SessionStates.Idle,
+                checked((int)order),
+                null,
+                null,
+                now,
+                now,
+                null);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Reads the model-visible context seed an imported session carries, or null for a session that
+    /// was not imported. Filters on role='system' too so a user message can never masquerade as the
+    /// seed (phase is server-assigned, but the belt-and-suspenders filter matches the injection contract).
+    /// </summary>
+    public async Task<string?> ReadImportedContextAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT content
+            FROM messages
+            WHERE session_id=$session AND role='system' AND phase=$phase
+            ORDER BY id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$session", sessionId.ToString("D"));
+        command.Parameters.AddWithValue("$phase", ImportedSessionPhases.ContextSeed);
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value as string;
+    }
+
+    private static async Task InsertImportedMessageAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid sessionId,
+        string role,
+        string content,
+        string? phase,
+        DateTimeOffset createdAt,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO messages(session_id,role,content,phase,client_message_id,created_at)
+            VALUES($session,$role,$content,$phase,NULL,$created);
+            """;
+        command.Parameters.AddWithValue("$session", sessionId.ToString("D"));
+        command.Parameters.AddWithValue("$role", role);
+        command.Parameters.AddWithValue("$content", content);
+        command.Parameters.AddWithValue("$phase", (object?)phase ?? DBNull.Value);
+        command.Parameters.AddWithValue("$created", createdAt.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<long> ReorderAsync(
         IReadOnlyList<Guid> orderedSessionIds,
         long expectedVersion,

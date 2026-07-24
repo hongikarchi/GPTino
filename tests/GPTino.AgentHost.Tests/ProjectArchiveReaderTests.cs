@@ -158,6 +158,63 @@ public sealed class ProjectArchiveReaderTests
             () => reader.ReadMessagesAsync(Fingerprint, Guid.NewGuid()));
     }
 
+    [Fact]
+    public async Task ReadSessionForImportRoundTripsNameWindowTotalAndProjectFromAnArchivedRoot()
+    {
+        using var directory = new TestDirectory();
+        var parent = directory.GetPath("projects");
+        var root = Path.Combine(parent, Fingerprint);
+        WriteManifest(root, "Tower Study");
+        var store = new SessionStore(Path.Combine(root, "runtime.db"));
+        await store.InitializeAsync();
+        var session = await store.CreateSessionAsync(new CreateSessionRequest("Facade"));
+        await store.AppendMessageAsync(session.Id, "user", "first");
+        await store.AppendMessageAsync(session.Id, "assistant", "second", phase: "commit");
+        await store.AppendMessageAsync(session.Id, "system", "third");
+
+        var reader = new ProjectArchiveReader(parent, directory.GetPath("elsewhere-current-root"));
+        var export = await reader.ReadSessionForImportAsync(Fingerprint, session.Id);
+
+        Assert.Equal(Fingerprint, export.Fingerprint);
+        Assert.Equal("Tower Study", export.ProjectName);
+        Assert.Equal("Facade", export.Name);
+        Assert.Equal(3, export.TotalMessageCount);
+        Assert.Equal(["first", "second", "third"], export.Messages.Select(message => message.Content));
+        Assert.Equal(["user", "assistant", "system"], export.Messages.Select(message => message.Role));
+        Assert.Equal([null, "commit", null], export.Messages.Select(message => message.Phase));
+
+        // Degrades exactly like the other reads: fingerprint validation and 404 for unknown targets.
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => reader.ReadSessionForImportAsync("not-a-fingerprint", session.Id));
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => reader.ReadSessionForImportAsync(Fingerprint, Guid.NewGuid()));
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => reader.ReadSessionForImportAsync("0123456789ABCDEF", session.Id));
+    }
+
+    [Fact]
+    public async Task ReadSessionForImportClampsToTheNewestThousandButCountsAll()
+    {
+        using var directory = new TestDirectory();
+        var parent = directory.GetPath("projects");
+        var store = new SessionStore(Path.Combine(parent, Fingerprint, "runtime.db"));
+        await store.InitializeAsync();
+        var session = await store.CreateSessionAsync(new CreateSessionRequest("Long"));
+        for (var index = 0; index < 1005; index++)
+        {
+            await store.AppendMessageAsync(session.Id, "user", $"message-{index}");
+        }
+
+        var reader = new ProjectArchiveReader(parent, directory.GetPath("elsewhere-current-root"));
+        var export = await reader.ReadSessionForImportAsync(Fingerprint, session.Id);
+
+        Assert.Equal(1005, export.TotalMessageCount);
+        Assert.Equal(1000, export.Messages.Count);
+        // Newest window in ascending order: the last row is the newest message, the oldest five dropped.
+        Assert.Equal("message-1004", export.Messages[^1].Content);
+        Assert.Equal("message-5", export.Messages[0].Content);
+    }
+
     private static void WriteManifest(string rootPath, string projectName)
     {
         Directory.CreateDirectory(Path.Combine(rootPath, "context"));
