@@ -29,3 +29,4 @@ auth.json
 *.log
 .cache/
 coverage/
+*.tsbuildinfo
