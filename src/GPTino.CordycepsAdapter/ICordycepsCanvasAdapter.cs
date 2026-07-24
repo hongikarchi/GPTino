@@ -92,6 +92,17 @@ public sealed record CanvasObjectState(
     public string LayoutFingerprint { get; init; } = string.Empty;
 
     public string? ValueFingerprint { get; init; }
+
+    /// <summary>
+    /// Top-left origin of the object's canvas bounds (attributes.Bounds.X/.Y). Kept distinct from
+    /// <see cref="Pivot"/> because some object types (panels) anchor their pivot away from the
+    /// bounding-box center, so deterministic auto-placement needs the true rectangle to build its
+    /// collision grid. Deliberately EXCLUDED from every fingerprint (layout/structure/value/whole),
+    /// so Grasshopper re-layout jitter never churns the document revision or stale-blocks a session.
+    /// Null when the adapter did not report it (older bridge / test fakes); consumers fall back to a
+    /// pivot-centered rectangle.
+    /// </summary>
+    public CanvasPoint? BoundsOrigin { get; init; }
 }
 
 public sealed record CanvasParameterState(

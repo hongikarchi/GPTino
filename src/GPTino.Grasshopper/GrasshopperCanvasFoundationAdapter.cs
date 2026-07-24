@@ -661,6 +661,11 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             StructureFingerprint = structureFingerprint,
             LayoutFingerprint = layoutFingerprint,
             ValueFingerprint = valueFingerprint,
+            // The bounds top-left, reported so the broker's deterministic auto-placement can build a
+            // true collision rectangle for panels and other pivot-off-center types. Intentionally kept
+            // OUT of every fingerprint above (layoutSource hashes size, never origin), so pure GH
+            // re-layout jitter of X/Y never bumps the document revision.
+            BoundsOrigin = new CanvasPoint(bounds.X, bounds.Y),
         };
     }
 

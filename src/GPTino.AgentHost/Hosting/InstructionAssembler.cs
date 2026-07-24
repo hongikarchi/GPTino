@@ -47,7 +47,8 @@ public static class HouseRules
         Grasshopper authoring conventions (mandatory):
         - Parametric by default: expose every design-driving constant (spacing, counts, heights, section sizes) as a
           labeled Number Slider wired into your script inputs. Never hardcode a value the user may want to tune.
-          Give each slider a meaningful nickname; place sliders left of the component they feed.
+          Give each slider a meaningful nickname; declare each slider's objectId in the consuming component's
+          canvas.create autoUpstream so server-side auto-placement puts sliders left of the component they feed.
         - Label everything: give every script component and each of its outputs a meaningful nickname describing
           what flows through it. Unlabeled outputs are a defect.
         - Baking is standardized: never write ad-hoc bake code. Fetch the vetted bake_manager.py skill with
@@ -85,7 +86,10 @@ public static class HouseRules
         - A Python component is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
           deliberation, submit each ChangeSet with wait=true, and chain from each job result's committed block —
           never re-read the canvas between steps:
-          1) createComponent for the script component AND every input Number Slider (one ChangeSet).
+          1) createComponent for the script component AND every input Number Slider (one ChangeSet). Every
+             create uses pivot:"gptino:auto" — never hand-pick coordinates unless the user asked for a specific
+             location. On the script component's create, set autoUpstream to the objectIds of the sliders (and
+             any upstream components) that feed it, so the server lays sliders left and the script to their right.
           2) updatePythonSource + setComponentIo in ONE ChangeSet. The script references every input variable by
              name and guards it DEFENSIVELY, because an input socket that is not yet wired arrives empty —
              Python: count = int(count) if count is not None else <default>; C#: use nullable inputs and

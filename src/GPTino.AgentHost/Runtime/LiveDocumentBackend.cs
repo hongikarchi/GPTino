@@ -942,6 +942,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             PreflightPythonSchemas(preparedOperations, before);
             PreflightDeterministicAdapterRejections(preparedOperations, before);
 
+            // Server-owned deterministic placement: rewrite every canvas.create whose model pivot is the
+            // "gptino:auto" sentinel into a concrete, non-overlapping pivot computed against the live
+            // before-snapshot, stripping autoUpstream so the (unchanged) Grasshopper adapter receives
+            // today's exact contract. Mirrors gptino:auto fingerprint resolution above: only the dispatched
+            // Arguments change — FrozenPayload (idempotency hash, reserved artifacts) is never touched, and
+            // an existing human-placed object is never moved (it is only an immutable collision obstacle).
+            preparedOperations = CanvasAutoPlacement.ResolveAutoPivots(preparedOperations, before.Canvas);
+
             await EnsureHistoryBaselineAsync(targetState, before, execution.Token).ConfigureAwait(false);
             var lease = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
             await SetJobPhaseAsync(
@@ -3099,17 +3107,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                         DeserializeArguments<SetWireRequest>(arguments, operation.OperationId));
                     return;
                 case "canvas.create":
-                    RequireOnlyProperties(
-                        arguments.GetProperty("pivot"),
-                        operation.OperationId,
-                        "x", "y");
-                    var create = DeserializeArguments<CreateCanvasObjectRequest>(arguments, operation.OperationId);
-                    if (create.ObjectId == Guid.Empty || create.ComponentTypeId == Guid.Empty ||
-                        !float.IsFinite(create.Pivot.X) || !float.IsFinite(create.Pivot.Y))
-                    {
-                        throw new InvalidOperationException(
-                            $"Operation '{operation.OperationId}' has an invalid canvas create payload.");
-                    }
+                    ValidateCanvasCreateArguments(operation, arguments);
                     return;
                 case "canvas.delete":
                     var delete = DeserializeArguments<DeleteCanvasObjectRequest>(arguments, operation.OperationId);
@@ -3214,6 +3212,72 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             throw new InvalidOperationException(
                 $"Operation '{operation.OperationId}' payload is missing a required nested value.",
                 exception);
+        }
+    }
+
+    // canvas.create accepts either an explicit pivot:{x,y} (honored verbatim) OR the sentinel
+    // pivot:"gptino:auto" with an optional sibling autoUpstream:[objectId,...] naming the
+    // components/sliders that will feed the new one. The sentinel + autoUpstream cannot survive
+    // strict CreateCanvasObjectRequest deserialization (BridgeProtocol.JsonOptions disallows
+    // unmapped members and has no CanvasPoint case for a string), so the sentinel path is
+    // hand-validated here; CanvasAutoPlacement.ResolveAutoPivots rewrites it into a concrete pivot
+    // and strips autoUpstream just before bridge dispatch, so the adapter still sees today's shape.
+    private static void ValidateCanvasCreateArguments(TypedOperation operation, JsonElement arguments)
+    {
+        var pivot = arguments.GetProperty("pivot");
+        if (pivot.ValueKind == JsonValueKind.String)
+        {
+            if (!string.Equals(
+                    pivot.GetString(),
+                    CanvasAutoPlacement.AutoPivotSentinel,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{operation.OperationId}' pivot string must be " +
+                    $"'{CanvasAutoPlacement.AutoPivotSentinel}' (server-computed placement) or an " +
+                    "explicit {{x,y}} point.");
+            }
+            // objectId and componentTypeId are already enforced as non-empty UUIDs by GuidArguments
+            // before this validator runs; only the optional autoUpstream needs shape checking here.
+            if (arguments.TryGetProperty("autoUpstream", out var autoUpstream))
+            {
+                ValidateAutoUpstream(operation, autoUpstream);
+            }
+            return;
+        }
+
+        RequireOnlyProperties(pivot, operation.OperationId, "x", "y");
+        if (arguments.TryGetProperty("autoUpstream", out _))
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operation.OperationId}' may declare autoUpstream only with pivot " +
+                $"'{CanvasAutoPlacement.AutoPivotSentinel}'; an explicit {{x,y}} pivot owns its own " +
+                "coordinates.");
+        }
+        var create = DeserializeArguments<CreateCanvasObjectRequest>(arguments, operation.OperationId);
+        if (create.ObjectId == Guid.Empty || create.ComponentTypeId == Guid.Empty ||
+            !float.IsFinite(create.Pivot.X) || !float.IsFinite(create.Pivot.Y))
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operation.OperationId}' has an invalid canvas create payload.");
+        }
+    }
+
+    private static void ValidateAutoUpstream(TypedOperation operation, JsonElement autoUpstream)
+    {
+        if (autoUpstream.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operation.OperationId}' autoUpstream must be an array of object UUIDs.");
+        }
+        foreach (var element in autoUpstream.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.String ||
+                !Guid.TryParse(element.GetString(), out var id) || id == Guid.Empty)
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{operation.OperationId}' autoUpstream must contain non-empty object UUIDs.");
+            }
         }
     }
 
@@ -5497,7 +5561,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private sealed record CommittedResourceFingerprint(ResourceAddress Resource, string? Fingerprint);
 
-    private sealed record PreparedOperation(
+    // internal (not private) so the pure CanvasAutoPlacement.ResolveAutoPivots wrapper in this same
+    // assembly can accept the prepared list and return a rewritten one without a broader refactor.
+    internal sealed record PreparedOperation(
         TypedOperation Operation,
         BridgeAdapterOwner Owner,
         string BridgeOperation,
