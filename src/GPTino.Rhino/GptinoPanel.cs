@@ -68,6 +68,16 @@ public sealed class GptinoPanel : Panel
         }
         if (!_navigated)
         {
+            // Re-observe the Rhino document each tick until it registers. At OnEndOpenDocument (and
+            // in this panel's constructor) RhinoDoc.Path is often still empty / not fully qualified,
+            // so the initial observation bails and the pair never registers — the panel then stays
+            // on the waiting page until a Save finally supplies the authoritative path. Retrying
+            // here lets registration (and the AgentHost spawn) happen shortly AFTER open, once the
+            // path settles — so the user never has to Save to connect, and the spawn no longer
+            // collides with a save's write+rename (the inherited-handle save failure). Idempotent:
+            // once observed, repeat calls are a no-op via the host's changed-guard.
+            GptinoRuntimeHost.Instance.ObserveRhinoDocument(_documentSerial);
+
             // Keep the waiting page's status and document-state explanation current while stuck.
             var waitingKey = ComputeWaitingKey();
             if (!string.Equals(waitingKey, _waitingKey, StringComparison.Ordinal))
