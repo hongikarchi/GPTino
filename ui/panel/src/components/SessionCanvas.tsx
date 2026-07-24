@@ -41,6 +41,8 @@ const CLAMPED_TOP_HEADROOM = 16;
 const truncate = (value: string, max: number) =>
   value.length > max ? `${value.slice(0, max - 1)}…` : value;
 
+const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
 /* Character counts cannot bound pixel width once CJK text is involved (a Hangul
    glyph is ~2× a Latin one), so node labels truncate by half-width columns. */
 const columnsOf = (value: string): number => {
@@ -73,7 +75,7 @@ function elapsedLabel(startedAt: string, nowMs: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function sessionTooltip(node: GraphNode): string {
+function sessionTooltip(node: GraphNode, boundDocName?: string): string {
   const session = node.session;
   if (!session) return node.label;
   const lines = [session.title];
@@ -85,15 +87,16 @@ function sessionTooltip(node: GraphNode): string {
   }
   if (session.pinnedModel) lines.push(`Pinned: ${session.pinnedModel}`);
   if (session.backend) lines.push(`Backend: ${session.backend}`);
+  if (boundDocName) lines.push(`Target: ${boundDocName}`);
   if (session.routingReason) lines.push(`Routing: ${session.routingReason}`);
   if (node.warning) lines.push(node.warning);
   lines.push("Drag vertically to change priority.");
   return lines.join("\n");
 }
 
-function Wire({ edge }: { edge: GraphEdge }) {
+function Wire({ edge, selected }: { edge: GraphEdge; selected?: boolean }) {
   return (
-    <g className={`wire wire-${edge.kind}`}>
+    <g className={`wire wire-${edge.kind}${selected ? " selected" : ""}`}>
       {edge.title ? <title>{edge.title}</title> : null}
       <path className="wire-under" d={edge.path} />
       <path className="wire-color" d={edge.path} />
@@ -114,6 +117,7 @@ function SessionNode({
   node,
   selected,
   dragOffset,
+  boundDocName,
   onSelect,
   onNodePointerDown,
   onPauseToggle,
@@ -121,6 +125,8 @@ function SessionNode({
   node: GraphNode;
   selected: boolean;
   dragOffset: number;
+  /** Short file name of the session's bound GH doc — only set when several GH docs exist. */
+  boundDocName?: string;
   onSelect(id: string): void;
   onNodePointerDown(event: ReactPointerEvent<SVGGElement>, sessionId: string): void;
   onPauseToggle(id: string, paused: boolean): void;
@@ -145,7 +151,7 @@ function SessionNode({
       onKeyDown={handleKeyDown}
       onPointerDown={(event) => onNodePointerDown(event, session.id)}
     >
-      <title>{sessionTooltip(node)}</title>
+      <title>{sessionTooltip(node, boundDocName)}</title>
       <rect className="gnode-box" width={node.w} height={node.h} rx={8} />
       <text className="gnode-rank" x={10} y={20}>{node.rank}</text>
       <text className="gnode-title" x={30} y={20}>
@@ -160,7 +166,10 @@ function SessionNode({
       <circle className="gnode-status-dot" cx={14} cy={39} r={3.5} />
       <text className="gnode-status" x={24} y={43}>{session.status}</text>
       <text className="gnode-chips" x={10} y={61}>
-        {truncate(`${session.pinnedModel ?? session.modelProfile} · ${session.mode}`, 28)}
+        {truncateColumns(
+          `${session.pinnedModel ?? session.modelProfile} · ${session.mode}${boundDocName ? ` · ${boundDocName}` : ""}`,
+          28,
+        )}
       </text>
       {node.sublabel ? (
         <text className="gnode-sub" x={10} y={77}>{truncateColumns(node.sublabel, 33)}</text>
@@ -264,6 +273,28 @@ export function SessionCanvas({
   onPauseToggle,
 }: SessionCanvasProps) {
   const model = useMemo(() => deriveGraph(runtime), [runtime]);
+  const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
+  const multiGh = ghDocs != null && ghDocs.length > 1;
+  const docNameById = useMemo(
+    () => new Map((ghDocs ?? []).map((doc) => [doc.id, shortFile(doc.file)])),
+    [ghDocs],
+  );
+  // The orchestrator→doc commit wire of the selected session's bound doc gets a
+  // highlight so selection answers "which doc does this session write to".
+  // Bound = explicit binding, else the only doc; unbound among several = none.
+  const selectedCommitEdgeId = useMemo(() => {
+    if (!selectedId) return null;
+    const session = runtime.sessions.find(({ id }) => id === selectedId);
+    if (!session) return null;
+    if (!ghDocs) return "commit:grasshopper";
+    const bound =
+      session.boundGrasshopperDocId != null
+        ? ghDocs.find((doc) => doc.id === session.boundGrasshopperDocId)
+        : ghDocs.length === 1
+          ? ghDocs[0]
+          : undefined;
+    return bound ? `commit:gh:${bound.id}` : null;
+  }, [selectedId, runtime.sessions, ghDocs]);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [viewBox, setViewBox] = useState<ViewBox | null>(null);
   const panState = useRef<{ pointerId: number; startX: number; startY: number; origin: ViewBox } | null>(null);
@@ -452,7 +483,7 @@ export function SessionCanvas({
       viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
       preserveAspectRatio="xMidYMid meet"
       role="img"
-      aria-label="Session graph: agent sessions wired through the single-writer orchestrator to the Rhino and Grasshopper documents"
+      aria-label={`Session graph: agent sessions wired through the single-writer orchestrator to the Rhino and ${multiGh ? `${ghDocs.length} ` : ""}Grasshopper document${multiGh ? "s" : ""}`}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -479,7 +510,7 @@ export function SessionCanvas({
         fill="url(#gptino-grid)"
       />
       {model.edges.map((edge) => (
-        <Wire key={edge.id} edge={edge} />
+        <Wire key={edge.id} edge={edge} selected={edge.id === selectedCommitEdgeId} />
       ))}
       {sessionNodes.map((node) => (
         <SessionNode
@@ -487,6 +518,13 @@ export function SessionCanvas({
           node={node}
           selected={node.session?.id === selectedId}
           dragOffset={dragState && dragState.sessionId === node.session?.id ? dragState.dy : 0}
+          boundDocName={
+            multiGh && node.session?.boundGrasshopperDocId != null
+              ? // A bound id absent from the registered docs (doc closed, stale binding) still
+                // gets a chip so the canvas flags that this session's submits will fail.
+                (docNameById.get(node.session.boundGrasshopperDocId) ?? "missing")
+              : undefined
+          }
           onSelect={onSelect}
           onNodePointerDown={handleNodePointerDown}
           onPauseToggle={onPauseToggle}

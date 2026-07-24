@@ -20,7 +20,8 @@ public sealed record SessionRecord(
     string? CodexThreadId,
     string? CurrentTask,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? GrasshopperDoc = null);
 
 public sealed record ChatMessage(
     long Id,
@@ -34,7 +35,14 @@ public sealed record CreateSessionRequest(
     string Name,
     string Role = "modeler",
     string ModelProfile = "auto",
-    string? Model = null);
+    string? Model = null,
+    string? GrasshopperDoc = null);
+
+/// <summary>
+/// Rebinds a session to one Grasshopper document (a durable docKey) or clears the binding (null =
+/// default document resolution: the only registered document when exactly one is open).
+/// </summary>
+public sealed record SetSessionTargetRequest(string? GrasshopperDoc = null);
 
 public sealed record ReorderSessionsRequest(
     IReadOnlyList<Guid> OrderedSessionIds,

@@ -1,10 +1,113 @@
 using GPTino.AgentHost.Api;
 using GPTino.AgentHost.Data;
+using Microsoft.Data.Sqlite;
 
 namespace GPTino.AgentHost.Tests;
 
 public sealed class SessionStoreTests
 {
+    [Fact]
+    public async Task InitializeMigratesGhDocColumnOntoPreExistingDatabase()
+    {
+        using var directory = new TestDirectory();
+        var databasePath = directory.GetPath("legacy/sessions.db");
+        var legacyId = Guid.NewGuid();
+        await CreateLegacySchemaDatabaseAsync(databasePath, legacyId);
+
+        var store = new SessionStore(databasePath);
+        await store.InitializeAsync();
+
+        // Legacy rows read a NULL binding (default-document resolution) with zero backfill.
+        var (sessions, _) = await store.ReadStateAsync();
+        var legacy = Assert.Single(sessions);
+        Assert.Equal(legacyId, legacy.Id);
+        Assert.Null(legacy.GrasshopperDoc);
+
+        // Rebind endpoint round trip (set then clear).
+        await store.SetGrasshopperDocAsync(legacy.Id, "abcdef0123456789");
+        Assert.Equal("abcdef0123456789", (await store.FindSessionAsync(legacy.Id))?.GrasshopperDoc);
+        await store.SetGrasshopperDocAsync(legacy.Id, null);
+        Assert.Null((await store.FindSessionAsync(legacy.Id))?.GrasshopperDoc);
+
+        // Creation with a binding persists it (trimmed) on the migrated database.
+        var bound = await store.CreateSessionAsync(
+            new CreateSessionRequest("Bound", GrasshopperDoc: " 0123456789abcdef "));
+        Assert.Equal("0123456789abcdef", bound.GrasshopperDoc);
+        Assert.Equal("0123456789abcdef", (await store.FindSessionAsync(bound.Id))?.GrasshopperDoc);
+
+        // The migration is idempotent across restarts.
+        var reopened = new SessionStore(databasePath);
+        await reopened.InitializeAsync();
+        var (reloaded, _) = await reopened.ReadStateAsync();
+        Assert.Equal(2, reloaded.Count);
+    }
+
+    [Fact]
+    public async Task GrasshopperDocStoresCanonicalLowercaseAndRemapFollowsRename()
+    {
+        using var directory = new TestDirectory();
+        var store = new SessionStore(directory.GetPath("sessions.db"));
+        await store.InitializeAsync();
+        // Bindings normalize to ComputeDocumentKey's canonical lowercase hex regardless of the
+        // caller's casing, so the panel's strict boundGrasshopperDocId comparison always matches.
+        var first = await store.CreateSessionAsync(
+            new CreateSessionRequest("First", GrasshopperDoc: " ABCDEF0123456789 "));
+        Assert.Equal("abcdef0123456789", first.GrasshopperDoc);
+        var second = await store.CreateSessionAsync(new CreateSessionRequest("Second"));
+        await store.SetGrasshopperDocAsync(second.Id, "ABCDEF0123456789");
+        Assert.Equal("abcdef0123456789", (await store.FindSessionAsync(second.Id))?.GrasshopperDoc);
+        var other = await store.CreateSessionAsync(
+            new CreateSessionRequest("Other", GrasshopperDoc: "9999888877776666"));
+        var unbound = await store.CreateSessionAsync(new CreateSessionRequest("Unbound"));
+
+        // A Save As docKey remap rewrites every matching binding and nothing else.
+        var affected = await store.RemapGrasshopperDocAsync("abcdef0123456789", "0011223344556677");
+
+        Assert.Equal(2, affected);
+        Assert.Equal("0011223344556677", (await store.FindSessionAsync(first.Id))?.GrasshopperDoc);
+        Assert.Equal("0011223344556677", (await store.FindSessionAsync(second.Id))?.GrasshopperDoc);
+        Assert.Equal("9999888877776666", (await store.FindSessionAsync(other.Id))?.GrasshopperDoc);
+        Assert.Null((await store.FindSessionAsync(unbound.Id))?.GrasshopperDoc);
+    }
+
+    private static async Task CreateLegacySchemaDatabaseAsync(string databasePath, Guid sessionId)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(databasePath))!);
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.GetFullPath(databasePath),
+            Mode = SqliteOpenMode.ReadWriteCreate
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                model_profile TEXT NOT NULL,
+                model TEXT NULL,
+                state TEXT NOT NULL,
+                sort_order INTEGER NOT NULL UNIQUE,
+                codex_thread_id TEXT NULL UNIQUE,
+                current_task TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO settings(key, value) VALUES ('order_version', '0');
+            INSERT INTO sessions(id,name,role,model_profile,state,sort_order,created_at,updated_at)
+            VALUES ($id,'Legacy','modeler','standard','idle',0,$stamp,$stamp);
+            """;
+        command.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+        command.Parameters.AddWithValue("$stamp", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync();
+    }
+
     [Fact]
     public async Task InitializeAndCreatePersistsNormalizedSessionsInInsertionOrder()
     {

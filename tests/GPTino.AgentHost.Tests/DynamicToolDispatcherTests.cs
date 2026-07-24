@@ -208,6 +208,12 @@ public sealed class DynamicToolDispatcherTests
             Task.FromResult<object>(new { objects = Array.Empty<object>() });
 
         public Task<object> InspectCanvasOutputsAsync(
+            SessionRecord session,
+            JsonElement arguments,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<object>(new { outputs = Array.Empty<object>(), sessionId = session.Id });
+
+        public Task<object> InspectCanvasOutputsAsync(
             JsonElement arguments,
             CancellationToken cancellationToken) =>
             Task.FromResult<object>(new { outputs = Array.Empty<object>() });

@@ -50,6 +50,13 @@ public sealed class AgentHostOptions
         return workspace;
     }
 
+    /// <summary>
+    /// The durable data root. Fingerprinted over the canonical Rhino path ONLY: one Rhino document
+    /// owns one data root no matter how many Grasshopper documents are open against it, and opening
+    /// a different .gh (or none) never forks the project's persistent state. The --grasshopper
+    /// launch argument remains for display/back-compat but does not affect this fingerprint;
+    /// legacy pair-fingerprint roots are adopted once by <see cref="LegacyDataDirectoryAdoption"/>.
+    /// </summary>
     public string ResolveDataDirectory()
     {
         if (!string.IsNullOrWhiteSpace(DataDirectory))
@@ -58,10 +65,7 @@ public sealed class AgentHostOptions
         }
 
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var identity = string.Join(
-            '\n',
-            CanonicalDocumentIdentity(RhinoPath),
-            CanonicalDocumentIdentity(GrasshopperPath));
+        var identity = CanonicalDocumentIdentity(RhinoPath);
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16];
         return Path.Combine(local, "GPTino", "projects", fingerprint);
     }
@@ -71,6 +75,19 @@ public sealed class AgentHostOptions
 
     internal static string CanonicalDocumentIdentity(string? path) =>
         NormalizeDocumentPath(path)?.ToUpperInvariant() ?? string.Empty;
+
+    /// <summary>
+    /// Durable per-Grasshopper-document key: the first 16 hex characters of the SHA-256 of the
+    /// canonical (upper-invariant full) file path. Used for session bindings (sessions.gh_doc),
+    /// per-document managed-history folders (dataRoot\histories\&lt;docKey&gt;), frozen job routing
+    /// (live_jobs.target_doc), and projector document ids. Never derived from the runtime
+    /// GH DocumentID, which resets on every Rhino restart.
+    /// </summary>
+    public static string ComputeDocumentKey(string? grasshopperPath) =>
+        Convert.ToHexString(
+            SHA256.HashData(
+                Encoding.UTF8.GetBytes(CanonicalDocumentIdentity(grasshopperPath))))[..16]
+            .ToLowerInvariant();
 }
 
 public sealed record RuntimeIdentity(

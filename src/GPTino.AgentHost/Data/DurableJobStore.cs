@@ -19,7 +19,8 @@ public sealed record DurableJobRecord(
     DateTimeOffset EnqueuedAt,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    string RequestHash = "");
+    string RequestHash = "",
+    string? TargetDoc = null);
 
 public sealed record DurableJobInsertResult(bool Inserted, DurableJobRecord Record);
 
@@ -75,6 +76,7 @@ public sealed class DurableJobStore
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     request_hash TEXT NOT NULL DEFAULT '',
+                    target_doc TEXT NULL,
                     UNIQUE(session_id, idempotency_key)
                 );
                 CREATE INDEX IF NOT EXISTS ix_live_jobs_state ON live_jobs(state);
@@ -87,6 +89,16 @@ public sealed class DurableJobStore
                 await ExecuteAsync(
                     connection,
                     "ALTER TABLE live_jobs ADD COLUMN request_hash TEXT NOT NULL DEFAULT '';",
+                    cancellationToken).ConfigureAwait(false);
+            }
+            // Nullable frozen target docKey for restart recovery and the queue view; NULL on
+            // legacy rows means default-document resolution (today's single-Grasshopper behavior).
+            if (!await HasColumnAsync(connection, "live_jobs", "target_doc", cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                await ExecuteAsync(
+                    connection,
+                    "ALTER TABLE live_jobs ADD COLUMN target_doc TEXT NULL;",
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -153,10 +165,10 @@ public sealed class DurableJobStore
             insert.CommandText = """
                 INSERT OR IGNORE INTO live_jobs(
                     job_id,session_id,idempotency_key,summary,change_set_json,
-                    enqueue_sequence,state,phase,message,enqueued_at,created_at,updated_at,request_hash)
+                    enqueue_sequence,state,phase,message,enqueued_at,created_at,updated_at,request_hash,target_doc)
                 VALUES(
                     $job,$session,$key,$summary,$changeSet,
-                    $sequence,$state,$phase,$message,$enqueued,$created,$updated,$requestHash);
+                    $sequence,$state,$phase,$message,$enqueued,$created,$updated,$requestHash,$targetDoc);
                 """;
             Bind(insert, record);
             var inserted = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
@@ -208,6 +220,41 @@ public sealed class DurableJobStore
             {
                 throw new KeyNotFoundException($"Durable job '{jobId:D}' was not found.");
             }
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Rewrites every job frozen to one target docKey to another in a single UPDATE. Called when
+    /// a Save As re-registration recomputes a target's path-derived docKey, so already-queued
+    /// jobs (and rows restored after a restart) keep resolving to the renamed document instead
+    /// of failing with target-not-registered. Case-insensitive match, same rationale as
+    /// <see cref="SessionStore.RemapGrasshopperDocAsync"/>.
+    /// </summary>
+    public async Task<int> RemapTargetDocAsync(
+        string oldTargetDoc,
+        string newTargetDoc,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldTargetDoc);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newTargetDoc);
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE live_jobs
+                SET target_doc=$new,updated_at=$updated
+                WHERE target_doc=$old COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$new", newTargetDoc.Trim().ToLowerInvariant());
+            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue("$old", oldTargetDoc.Trim());
+            return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -285,6 +332,7 @@ public sealed class DurableJobStore
             "$updated",
             record.UpdatedAt.ToString("O", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$requestHash", record.RequestHash);
+        command.Parameters.AddWithValue("$targetDoc", (object?)record.TargetDoc ?? DBNull.Value);
     }
 
     private static async Task<IReadOnlyList<DurableJobRecord>> ReadAllAsync(
@@ -296,7 +344,7 @@ public sealed class DurableJobStore
         command.Transaction = transaction;
         command.CommandText = """
             SELECT job_id,session_id,idempotency_key,summary,change_set_json,
-                   enqueue_sequence,state,phase,message,enqueued_at,created_at,updated_at,request_hash
+                   enqueue_sequence,state,phase,message,enqueued_at,created_at,updated_at,request_hash,target_doc
             FROM live_jobs
             ORDER BY enqueue_sequence,created_at;
             """;
@@ -320,7 +368,7 @@ public sealed class DurableJobStore
         command.Transaction = transaction;
         command.CommandText = """
             SELECT job_id,session_id,idempotency_key,summary,change_set_json,
-                   enqueue_sequence,state,phase,message,enqueued_at,created_at,updated_at,request_hash
+                   enqueue_sequence,state,phase,message,enqueued_at,created_at,updated_at,request_hash,target_doc
             FROM live_jobs
             WHERE session_id=$session AND idempotency_key=$key;
             """;
@@ -351,6 +399,7 @@ public sealed class DurableJobStore
             DateTimeOffset.Parse(reader.GetString(9), CultureInfo.InvariantCulture),
             DateTimeOffset.Parse(reader.GetString(10), CultureInfo.InvariantCulture),
             DateTimeOffset.Parse(reader.GetString(11), CultureInfo.InvariantCulture),
-            reader.GetString(12));
+            reader.GetString(12),
+            reader.IsDBNull(13) ? null : reader.GetString(13));
     }
 }

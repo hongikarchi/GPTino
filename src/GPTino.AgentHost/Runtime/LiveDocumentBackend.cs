@@ -40,7 +40,14 @@ public sealed record LiveQueueItem(
     JobState State,
     long EnqueueSequence,
     DateTimeOffset EnqueuedAt,
-    string? Target);
+    string? Target,
+    string? TargetDoc = null);
+
+/// <summary>
+/// One registered Grasshopper document as the panel projector sees it: the durable docKey
+/// (id) plus the current file path, in registration order (first = the default target).
+/// </summary>
+public sealed record RegisteredGrasshopperDocument(string Id, string File);
 
 public sealed record LiveConflictItem(
     Guid JobId,
@@ -80,10 +87,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private readonly object _scheduleGate = new();
     private readonly object _executionGate = new();
     private readonly SemaphoreSlim _submissionGate = new(1, 1);
-    private readonly SemaphoreSlim _snapshotGate = new(1, 1);
     private readonly SemaphoreSlim _historyGate = new(1, 1);
     private readonly AsyncDocumentGate _documentGate = new();
-    private readonly ConcurrentDictionary<Guid, TaskCompletionSource<BridgeFrame>> _pending = new();
+    private readonly ConcurrentDictionary<Guid, PendingBridgeRequest> _pending = new();
     private readonly ConcurrentDictionary<Guid, LiveJobEntry> _jobs = new();
     private readonly ProblemLog? _problemLog;
     private readonly ConcurrentDictionary<string, Guid> _idempotency = new(StringComparer.Ordinal);
@@ -99,14 +105,21 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     // time under the write lease), so access is fully serialized and needs no lock.
     private readonly Dictionary<string, ResourceLedgerEntry> _resourceLedger = new(StringComparer.Ordinal);
     private readonly SingleWriterBroker _broker;
-    private readonly ManagedHistoryRepository _history;
     private readonly DurableJobStore _jobStore;
+    private readonly string _dataRoot;
     private readonly string _artifactRoot;
     private readonly BridgeSecret? _bridgeSecret;
     private DocumentPipeConnection? _connection;
-    private DocumentRuntime? _target;
-    private HashSet<BridgeAdapterOwner> _availableAdapters = [];
-    private SnapshotEnvelope? _snapshot;
+    // Per-registered-Grasshopper-document state, keyed by the target's StableTargetKey. Guarded by
+    // _connectionGate for membership; the per-state snapshot cache follows the same (benign-race)
+    // discipline the former singleton _snapshot field used. Registration order defines the DEFAULT
+    // target: the only entry when one document is open, otherwise the first registered — so every
+    // pre-existing single-document consumer keeps byte-for-byte behavior.
+    private readonly Dictionary<string, TargetState> _targets = new(StringComparer.Ordinal);
+    private long _targetSequence;
+    // Monotonic receipt counter for SelectionChanged events, guarded by _connectionGate; drives
+    // the "most recently updated target" selection surfaces.
+    private long _selectionSequence;
     private SessionOrderSnapshot _sessionOrder;
     private IReadOnlyDictionary<Guid, SessionRunState> _sessionStates =
         new Dictionary<Guid, SessionRunState>();
@@ -114,7 +127,6 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private Guid? _writerSessionId;
     private DateTimeOffset? _writerStartedAt;
     private long _enqueueSequence;
-    private SelectionChangedEvent? _currentSelection;
 
     public LiveDocumentBackend(
         SessionStore store,
@@ -130,11 +142,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         _problemLog = problemLog;
         _sessionOrder = new SessionOrderSnapshot(options.ProjectId, Array.Empty<Guid>(), 0);
         _broker = new SingleWriterBroker(this, ReadSessionOrder, ReadSessionStates);
-        var dataRoot = options.ResolveDataDirectory();
-        _artifactRoot = Path.Combine(dataRoot, "artifacts");
+        _dataRoot = options.ResolveDataDirectory();
+        _artifactRoot = Path.Combine(_dataRoot, "artifacts");
         Directory.CreateDirectory(_artifactRoot);
-        _history = new ManagedHistoryRepository(Path.Combine(dataRoot, "history"));
-        _jobStore = new DurableJobStore(Path.Combine(dataRoot, "live-jobs.db"));
+        _jobStore = new DurableJobStore(Path.Combine(_dataRoot, "live-jobs.db"));
 
         if (!string.IsNullOrWhiteSpace(options.BridgePipe))
         {
@@ -152,7 +163,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             lock (_connectionGate)
             {
-                return _connection is { IsConnected: true } && _target is not null;
+                return _connection is { IsConnected: true } && _targets.Count > 0;
             }
         }
     }
@@ -163,16 +174,36 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             lock (_connectionGate)
             {
-                return _target;
+                return DefaultTargetStateUnsafe()?.Target;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every registered Grasshopper document (durable docKey + current file path) in registration
+    /// order — the first entry is the default target. Empty before the first registration.
+    /// </summary>
+    public IReadOnlyList<RegisteredGrasshopperDocument> RegisteredGrasshopperDocuments
+    {
+        get
+        {
+            lock (_connectionGate)
+            {
+                return _targets.Values
+                    .OrderBy(state => state.Sequence)
+                    .Select(state => new RegisteredGrasshopperDocument(
+                        state.DocKey,
+                        state.Target.GrasshopperPath))
+                    .ToArray();
             }
         }
     }
 
     public int QueueLength => _jobs.Values.Count(entry => IsActive(entry.State));
 
-    public long CurrentRevision => _snapshot?.State.Revision ?? 0;
+    public long CurrentRevision => DefaultTargetStateOrNull()?.Snapshot?.State.Revision ?? 0;
 
-    public string? CurrentGitCommit => _snapshot?.State.GitCommit;
+    public string? CurrentGitCommit => DefaultTargetStateOrNull()?.Snapshot?.State.GitCommit;
 
     public string? WriterSessionId
     {
@@ -202,21 +233,27 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(session);
-        return ReadSnapshotCoreAsync(session.Id, arguments, cancellationToken);
+        return ReadSnapshotCoreAsync(session, arguments, cancellationToken);
     }
 
     public Task<object> ReadSnapshotAsync(
         JsonElement arguments,
         CancellationToken cancellationToken) =>
-        ReadSnapshotCoreAsync(sessionId: null, arguments, cancellationToken);
+        ReadSnapshotCoreAsync(session: null, arguments, cancellationToken);
 
     private async Task<object> ReadSnapshotCoreAsync(
-        Guid? sessionId,
+        SessionRecord? session,
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
         using var documentRead = await _documentGate.EnterReadAsync(cancellationToken)
             .ConfigureAwait(false);
+        // Sessionless callers (dev endpoints) read the default target; session calls route by the
+        // session's Grasshopper-document binding with the shared resolution rule.
+        var targetState = session is null
+            ? RequireDefaultTargetState()
+            : ResolveSessionTargetState(session);
+        var sessionId = session?.Id;
         var scopes = arguments.TryGetProperty("scopes", out var scopeElement) &&
             scopeElement.ValueKind == JsonValueKind.Array
             ? scopeElement.EnumerateArray()
@@ -228,17 +265,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             : Array.Empty<string>();
         var inspectionTasks = scopes
             .Where(scope => !string.Equals(scope, "canvas", StringComparison.OrdinalIgnoreCase))
-            .Select(scope => ReadInspectionScopeAsync(scope, cancellationToken))
+            .Select(scope => ReadInspectionScopeAsync(targetState, scope, cancellationToken))
             .ToArray();
         SnapshotEnvelope? cached;
         lock (_executionGate)
         {
-            cached = _writerSessionId is not null ? _snapshot : null;
+            cached = _writerSessionId is not null ? targetState.Snapshot : null;
         }
 
         var snapshotTask = cached is not null
             ? Task.FromResult(cached)
-            : CaptureSnapshotAsync(force: false, cancellationToken);
+            : CaptureSnapshotAsync(targetState, force: false, cancellationToken);
         await Task.WhenAll(inspectionTasks).ConfigureAwait(false);
         var snapshot = await snapshotTask.ConfigureAwait(false);
         var knownId = arguments.TryGetProperty("knownSnapshotId", out var knownElement)
@@ -260,10 +297,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         };
     }
 
+    // Catalog and Rhino-scene reads are document-agnostic (the component library is per Rhino
+    // process, the Rhino doc is shared across all Grasshopper targets), so they use default-target
+    // resolution: any single registered target, first registered when several are open.
     public Task<object> SearchComponentCatalogAsync(
         JsonElement arguments,
         CancellationToken cancellationToken) =>
         ReadBridgeQueryAsync(
+            RequireDefaultTargetState(),
             BridgeAdapterOwner.CordycepsCanvas,
             "canvas.catalog",
             arguments,
@@ -273,12 +314,28 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         JsonElement arguments,
         CancellationToken cancellationToken) =>
         ReadBridgeQueryAsync(
+            RequireDefaultTargetState(),
             BridgeAdapterOwner.CordycepsRhino,
             "rhino.list",
             arguments,
             cancellationToken);
 
     public Task<object> InspectCanvasOutputsAsync(
+        SessionRecord session,
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return InspectCanvasOutputsCoreAsync(session, arguments, cancellationToken);
+    }
+
+    public Task<object> InspectCanvasOutputsAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken) =>
+        InspectCanvasOutputsCoreAsync(session: null, arguments, cancellationToken);
+
+    private Task<object> InspectCanvasOutputsCoreAsync(
+        SessionRecord? session,
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
@@ -294,7 +351,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     "outputs from change_submit/job_status instead, or retry after the queue drains."
             });
         }
+        var targetState = session is null
+            ? RequireDefaultTargetState()
+            : ResolveSessionTargetState(session);
         return ReadBridgeQueryAsync(
+            targetState,
             BridgeAdapterOwner.CordycepsCanvas,
             "canvas.inspectOutputs",
             arguments,
@@ -302,6 +363,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     }
 
     private async Task<object> ReadBridgeQueryAsync(
+        TargetState targetState,
         BridgeAdapterOwner owner,
         string operation,
         JsonElement arguments,
@@ -309,17 +371,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     {
         using var documentRead = await _documentGate.EnterReadAsync(cancellationToken)
             .ConfigureAwait(false);
-        RequireAdapter(owner);
+        RequireAdapter(targetState, owner);
         var request = new BridgeOperationRequest(
             $"read-{Guid.NewGuid():N}",
             owner,
             operation,
             BridgeOperationAccess.Read,
-            _snapshot?.State.Revision ?? 0,
+            targetState.Snapshot?.State.Revision ?? 0,
             ExpectedFingerprint: null,
             WriterLeaseToken: null,
             arguments.Clone());
-        var response = await SendOperationAsync(request, cancellationToken).ConfigureAwait(false);
+        var response = await SendOperationAsync(targetState.Target, request, cancellationToken)
+            .ConfigureAwait(false);
         return new
         {
             result = response.Result.Clone(),
@@ -329,6 +392,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     }
 
     private async Task<ScopedInspection> ReadInspectionScopeAsync(
+        TargetState targetState,
         string scope,
         CancellationToken cancellationToken)
     {
@@ -357,17 +421,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 JsonSerializer.SerializeToElement(new { objectId }, BridgeProtocol.JsonOptions)),
             _ => throw new InvalidOperationException($"Unsupported snapshot scope owner '{prefix}'.")
         };
-        RequireAdapter(owner);
+        RequireAdapter(targetState, owner);
         var request = new BridgeOperationRequest(
             $"read-{Guid.NewGuid():N}",
             owner,
             operation,
             BridgeOperationAccess.Read,
-            _snapshot?.State.Revision ?? 0,
+            targetState.Snapshot?.State.Revision ?? 0,
             ExpectedFingerprint: null,
             WriterLeaseToken: null,
             arguments);
-        var response = await SendOperationAsync(request, cancellationToken).ConfigureAwait(false);
+        var response = await SendOperationAsync(targetState.Target, request, cancellationToken)
+            .ConfigureAwait(false);
         return new ScopedInspection(
             scope,
             owner,
@@ -409,7 +474,6 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             session.Id,
             changeSet,
             cancellationToken).ConfigureAwait(false);
-        ValidateExpectationCoverage(changeSet, draftOperations);
         var requestHash = ComputeAcceptedRequestHash(
             changeSet,
             expectedSnapshotId,
@@ -442,10 +506,22 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 cancellationToken).ConfigureAwait(false);
         }
 
+        // Session -> Grasshopper document resolution happens once at submit and is frozen into the
+        // job (durably, for restart recovery): the queue and executor never re-derive it. Resolved
+        // AFTER the duplicate fast path above so an idempotent replay (a matching request hash
+        // proves the request is byte-identical to the previously validated one) keeps answering
+        // even when no target is registered — e.g. right after an AgentHost restart.
+        var targetState = ResolveSessionTargetState(session);
+        ValidateExpectationCoverage(
+            changeSet,
+            draftOperations,
+            targetState.Target.GrasshopperDocumentId);
+
         SnapshotEnvelope snapshot;
         using (await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            snapshot = await CaptureSnapshotAsync(force: true, cancellationToken).ConfigureAwait(false);
+            snapshot = await CaptureSnapshotAsync(targetState, force: true, cancellationToken)
+                .ConfigureAwait(false);
         }
         // "gptino:auto" opts out of the whole-document snapshot/revision gate; per-resource auto expectations
         // (resolved at execute time against this session's own last-committed fingerprints) then govern every
@@ -499,7 +575,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     throw;
                 }
 
-                var conflicts = DetectQueuedConflicts(frozenChangeSet);
+                var conflicts = DetectQueuedConflicts(frozenChangeSet, targetState.DocKey);
                 foreach (var queuedConflict in conflicts)
                 {
                     _problemLog?.RecordQueuedConflict(
@@ -520,7 +596,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     summary,
                     idempotencyKey,
                     requestHash,
-                    conflicts);
+                    conflicts,
+                    targetState.DocKey);
                 DurableJobInsertResult insert;
                 try
                 {
@@ -538,7 +615,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                             enqueuedAt,
                             enqueuedAt,
                             enqueuedAt,
-                            requestHash),
+                            requestHash,
+                            targetState.DocKey),
                         cancellationToken).ConfigureAwait(false);
                 }
                 catch
@@ -705,7 +783,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 entry.State,
                 entry.Job.EnqueueSequence,
                 entry.Job.EnqueuedAt,
-                DeriveQueueTarget(entry.Job.ChangeSet)))
+                DeriveQueueTarget(entry.Job.ChangeSet),
+                entry.TargetDoc))
             .Where(item => item.State is
                 JobState.Queued or JobState.Validating or JobState.Executing or JobState.Verifying)
             .OrderBy(item => item.State is JobState.Executing or JobState.Verifying ? 0 : 1)
@@ -813,13 +892,19 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var diagnostics = new List<JobDiagnostic>();
         try
         {
-            var before = await CaptureSnapshotAsync(force: true, execution.Token).ConfigureAwait(false);
+            // The docKey was frozen at submit time; a document closed between enqueue and execution
+            // fails deterministically here (no write happened) with the registered-document listing.
+            var targetState = ResolveJobTargetState(entry.TargetDoc);
+            var before = await CaptureSnapshotAsync(targetState, force: true, execution.Token)
+                .ConfigureAwait(false);
             var preparedOperations = await PreflightFrozenOperationsAsync(
                 entry,
+                targetState,
                 execution.Token).ConfigureAwait(false);
             before = await EnrichSnapshotForConflictValidationAsync(
                 before,
                 job.ChangeSet,
+                targetState,
                 execution.Token).ConfigureAwait(false);
             // Resolve any gptino:auto expectations against live state (self-sequential only) BEFORE conflict
             // validation, then validate and execute the RESOLVED ChangeSet so ValidateAgainstSnapshot and the
@@ -844,12 +929,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
 
             await PreflightBridgePayloadsAsync(
+                targetState,
                 preparedOperations,
                 before.State.Revision,
                 execution.Token).ConfigureAwait(false);
             PreflightPythonSchemas(preparedOperations, before);
 
-            await EnsureHistoryBaselineAsync(before, execution.Token).ConfigureAwait(false);
+            await EnsureHistoryBaselineAsync(targetState, before, execution.Token).ConfigureAwait(false);
             var lease = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
             await SetJobPhaseAsync(
                 entry,
@@ -888,7 +974,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     prepared.Arguments);
                 request.Validate();
                 writeMayHaveChanged |= access == BridgeOperationAccess.Write;
-                var response = await SendOperationAsync(request, execution.Token).ConfigureAwait(false);
+                var response = await SendOperationAsync(targetState.Target, request, execution.Token)
+                    .ConfigureAwait(false);
                 liveChanged |= response.Changed;
                 diagnostics.AddRange(response.Diagnostics.Select(item =>
                     new JobDiagnostic(operation.OperationId, item.Severity, item.Code, item.Message)));
@@ -930,7 +1017,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 "Capturing and verifying the resulting document state.").ConfigureAwait(false);
             _broker.RecordJobState(job.JobId, JobState.Verifying);
             _events.Publish();
-            var after = await CaptureSnapshotAsync(force: true, execution.Token).ConfigureAwait(false);
+            var after = await CaptureSnapshotAsync(targetState, force: true, execution.Token)
+                .ConfigureAwait(false);
             var verificationProblems = Verify(
                 job.ChangeSet,
                 after,
@@ -952,6 +1040,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     entry.Applied = BuildCommittedJobView(job.ChangeSet, after);
                     entry.Sockets = CollectComponentSockets(job.ChangeSet, after);
                     entry.Outputs = await CollectComponentOutputsAsync(
+                        targetState.Target,
                         job.ChangeSet,
                         after,
                         execution.Token).ConfigureAwait(false);
@@ -971,7 +1060,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
             try
             {
-                await CommitHistoryAsync(entry, after, execution.Token).ConfigureAwait(false);
+                await CommitHistoryAsync(entry, targetState, after, execution.Token).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -1001,6 +1090,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 // Same never-demote discipline as the committed view above.
                 entry.Sockets = CollectComponentSockets(job.ChangeSet, after);
                 entry.Outputs = await CollectComponentOutputsAsync(
+                    targetState.Target,
                     job.ChangeSet,
                     after,
                     execution.Token).ConfigureAwait(false);
@@ -1090,13 +1180,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             connection = _connection;
             _connection = null;
-            _target = null;
+            _targets.Clear();
         }
         if (connection is not null)
         {
             await connection.DisposeAsync().ConfigureAwait(false);
         }
-        _snapshotGate.Dispose();
         _historyGate.Dispose();
         _submissionGate.Dispose();
     }
@@ -1179,24 +1268,128 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
-    /// <summary>
-    /// Latest Rhino selection pushed by the plugin, or null before the first push.
-    /// A discovery hint for turn context and the panel — never concurrency control.
-    /// </summary>
-    public SelectionChangedEvent? CurrentSelection => Volatile.Read(ref _currentSelection);
+    // Two selection events whose backend receipt times are at most this far apart are treated as
+    // one plugin fan-out burst (the plugin sends one event per sibling target per settled
+    // selection, well inside this window) when picking which target's selection to surface.
+    private static readonly TimeSpan SelectionBurstWindow = TimeSpan.FromSeconds(2);
 
-    /// <summary>Digest of the last captured snapshot; null before the first capture.</summary>
+    /// <summary>
+    /// The selection of the MOST RECENTLY updated target, or null before the first push. Within
+    /// one plugin fan-out burst (one event per sibling target) the event carrying a non-empty
+    /// Grasshopper canvas selection wins — sibling events share the same Rhino ids, so the one
+    /// that names canvas objects identifies the document the user actually worked in. A
+    /// discovery hint for turn context and the panel — never concurrency control.
+    /// </summary>
+    public SelectionChangedEvent? CurrentSelection
+    {
+        get
+        {
+            lock (_connectionGate)
+            {
+                return LatestSelectionStateUnsafe()?.Selection;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Durable docKey of the document the surfaced <see cref="CurrentSelection"/> belongs to,
+    /// or null when no selection has been observed.
+    /// </summary>
+    public string? CurrentSelectionDocId
+    {
+        get
+        {
+            lock (_connectionGate)
+            {
+                return LatestSelectionStateUnsafe()?.DocKey;
+            }
+        }
+    }
+
+    /// <summary>Digest of the default target's last captured snapshot; null before the first capture.</summary>
     public CanvasDigest? CurrentCanvasDigest
     {
         get
         {
             lock (_connectionGate)
             {
-                return _snapshot is null
-                    ? null
-                    : new CanvasDigest(_snapshot.State.Revision, _snapshot.Canvas.Objects.Count);
+                return CanvasDigestUnsafe(DefaultTargetStateUnsafe());
             }
         }
+    }
+
+    /// <summary>
+    /// The cached selection of one document, routed by docKey with the shared non-throwing
+    /// default rule: null docKey resolves to the only registered target when exactly one is
+    /// open, otherwise (unknown key, or unbound among several) the answer is null.
+    /// </summary>
+    public SelectionChangedEvent? SelectionFor(string? docKey)
+    {
+        lock (_connectionGate)
+        {
+            return ResolveContextTargetUnsafe(docKey)?.Selection;
+        }
+    }
+
+    /// <summary>Per-document canvas digest, with the same non-throwing resolution as <see cref="SelectionFor"/>.</summary>
+    public CanvasDigest? CanvasDigestFor(string? docKey)
+    {
+        lock (_connectionGate)
+        {
+            return CanvasDigestUnsafe(ResolveContextTargetUnsafe(docKey));
+        }
+    }
+
+    private static CanvasDigest? CanvasDigestUnsafe(TargetState? targetState)
+    {
+        var snapshot = targetState?.Snapshot;
+        return snapshot is null
+            ? null
+            : new CanvasDigest(snapshot.State.Revision, snapshot.Canvas.Objects.Count);
+    }
+
+    // Non-throwing docKey resolution for ambient context (selection/digest hints): unlike tool
+    // routing this must never fail a turn, so unknown/ambiguous simply yields nothing.
+    private TargetState? ResolveContextTargetUnsafe(string? docKey)
+    {
+        var normalized = string.IsNullOrWhiteSpace(docKey) ? null : docKey.Trim();
+        if (normalized is null)
+        {
+            return _targets.Count == 1 ? _targets.Values.First() : null;
+        }
+        return _targets.Values.FirstOrDefault(state =>
+            string.Equals(state.DocKey, normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // The most recently updated selection across targets: newest receipt wins; within the
+    // newest burst (see SelectionBurstWindow) an event with canvas objects beats the siblings'
+    // Rhino-only echoes, and among several such events the latest wins.
+    private TargetState? LatestSelectionStateUnsafe()
+    {
+        TargetState? newest = null;
+        foreach (var state in _targets.Values)
+        {
+            if (state.Selection is not null &&
+                (newest is null || state.SelectionSequence > newest.SelectionSequence))
+            {
+                newest = state;
+            }
+        }
+        if (newest is null)
+        {
+            return null;
+        }
+        TargetState? bestWithCanvas = null;
+        foreach (var state in _targets.Values)
+        {
+            if (state.Selection?.GrasshopperObjects is { Count: > 0 } &&
+                newest.SelectionStamp - state.SelectionStamp <= SelectionBurstWindow &&
+                (bestWithCanvas is null || state.SelectionSequence > bestWithCanvas.SelectionSequence))
+            {
+                bestWithCanvas = state;
+            }
+        }
+        return bestWithCanvas ?? newest;
     }
 
     private void CacheSelection(BridgeFrame frame)
@@ -1206,19 +1399,19 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             return;
         }
+        // Selections are cached per registered target; events for unknown targets are dropped.
+        var selection = frame.DeserializePayload<SelectionChangedEvent>();
         lock (_connectionGate)
         {
-            if (_target is null ||
-                !string.Equals(
-                    _target.StableTargetKey(),
-                    target.StableTargetKey(),
-                    StringComparison.Ordinal))
+            if (!_targets.TryGetValue(target.StableTargetKey(), out var state))
             {
                 return;
             }
+            state.Selection = selection;
+            // Receipt order + receipt time drive the "most recently updated" surfaces above.
+            state.SelectionSequence = ++_selectionSequence;
+            state.SelectionStamp = DateTimeOffset.UtcNow;
         }
-        var selection = frame.DeserializePayload<SelectionChangedEvent>();
-        Volatile.Write(ref _currentSelection, selection);
         _events.Publish();
     }
 
@@ -1234,35 +1427,76 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         try
         {
             ValidateRegistration(requestedTarget);
+            var key = requestedTarget.StableTargetKey();
+            TargetState? renamedState = null;
+            string? renamedFromDocKey = null;
             lock (_connectionGate)
             {
-                if (_target is not null &&
-                    !string.Equals(
-                        _target.StableTargetKey(),
-                        requestedTarget.StableTargetKey(),
-                        StringComparison.Ordinal))
+                // Sibling targets (same ProjectId — one Rhino document, N Grasshopper documents)
+                // register side by side; the former one_target_only rejection applied only to a
+                // different ProjectId, which project_mismatch above already covers.
+                if (_targets.TryGetValue(key, out var existing))
                 {
-                    throw new BridgeProtocolException(
-                        "one_target_only",
-                        "This AgentHost is already bound to a different Rhino/Grasshopper pair.");
-                }
-                if (_target is not null && requestedTarget.Generation < _target.Generation)
-                {
-                    throw new BridgeProtocolException(
-                        "stale_generation",
-                        "Document registration generation is older than the current target.");
-                }
+                    if (requestedTarget.Generation < existing.Target.Generation)
+                    {
+                        throw new BridgeProtocolException(
+                            "stale_generation",
+                            "Document registration generation is older than the current target.");
+                    }
 
-                _target = requestedTarget;
-                _availableAdapters = request.AvailableAdapters.ToHashSet();
-                if (_snapshot is not null &&
-                    !string.Equals(
-                        _snapshot.State.Target.Identity,
-                        requestedTarget.Identity,
-                        StringComparison.Ordinal))
-                {
-                    _snapshot = null;
+                    existing.Target = requestedTarget;
+                    // Save As changes the Grasshopper path without changing the stable key; the
+                    // durable docKey is path-derived, so recompute it on every re-registration.
+                    var recomputedDocKey = AgentHostOptions.ComputeDocumentKey(requestedTarget.GrasshopperPath);
+                    if (!string.Equals(recomputedDocKey, existing.DocKey, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // The same live document (unchanged StableTargetKey) now derives a new
+                        // docKey: everything frozen to the old key must follow the rename or it
+                        // resolves "not registered" for a document that never closed. In-memory
+                        // queued/active jobs are re-keyed here, atomically with the DocKey swap
+                        // (ResolveTargetStateByDocKey serializes on this same gate); history and
+                        // durable session/job rows migrate right after the lock.
+                        renamedState = existing;
+                        renamedFromDocKey = existing.DocKey;
+                        foreach (var jobEntry in _jobs.Values)
+                        {
+                            if (IsActive(jobEntry.State) &&
+                                string.Equals(jobEntry.TargetDoc, renamedFromDocKey, StringComparison.OrdinalIgnoreCase))
+                            {
+                                jobEntry.RemapTargetDoc(recomputedDocKey);
+                            }
+                        }
+                    }
+                    existing.DocKey = recomputedDocKey;
+                    existing.Adapters = request.AvailableAdapters.ToHashSet();
+                    if (existing.Snapshot is not null &&
+                        !string.Equals(
+                            existing.Snapshot.State.Target.Identity,
+                            requestedTarget.Identity,
+                            StringComparison.Ordinal))
+                    {
+                        existing.Snapshot = null;
+                    }
                 }
+                else
+                {
+                    _targets[key] = new TargetState(
+                        requestedTarget,
+                        AgentHostOptions.ComputeDocumentKey(requestedTarget.GrasshopperPath),
+                        ++_targetSequence)
+                    {
+                        Adapters = request.AvailableAdapters.ToHashSet()
+                    };
+                }
+            }
+
+            if (renamedState is not null && renamedFromDocKey is not null)
+            {
+                await MigrateRenamedDocumentKeyAsync(
+                    renamedState,
+                    renamedFromDocKey,
+                    renamedState.DocKey,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             await RefreshScheduleAsync(cancellationToken).ConfigureAwait(false);
@@ -1298,6 +1532,72 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
+    /// <summary>
+    /// Follows a Save As rename through every store keyed by the path-derived docKey: the managed
+    /// history folder moves from histories\&lt;oldKey&gt; to histories\&lt;newKey&gt; (continuity —
+    /// no fork on the next launch) and the cached repository handle is dropped so GetHistory
+    /// reopens at the new path; persisted session bindings (sessions.gh_doc) and frozen durable
+    /// jobs (live_jobs.target_doc) are rewritten old→new. In-memory queue entries were already
+    /// re-keyed under _connectionGate by the caller. Best-effort by design: a partial migration
+    /// must never reject the registration itself (the target is live either way).
+    /// </summary>
+    private async Task MigrateRenamedDocumentKeyAsync(
+        TargetState targetState,
+        string oldDocKey,
+        string newDocKey,
+        CancellationToken cancellationToken)
+    {
+        await _historyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var oldRoot = Path.Combine(_dataRoot, "histories", oldDocKey);
+            var newRoot = Path.Combine(_dataRoot, "histories", newDocKey);
+            try
+            {
+                if (Directory.Exists(oldRoot) && !Directory.Exists(newRoot))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(newRoot)!);
+                    Directory.Move(oldRoot, newRoot);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // The rename itself stays valid; the doc re-baselines under the new key instead.
+                _logger.LogWarning(
+                    exception,
+                    "Could not move managed history {OldRoot} to {NewRoot} after a Save As.",
+                    oldRoot,
+                    newRoot);
+            }
+            lock (targetState)
+            {
+                // Drop the cached repository so the next GetHistory reopens under the new docKey.
+                targetState.History = null;
+            }
+        }
+        finally
+        {
+            _historyGate.Release();
+        }
+
+        try
+        {
+            await _store.RemapGrasshopperDocAsync(oldDocKey, newDocKey, cancellationToken)
+                .ConfigureAwait(false);
+            await _jobStore.RemapTargetDocAsync(oldDocKey, newDocKey, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                exception,
+                "Could not remap persisted bindings from docKey {OldDocKey} to {NewDocKey}.",
+                oldDocKey,
+                newDocKey);
+        }
+        _events.Publish();
+    }
+
     private void ValidateRegistration(DocumentRuntime target)
     {
         // Identity is the opaque ProjectId (derived on the plugin side from the stable runtime tuple:
@@ -1316,17 +1616,21 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private void CloseTarget(BridgeFrame frame)
     {
         var target = frame.Target;
+        if (target is null)
+        {
+            return;
+        }
+        var key = target.StableTargetKey();
+        bool removed;
         lock (_connectionGate)
         {
-            if (target is not null && _target is not null &&
-                string.Equals(target.StableTargetKey(), _target.StableTargetKey(), StringComparison.Ordinal))
-            {
-                _target = null;
-                _availableAdapters.Clear();
-                _snapshot = null;
-            }
+            removed = _targets.Remove(key);
         }
-        FailPending(new IOException("The bound document was closed."));
+        if (removed)
+        {
+            // Only calls addressed to the closed document fail; siblings keep running.
+            FailPendingFor(key, new IOException("The bound document was closed."));
+        }
         _events.Publish();
     }
 
@@ -1337,9 +1641,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             if (connection is null || ReferenceEquals(_connection, connection))
             {
                 _connection = null;
-                _target = null;
-                _availableAdapters.Clear();
-                _snapshot = null;
+                _targets.Clear();
             }
         }
         FailPending(new IOException(reason));
@@ -1349,7 +1651,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private void CompletePending(BridgeFrame frame)
     {
         if (frame.CorrelationId is not { } correlationId ||
-            !_pending.TryRemove(correlationId, out var completion))
+            !_pending.TryRemove(correlationId, out var pending))
         {
             _logger.LogWarning("Ignoring bridge response without a known correlation id.");
             return;
@@ -1357,21 +1659,23 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         try
         {
-            var current = RequireTarget();
-            DocumentTargetGuard.RequireCurrent(current, frame.Target!);
+            // Each pending call remembers the exact target it was sent for; a response stamped with
+            // any other target (or generation) fails only that call — the former singleton guard
+            // would misattribute responses once several documents share the pipe.
+            DocumentTargetGuard.RequireCurrent(pending.ExpectedTarget, frame.Target!);
             if (frame.Kind == BridgeMessageKind.Error)
             {
                 var failure = frame.DeserializePayload<BridgeFailure>();
-                completion.TrySetException(new BridgeProtocolException(failure.Code, failure.Message));
+                pending.Completion.TrySetException(new BridgeProtocolException(failure.Code, failure.Message));
             }
             else
             {
-                completion.TrySetResult(frame);
+                pending.Completion.TrySetResult(frame);
             }
         }
         catch (Exception exception)
         {
-            completion.TrySetException(exception);
+            pending.Completion.TrySetException(exception);
         }
     }
 
@@ -1379,35 +1683,53 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     {
         foreach (var pair in _pending.ToArray())
         {
-            if (_pending.TryRemove(pair.Key, out var completion))
+            if (_pending.TryRemove(pair.Key, out var pending))
             {
-                completion.TrySetException(exception);
+                pending.Completion.TrySetException(exception);
+            }
+        }
+    }
+
+    private void FailPendingFor(string targetKey, Exception exception)
+    {
+        foreach (var pair in _pending.ToArray())
+        {
+            if (string.Equals(pair.Value.ExpectedTargetKey, targetKey, StringComparison.Ordinal) &&
+                _pending.TryRemove(pair.Key, out var pending))
+            {
+                pending.Completion.TrySetException(exception);
             }
         }
     }
 
     private async Task<BridgeFrame> SendRequestAsync(
+        DocumentRuntime target,
         string payloadType,
         object payload,
         CancellationToken cancellationToken)
     {
         DocumentPipeConnection connection;
-        DocumentRuntime target;
+        DocumentRuntime current;
         lock (_connectionGate)
         {
             connection = _connection is { IsConnected: true } active
                 ? active
                 : throw new InvalidOperationException("The Rhino/Grasshopper bridge is not connected.");
-            target = _target ?? throw new InvalidOperationException("No explicit document target is registered.");
+            // Stamp the freshest registered instance for this key (a re-registration may have
+            // bumped Generation or renamed paths since the caller resolved its target).
+            current = _targets.TryGetValue(target.StableTargetKey(), out var state)
+                ? state.Target
+                : throw new InvalidOperationException("No explicit document target is registered.");
         }
 
         var frame = BridgeFrame.Create(
             BridgeMessageKind.Request,
             payloadType,
             payload,
-            target);
+            current);
         var completion = new TaskCompletionSource<BridgeFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_pending.TryAdd(frame.MessageId, completion))
+        var pending = new PendingBridgeRequest(completion, current, current.StableTargetKey());
+        if (!_pending.TryAdd(frame.MessageId, pending))
         {
             throw new InvalidOperationException("Bridge request identifier collision.");
         }
@@ -1424,10 +1746,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     }
 
     private async Task<BridgeOperationResponse> SendOperationAsync(
+        DocumentRuntime target,
         BridgeOperationRequest request,
         CancellationToken cancellationToken)
     {
         var frame = await SendRequestAsync(
+            target,
             BridgeMessageTypes.OperationRequest,
             request,
             cancellationToken).ConfigureAwait(false);
@@ -1448,34 +1772,36 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     }
 
     private async Task<SnapshotEnvelope> CaptureSnapshotAsync(
+        TargetState targetState,
         bool force,
         CancellationToken cancellationToken)
     {
-        if (!force && _snapshot is { } existing &&
+        if (!force && targetState.Snapshot is { } existing &&
             DateTimeOffset.UtcNow - existing.State.CapturedAt < TimeSpan.FromMilliseconds(250))
         {
             return existing;
         }
 
-        await _snapshotGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await targetState.SnapshotGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!force && _snapshot is { } cached &&
+            if (!force && targetState.Snapshot is { } cached &&
                 DateTimeOffset.UtcNow - cached.State.CapturedAt < TimeSpan.FromMilliseconds(250))
             {
                 return cached;
             }
 
-            RequireAdapter(BridgeAdapterOwner.CordycepsCanvas);
-            var currentTarget = RequireTarget();
+            RequireAdapter(targetState, BridgeAdapterOwner.CordycepsCanvas);
+            var currentTarget = targetState.Target;
             var request = BridgeOperationRequest.Create(
                 $"snapshot-{Guid.NewGuid():N}",
                 BridgeAdapterOwner.CordycepsCanvas,
                 "canvas.snapshot",
                 BridgeOperationAccess.Read,
-                _snapshot?.State.Revision ?? 0,
+                targetState.Snapshot?.State.Revision ?? 0,
                 new { });
-            var response = await SendOperationAsync(request, cancellationToken).ConfigureAwait(false);
+            var response = await SendOperationAsync(currentTarget, request, cancellationToken)
+                .ConfigureAwait(false);
             var canvas = response.Result.Deserialize<CanvasSnapshot>(BridgeProtocol.JsonOptions)
                 ?? throw new BridgeProtocolException("snapshot_payload", "Canvas snapshot payload was null.");
             if (canvas.GrasshopperDocumentId != currentTarget.GrasshopperDocumentId)
@@ -1485,7 +1811,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     "Canvas snapshot belongs to a different Grasshopper document.");
             }
 
-            var previous = _snapshot;
+            var previous = targetState.Snapshot;
             var sameTarget = previous is not null &&
                 string.Equals(previous.State.Target.Identity, currentTarget.Identity, StringComparison.Ordinal);
             var sameFingerprint = sameTarget &&
@@ -1501,13 +1827,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             var state = new StateSnapshot(
                 currentTarget.ProjectId,
                 revision,
-                _history.ReadHead(),
+                GetHistory(targetState).ReadHead(),
                 DateTimeOffset.UtcNow,
                 currentTarget,
                 BuildResources(currentTarget, canvas));
             var snapshotId = BuildSnapshotId(state, canvas.DocumentFingerprint);
             var envelope = new SnapshotEnvelope(snapshotId, state, canvas);
-            _snapshot = envelope;
+            targetState.Snapshot = envelope;
             if (!sameFingerprint)
             {
                 _events.Publish();
@@ -1516,7 +1842,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         finally
         {
-            _snapshotGate.Release();
+            targetState.SnapshotGate.Release();
         }
     }
 
@@ -1526,8 +1852,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     {
         var resources = new List<ResourceFingerprint>
         {
+            // The whole-document resource is addressed by the runtime Grasshopper DocumentID (an
+            // in-memory scope), never by the now Rhino-scoped ProjectId, which would collide the
+            // Document rows of sibling documents in the snapshot and the ledger.
             new(
-                new ResourceAddress(ResourceKind.Document, target.ProjectId.ToString("N")),
+                new ResourceAddress(ResourceKind.Document, target.GrasshopperDocumentId.ToString("D")),
                 canvas.DocumentFingerprint)
         };
         foreach (var item in canvas.Objects)
@@ -1576,6 +1905,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private async Task<SnapshotEnvelope> EnrichSnapshotForConflictValidationAsync(
         SnapshotEnvelope snapshot,
         ChangeSet changeSet,
+        TargetState targetState,
         CancellationToken cancellationToken)
     {
         var expectations = changeSet.ReadSet.Concat(changeSet.WriteSet).Distinct().ToArray();
@@ -1601,7 +1931,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var inspections = await Task.WhenAll(scoped
             .Select(item => item.Scope!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(scope => ReadInspectionScopeAsync(scope, cancellationToken))).ConfigureAwait(false);
+            .Select(scope => ReadInspectionScopeAsync(targetState, scope, cancellationToken))).ConfigureAwait(false);
         var byScope = inspections.ToDictionary(item => item.Scope, StringComparer.OrdinalIgnoreCase);
         var resources = snapshot.State.Resources.ToList();
         foreach (var item in scoped)
@@ -1617,6 +1947,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         foreach (var expectation in rhinoAbsenceChecks)
         {
             var existing = await ReadRhinoObjectForAbsenceCheckAsync(
+                targetState,
                 expectation.Resource,
                 cancellationToken).ConfigureAwait(false);
             if (existing is not null)
@@ -1628,23 +1959,25 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     }
 
     private async Task<ResourceFingerprint?> ReadRhinoObjectForAbsenceCheckAsync(
+        TargetState targetState,
         ResourceAddress resource,
         CancellationToken cancellationToken)
     {
         var objectId = Guid.Parse(resource.Id);
-        RequireAdapter(BridgeAdapterOwner.CordycepsRhino);
+        RequireAdapter(targetState, BridgeAdapterOwner.CordycepsRhino);
         var request = new BridgeOperationRequest(
             $"absence-{Guid.NewGuid():N}",
             BridgeAdapterOwner.CordycepsRhino,
             "rhino.list",
             BridgeOperationAccess.Read,
-            _snapshot?.State.Revision ?? 0,
+            targetState.Snapshot?.State.Revision ?? 0,
             ExpectedFingerprint: null,
             WriterLeaseToken: null,
             JsonSerializer.SerializeToElement(
                 new RhinoListObjectsRequest(Limit: 1, ObjectId: objectId),
                 BridgeProtocol.JsonOptions));
-        var response = await SendOperationAsync(request, cancellationToken).ConfigureAwait(false);
+        var response = await SendOperationAsync(targetState.Target, request, cancellationToken)
+            .ConfigureAwait(false);
         var result = response.Result.Deserialize<RhinoSceneListResult>(BridgeProtocol.JsonOptions)
             ?? throw new BridgeProtocolException(
                 "rhino_absence_payload",
@@ -1669,15 +2002,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     };
 
     private async Task EnsureHistoryBaselineAsync(
+        TargetState targetState,
         SnapshotEnvelope snapshot,
         CancellationToken cancellationToken)
     {
         await _historyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_history.IsInitialized)
+            var history = GetHistory(targetState);
+            if (history.IsInitialized)
             {
-                var verification = _history.Verify();
+                var verification = history.Verify();
                 if (!verification.IsValid)
                 {
                     throw new InvalidOperationException(
@@ -1686,7 +2021,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 return;
             }
 
-            await _history.InitializeBaselineAsync(
+            await history.InitializeBaselineAsync(
                 new Dictionary<string, ReadOnlyMemory<byte>>
                 {
                     ["state/snapshot.json"] = JsonSerializer.SerializeToUtf8Bytes(
@@ -1707,15 +2042,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private async Task CommitHistoryAsync(
         LiveJobEntry entry,
+        TargetState targetState,
         SnapshotEnvelope snapshot,
         CancellationToken cancellationToken)
     {
         await _historyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var history = GetHistory(targetState);
             var changeJson = JsonSerializer.Serialize(entry.Job.ChangeSet, BridgeProtocol.JsonOptions);
             var request = HistoryCommitRequest.Create(
-                _history.ReadHead(),
+                history.ReadHead(),
                 new Dictionary<string, string>
                 {
                     ["state/snapshot.json"] = JsonSerializer.Serialize(snapshot, BridgeProtocol.JsonOptions),
@@ -1730,9 +2067,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     Sha256(changeJson),
                     entry.Session.ModelProfile,
                     entry.Summary));
-            var result = await _history.CommitAsync(request, cancellationToken).ConfigureAwait(false);
+            var result = await history.CommitAsync(request, cancellationToken).ConfigureAwait(false);
             var committedState = snapshot.State with { GitCommit = result.Head };
-            _snapshot = snapshot with { State = committedState };
+            targetState.Snapshot = snapshot with { State = committedState };
         }
         finally
         {
@@ -1760,6 +2097,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private async Task<IReadOnlyList<PreparedOperation>> PreflightFrozenOperationsAsync(
         LiveJobEntry entry,
+        TargetState targetState,
         CancellationToken cancellationToken)
     {
         var operations = entry.Job.ChangeSet.Operations;
@@ -1804,15 +2142,19 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             prepared.Add(PrepareOperation(operation, bytes));
         }
 
-        ValidateExpectationCoverage(entry.Job.ChangeSet, prepared);
+        ValidateExpectationCoverage(
+            entry.Job.ChangeSet,
+            prepared,
+            targetState.Target.GrasshopperDocumentId);
         foreach (var owner in prepared.Select(item => item.Owner).Distinct())
         {
-            RequireAdapter(owner);
+            RequireAdapter(targetState, owner);
         }
         return prepared;
     }
 
     private async Task PreflightBridgePayloadsAsync(
+        TargetState targetState,
         IReadOnlyList<PreparedOperation> prepared,
         long snapshotRevision,
         CancellationToken cancellationToken)
@@ -1833,7 +2175,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 WriterLeaseToken: null,
                 item.Arguments.Clone());
             request.Validate();
-            var response = await SendOperationAsync(request, cancellationToken).ConfigureAwait(false);
+            var response = await SendOperationAsync(targetState.Target, request, cancellationToken)
+                .ConfigureAwait(false);
             var error = response.Diagnostics.FirstOrDefault(diagnostic =>
                 diagnostic.Severity == BridgeDiagnosticSeverity.Error);
             if (response.Changed || error is not null)
@@ -3003,15 +3346,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         return value;
     }
 
-    private void RequireAdapter(BridgeAdapterOwner owner)
+    private void RequireAdapter(TargetState targetState, BridgeAdapterOwner owner)
     {
         lock (_connectionGate)
         {
-            if (_target is null || _connection is not { IsConnected: true })
+            if (_targets.Count == 0 || _connection is not { IsConnected: true })
             {
                 throw new InvalidOperationException("The Rhino/Grasshopper bridge is not connected.");
             }
-            if (!_availableAdapters.Contains(owner))
+            if (!targetState.Adapters.Contains(owner))
             {
                 throw new InvalidOperationException(
                     $"The bound document does not advertise adapter '{owner}'.");
@@ -3019,11 +3362,93 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
-    private DocumentRuntime RequireTarget()
+    // The DEFAULT target: the only registered target when exactly one Grasshopper document is
+    // open (today's single-document behavior, byte-for-byte), otherwise the first registered.
+    private TargetState? DefaultTargetStateUnsafe() =>
+        _targets.Count == 0 ? null : _targets.Values.MinBy(state => state.Sequence);
+
+    private TargetState? DefaultTargetStateOrNull()
     {
         lock (_connectionGate)
         {
-            return _target ?? throw new InvalidOperationException("No explicit document target is registered.");
+            return DefaultTargetStateUnsafe();
+        }
+    }
+
+    private TargetState RequireDefaultTargetState()
+    {
+        lock (_connectionGate)
+        {
+            return DefaultTargetStateUnsafe()
+                ?? throw new InvalidOperationException("No explicit document target is registered.");
+        }
+    }
+
+    /// <summary>
+    /// Shared session-to-Grasshopper-document resolution rule: a NULL binding resolves to the only
+    /// registered target when exactly one document is open; a set binding must match a registered
+    /// docKey; every other combination fails with an actionable listing of the registered
+    /// documents (file name + docKey) so the caller can bind or rebind the session.
+    /// </summary>
+    private TargetState ResolveSessionTargetState(SessionRecord session) =>
+        ResolveTargetStateByDocKey(
+            string.IsNullOrWhiteSpace(session.GrasshopperDoc) ? null : session.GrasshopperDoc.Trim(),
+            $"session '{session.Name}'");
+
+    private TargetState ResolveJobTargetState(string? frozenDocKey) =>
+        ResolveTargetStateByDocKey(
+            string.IsNullOrWhiteSpace(frozenDocKey) ? null : frozenDocKey.Trim(),
+            "this job");
+
+    private TargetState ResolveTargetStateByDocKey(string? docKey, string subject)
+    {
+        lock (_connectionGate)
+        {
+            if (_targets.Count == 0)
+            {
+                throw new InvalidOperationException("No explicit document target is registered.");
+            }
+            if (docKey is null)
+            {
+                if (_targets.Count == 1)
+                {
+                    return _targets.Values.First();
+                }
+                throw new InvalidOperationException(
+                    $"{char.ToUpperInvariant(subject[0])}{subject[1..]} is not bound to a Grasshopper document and " +
+                    $"{_targets.Count} are registered. Bind the session to one document (or create sessions " +
+                    $"with a grasshopperDoc). Registered documents: {DescribeRegisteredDocumentsUnsafe()}.");
+            }
+            var match = _targets.Values.FirstOrDefault(state =>
+                string.Equals(state.DocKey, docKey, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+            {
+                return match;
+            }
+            throw new InvalidOperationException(
+                $"{char.ToUpperInvariant(subject[0])}{subject[1..]} is bound to Grasshopper document " +
+                $"'{docKey}', which is not registered. Registered documents: " +
+                $"{DescribeRegisteredDocumentsUnsafe()}.");
+        }
+    }
+
+    private string DescribeRegisteredDocumentsUnsafe() =>
+        _targets.Count == 0
+            ? "none"
+            : string.Join(
+                ", ",
+                _targets.Values
+                    .OrderBy(state => state.Sequence)
+                    .Select(state =>
+                        $"{Path.GetFileName(state.Target.GrasshopperPath)} (docKey {state.DocKey})"));
+
+    /// <summary>Lazily created per-document managed history under dataRoot\histories\&lt;docKey&gt;.</summary>
+    private ManagedHistoryRepository GetHistory(TargetState targetState)
+    {
+        lock (targetState)
+        {
+            return targetState.History ??= new ManagedHistoryRepository(
+                Path.Combine(_dataRoot, "histories", targetState.DocKey));
         }
     }
 
@@ -3192,10 +3617,19 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         return problems;
     }
 
-    private IReadOnlyList<QueuedConflict> DetectQueuedConflicts(ChangeSet changeSet)
+    private IReadOnlyList<QueuedConflict> DetectQueuedConflicts(ChangeSet changeSet, string targetDocKey)
     {
+        // Only jobs writing the SAME Grasshopper document can genuinely contend: sibling docs
+        // share the Rhino-scoped ProjectId, so without this scope an Exclusive/overlap check
+        // would flag phantom conflicts across unrelated documents. A null frozen TargetDoc is a
+        // legacy/recovered row, which resolves to the default document at execute time.
+        var defaultDocKey = DefaultTargetStateOrNull()?.DocKey;
         return _jobs.Values
             .Where(entry => IsActive(entry.State))
+            .Where(entry => string.Equals(
+                entry.TargetDoc ?? defaultDocKey,
+                targetDocKey,
+                StringComparison.OrdinalIgnoreCase))
             .SelectMany(entry => _conflictDetector.Detect(changeSet, entry.Job.ChangeSet)
                 .Select(conflict => new QueuedConflict(entry.Job.JobId, conflict)))
             .ToArray();
@@ -3266,7 +3700,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             record.Summary,
             record.IdempotencyKey,
             record.RequestHash,
-            Array.Empty<QueuedConflict>());
+            Array.Empty<QueuedConflict>(),
+            record.TargetDoc);
         entry.SetPhase(record.State, record.Phase, record.Message, record.UpdatedAt);
         // Restored entries are always terminal (RecoveryRequired); resolve the completion task so a
         // waiting duplicate submission returns immediately instead of blocking on a job that will
@@ -3557,6 +3992,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             parameter.Access.ToString().ToLowerInvariant());
 
     private async Task<IReadOnlyList<JobComponentOutputs>> CollectComponentOutputsAsync(
+        DocumentRuntime target,
         ChangeSet changeSet,
         SnapshotEnvelope after,
         CancellationToken cancellationToken)
@@ -3595,7 +4031,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     JsonSerializer.SerializeToElement(
                         new { objectId = componentId },
                         BridgeProtocol.JsonOptions));
-                var response = await SendOperationAsync(request, cancellationToken).ConfigureAwait(false);
+                var response = await SendOperationAsync(target, request, cancellationToken)
+                    .ConfigureAwait(false);
                 outputs.Add(new JobComponentOutputs(componentId, response.Result.Clone()));
             }
             catch (OperationCanceledException)
@@ -3806,11 +4243,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private static void ValidateExpectationCoverage(
         ChangeSet changeSet,
-        IReadOnlyList<PreparedOperation> prepared)
+        IReadOnlyList<PreparedOperation> prepared,
+        Guid grasshopperDocumentId)
     {
         foreach (var expectation in changeSet.ReadSet.Concat(changeSet.WriteSet))
         {
-            ValidateResourceAddress(expectation.Resource, changeSet.ProjectId);
+            ValidateResourceAddress(expectation.Resource, grasshopperDocumentId);
             if (string.IsNullOrWhiteSpace(expectation.ExpectedFingerprint))
             {
                 throw new InvalidOperationException("Resource expectations require a fingerprint.");
@@ -3829,7 +4267,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             var operation = preparedOperation.Operation;
             foreach (var resource in operation.Reads)
             {
-                ValidateResourceAddress(resource, changeSet.ProjectId);
+                ValidateResourceAddress(resource, grasshopperDocumentId);
                 var expectation = FindExpectation(changeSet.ReadSet, resource);
                 if (expectation is null || expectation.ExpectsAbsence)
                 {
@@ -3840,7 +4278,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
             foreach (var resource in operation.Writes)
             {
-                ValidateResourceAddress(resource, changeSet.ProjectId);
+                ValidateResourceAddress(resource, grasshopperDocumentId);
                 if (FindExpectation(changeSet.WriteSet, resource) is null)
                 {
                     throw new InvalidOperationException(
@@ -3867,7 +4305,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         foreach (var predicate in changeSet.AcceptancePredicates.Where(item => item.Resource is not null))
         {
-            ValidateResourceAddress(predicate.Resource!, changeSet.ProjectId);
+            ValidateResourceAddress(predicate.Resource!, grasshopperDocumentId);
             if (!prepared.SelectMany(item => item.Operation.Reads.Concat(item.Operation.Writes))
                     .Any(resource => ExactDomainOverlaps(resource, predicate.Resource!)))
             {
@@ -3877,7 +4315,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         foreach (var beforeImage in changeSet.RollbackBeforeImages)
         {
-            ValidateResourceAddress(beforeImage.Resource, changeSet.ProjectId);
+            ValidateResourceAddress(beforeImage.Resource, grasshopperDocumentId);
             if (string.IsNullOrWhiteSpace(beforeImage.ArtifactReference) ||
                 string.IsNullOrWhiteSpace(beforeImage.Fingerprint) ||
                 !prepared.SelectMany(item => item.Operation.Writes)
@@ -4173,7 +4611,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             ResourceKind.GrasshopperComponentValue);
     }
 
-    private static void ValidateResourceAddress(ResourceAddress resource, Guid projectId)
+    private static void ValidateResourceAddress(ResourceAddress resource, Guid grasshopperDocumentId)
     {
         if (string.IsNullOrWhiteSpace(resource.Id) || resource.Field != "*")
         {
@@ -4183,10 +4621,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         if (resource.Kind == ResourceKind.Document)
         {
-            if (!string.Equals(resource.Id, projectId.ToString("N"), StringComparison.Ordinal))
+            // The whole-document resource is scoped to the bound Grasshopper document (its runtime
+            // DocumentID), not the ProjectId, which is Rhino-scoped and shared by sibling documents.
+            if (!string.Equals(
+                    resource.Id,
+                    grasshopperDocumentId.ToString("D"),
+                    StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    "Document resource ids must be the canonical bound project UUID in N format.");
+                    "Document resource ids must be the bound Grasshopper document UUID in D format.");
             }
             return;
         }
@@ -4530,6 +4973,49 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         StateSnapshot State,
         CanvasSnapshot Canvas);
 
+    /// <summary>
+    /// Per-registered-Grasshopper-document state: the live target (freshest registration), its
+    /// advertised adapters, the per-document snapshot cache + capture gate, the last selection
+    /// event, and the lazily created per-docKey managed history. Membership and Target/Adapters/
+    /// DocKey mutations happen under _connectionGate; Snapshot follows the former singleton
+    /// field's benign-race discipline; Selection is written under _connectionGate.
+    /// </summary>
+    private sealed class TargetState(DocumentRuntime target, string docKey, long sequence)
+    {
+        public DocumentRuntime Target { get; set; } = target;
+
+        /// <summary>Durable path-derived docKey; recomputed on re-registration (Save As).</summary>
+        public string DocKey { get; set; } = docKey;
+
+        /// <summary>Registration order; the smallest live sequence is the DEFAULT target.</summary>
+        public long Sequence { get; } = sequence;
+
+        public HashSet<BridgeAdapterOwner> Adapters { get; set; } = [];
+
+        public SnapshotEnvelope? Snapshot { get; set; }
+
+        public SemaphoreSlim SnapshotGate { get; } = new(1, 1);
+
+        public SelectionChangedEvent? Selection { get; set; }
+
+        /// <summary>Backend receipt ordinal of <see cref="Selection"/>; written under _connectionGate.</summary>
+        public long SelectionSequence { get; set; }
+
+        /// <summary>Backend receipt time of <see cref="Selection"/>; written under _connectionGate.</summary>
+        public DateTimeOffset SelectionStamp { get; set; }
+
+        public ManagedHistoryRepository? History { get; set; }
+    }
+
+    /// <summary>
+    /// A bridge call awaiting its response, remembering the exact target it was stamped with so
+    /// the response guard and per-document failure paths never cross documents.
+    /// </summary>
+    private sealed record PendingBridgeRequest(
+        TaskCompletionSource<BridgeFrame> Completion,
+        DocumentRuntime ExpectedTarget,
+        string ExpectedTargetKey);
+
     private sealed record ScopedInspection(
         string Scope,
         BridgeAdapterOwner Owner,
@@ -4546,7 +5032,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         string summary,
         string idempotencyKey,
         string requestHash,
-        IReadOnlyList<QueuedConflict> conflicts)
+        IReadOnlyList<QueuedConflict> conflicts,
+        string? targetDoc = null)
     {
         private readonly object _gate = new();
         private readonly TaskCompletionSource<JobExecutionResult> _completion =
@@ -4562,6 +5049,19 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         public string IdempotencyKey { get; } = idempotencyKey;
         public string RequestHash { get; } = requestHash;
         public IReadOnlyList<QueuedConflict> Conflicts { get; } = conflicts;
+
+        private string? _targetDoc = targetDoc;
+
+        /// <summary>
+        /// Durable docKey of the Grasshopper document this job was resolved to at submit time;
+        /// null on legacy/recovered rows (default-document resolution at execute time).
+        /// Re-keyed in place (under the backend's _connectionGate) when a Save As
+        /// re-registration recomputes the target's docKey, so queued jobs keep resolving.
+        /// </summary>
+        public string? TargetDoc => Volatile.Read(ref _targetDoc);
+
+        /// <summary>Follows a Save As docKey rename; never changes which document the job targets.</summary>
+        public void RemapTargetDoc(string? targetDoc) => Volatile.Write(ref _targetDoc, targetDoc);
 
         /// <summary>
         /// Written once when the job goes Blocked: the structured conflicts that stopped it, so

@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArchiveBrowser } from "./components/ArchiveBrowser";
 import { ChatPane } from "./components/ChatPane";
 import { Icon } from "./components/Icons";
 import { SessionCanvas } from "./components/SessionCanvas";
 import { useRuntime } from "./hooks/useRuntime";
-import type { CodexAuth } from "./types";
+import type { CodexAuth, GrasshopperDocInfo } from "./types";
 import "./styles.css";
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
@@ -50,11 +50,99 @@ function LlmAuthIndicator({ auth, busy, onLogin }: { auth: CodexAuth; busy: bool
   );
 }
 
+// Popover replacing the old window.prompt for naming a new session. When more
+// than one GH doc is registered it also asks which document the session should
+// write to; with zero or one doc the doc list is hidden and behavior matches
+// the old name-only prompt.
+function NewSessionPopover({
+  suggestedName,
+  docs,
+  defaultDocId,
+  busy,
+  onCreate,
+}: {
+  suggestedName: string;
+  docs: GrasshopperDocInfo[];
+  defaultDocId?: string;
+  busy: boolean;
+  onCreate(name: string, grasshopperDoc?: string): void;
+}) {
+  const [name, setName] = useState(suggestedName);
+  const [docId, setDocId] = useState<string | undefined>(
+    docs.some((doc) => doc.id === defaultDocId) ? defaultDocId : docs[0]?.id,
+  );
+  const showDocs = docs.length > 1;
+
+  return (
+    <form
+      className="new-session-popover"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const trimmed = name.trim();
+        if (trimmed) onCreate(trimmed, showDocs ? docId : undefined);
+      }}
+    >
+      <label className="popover-label" htmlFor="new-session-name">
+        Session name
+      </label>
+      <input
+        id="new-session-name"
+        type="text"
+        autoFocus
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        onFocus={(event) => event.target.select()}
+      />
+      {showDocs ? (
+        <fieldset className="popover-docs">
+          <legend className="popover-label">Grasshopper document</legend>
+          {docs.map((doc) => (
+            <label className="popover-doc" key={doc.id} title={doc.file}>
+              <input
+                type="radio"
+                name="new-session-doc"
+                checked={docId === doc.id}
+                onChange={() => setDocId(doc.id)}
+              />
+              <span>{shortFile(doc.file)}</span>
+            </label>
+          ))}
+        </fieldset>
+      ) : null}
+      <button type="submit" className="popover-create" disabled={busy || !name.trim()}>
+        Create session
+      </button>
+    </form>
+  );
+}
+
 export default function App() {
   const { runtime, models, loading, error, demo, busyActions, actions } = useRuntime();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const newSessionAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  // Esc or a press outside the + Session button / popover closes it.
+  useEffect(() => {
+    if (!newSessionOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const anchor = newSessionAnchorRef.current;
+      if (anchor && event.target instanceof Node && !anchor.contains(event.target)) {
+        setNewSessionOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNewSessionOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [newSessionOpen]);
 
   useEffect(() => {
     if (!runtime?.sessions.length) return;
@@ -92,6 +180,8 @@ export default function App() {
   }
 
   const selected = runtime.sessions.find(({ id }) => id === selectedId);
+  const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
+  const multiGh = ghDocs != null && ghDocs.length > 1;
 
   return (
     <div className="app-shell">
@@ -106,7 +196,11 @@ export default function App() {
           <div className="file-pair">
             <span title={runtime.rhinoFile}>R <b>{shortFile(runtime.rhinoFile)}</b></span>
             <Icon name="chevron" />
-            <span title={runtime.grasshopperFile}>GH <b>{shortFile(runtime.grasshopperFile)}</b></span>
+            {multiGh ? (
+              <span title={ghDocs.map(({ file }) => file).join("\n")}>GH <b>×{ghDocs.length}</b></span>
+            ) : (
+              <span title={runtime.grasshopperFile}>GH <b>{shortFile(runtime.grasshopperFile)}</b></span>
+            )}
             {runtime.contextFolder ? (
               <button
                 type="button"
@@ -227,18 +321,29 @@ export default function App() {
           onPauseToggle={(id, paused) => void actions.pauseSession(id, paused)}
         />
         <div className="canvas-toolbar">
-          <button
-            type="button"
-            className="new-session-button"
-            onClick={() => {
-              const suggested = `Session ${runtime.sessions.length + 1}`;
-              const name = window.prompt("Name this GPTino session", suggested)?.trim();
-              if (name) void actions.createSession(name);
-            }}
-            disabled={busyActions.has("create-session")}
-          >
-            <span>+</span> Session
-          </button>
+          <div className="new-session-anchor" ref={newSessionAnchorRef}>
+            <button
+              type="button"
+              className="new-session-button"
+              onClick={() => setNewSessionOpen((open) => !open)}
+              disabled={busyActions.has("create-session")}
+              aria-expanded={newSessionOpen}
+            >
+              <span>+</span> Session
+            </button>
+            {newSessionOpen ? (
+              <NewSessionPopover
+                suggestedName={`Session ${runtime.sessions.length + 1}`}
+                docs={ghDocs ?? []}
+                defaultDocId={selected?.boundGrasshopperDocId ?? undefined}
+                busy={busyActions.has("create-session")}
+                onCreate={(name, grasshopperDoc) => {
+                  setNewSessionOpen(false);
+                  void actions.createSession(name, grasshopperDoc);
+                }}
+              />
+            ) : null}
+          </div>
           <div className="canvas-global-actions">
             <button
               type="button"
@@ -269,10 +374,12 @@ export default function App() {
           session={selected}
           conflicts={runtime.conflicts}
           models={models}
+          grasshopperDocs={ghDocs}
           busyActions={busyActions}
           onMode={(mode) => selected && void actions.setMode(selected.id, mode)}
           onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
           onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
+          onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
           onSend={(content, attachments) => selected ? actions.sendMessage(selected.id, content, attachments) : undefined}
         />
       </main>

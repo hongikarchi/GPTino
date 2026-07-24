@@ -11,6 +11,7 @@ import {
 import type {
   ChatMessage,
   GptinoSession,
+  GrasshopperDocInfo,
   MessageAttachment,
   ModelInfo,
   ModelProfile,
@@ -26,10 +27,14 @@ interface ChatPaneProps {
   session: GptinoSession | undefined;
   conflicts: RuntimeConflict[];
   models: ModelInfo[];
+  /** Registered GH docs; the target selector renders when more than one exists OR the session carries a (possibly stale) binding. */
+  grasshopperDocs?: GrasshopperDocInfo[] | null;
   busyActions: Set<string>;
   onMode(mode: SessionMode): void;
   onModel(profile: ModelProfile): void;
   onPinModel(model: string | null): void;
+  /** Bind the session's writes to a GH doc (docKey) or unbind with null. */
+  onTarget(grasshopperDoc: string | null): void;
   /** Resolves false when the send failed (the composer restores its draft). */
   onSend(content: string, attachments?: MessageAttachment[]): Promise<boolean | void> | void;
 }
@@ -166,7 +171,9 @@ function UsageChip({ usage }: { usage: SessionUsage }) {
   );
 }
 
-export function ChatPane({ session, conflicts, models, busyActions, onMode, onModel, onPinModel, onSend }: ChatPaneProps) {
+const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onTarget, onSend }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -436,6 +443,37 @@ export function ChatPane({ session, conflicts, models, busyActions, onMode, onMo
                     {model.displayName || model.model}
                   </option>
                 ))}
+              </select>
+            </div>
+          ) : null}
+          {(grasshopperDocs && grasshopperDocs.length > 1) || session.boundGrasshopperDocId != null ? (
+            // Also rendered when the bound doc is no longer registered (even with 0-1 docs
+            // left): the selector is the panel's only unbind path, so hiding it would strand
+            // the session on a binding that fails every submit.
+            <div className="quality-control">
+              <label htmlFor="session-target">Target</label>
+              <select
+                id="session-target"
+                value={session.boundGrasshopperDocId ?? ""}
+                onChange={(event) => onTarget(event.target.value || null)}
+                disabled={busyActions.has(`target:${session.id}`)}
+                title="Bind this session's writes to one Grasshopper document. Unbound sessions must pick a document before submitting changes."
+              >
+                <option value="">Unbound</option>
+                {(grasshopperDocs ?? []).map((doc) => (
+                  <option value={doc.id} key={doc.id} title={doc.file}>
+                    {shortFile(doc.file)}
+                  </option>
+                ))}
+                {session.boundGrasshopperDocId != null &&
+                !(grasshopperDocs ?? []).some((doc) => doc.id === session.boundGrasshopperDocId) ? (
+                  // A disabled option carrying the stale value keeps the controlled select from
+                  // rendering blank and names the broken binding; the user can switch to
+                  // Unbound or a live document.
+                  <option value={session.boundGrasshopperDocId} disabled>
+                    Missing document ({session.boundGrasshopperDocId})
+                  </option>
+                ) : null}
               </select>
             </div>
           ) : null}

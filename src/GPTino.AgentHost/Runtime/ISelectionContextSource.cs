@@ -15,4 +15,15 @@ public interface ISelectionContextSource
     SelectionChangedEvent? CurrentSelection { get; }
 
     CanvasDigest? CurrentCanvasDigest { get; }
+
+    /// <summary>
+    /// The selection of one Grasshopper document, routed by its durable docKey. Non-throwing:
+    /// a null docKey resolves to the only registered document when exactly one is open, and an
+    /// unknown key (or null among several documents) yields null. The defaults keep simple
+    /// single-document sources (tests, fakes) working unchanged.
+    /// </summary>
+    SelectionChangedEvent? SelectionFor(string? docKey) => CurrentSelection;
+
+    /// <summary>Per-document canvas digest with the same non-throwing resolution as <see cref="SelectionFor"/>.</summary>
+    CanvasDigest? CanvasDigestFor(string? docKey) => CurrentCanvasDigest;
 }

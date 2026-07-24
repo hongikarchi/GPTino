@@ -147,11 +147,18 @@ export function useRuntime() {
 
   const actions = useMemo(
     () => ({
-      createSession(name: string) {
-        return runAction("create-session", undefined, (activeClient) => activeClient.createSession(name));
+      createSession(name: string, grasshopperDoc?: string) {
+        return runAction("create-session", undefined, (activeClient) => activeClient.createSession(name, grasshopperDoc));
       },
       reorder,
       shift,
+      setSessionTarget(sessionId: string, grasshopperDoc: string | null) {
+        return runAction(
+          `target:${sessionId}`,
+          updateSession(sessionId, (session) => ({ ...session, boundGrasshopperDocId: grasshopperDoc })),
+          (activeClient) => activeClient.setSessionTarget(sessionId, grasshopperDoc),
+        );
+      },
       pauseSession(sessionId: string, paused: boolean) {
         return runAction(
           `pause:${sessionId}`,

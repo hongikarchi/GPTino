@@ -42,11 +42,19 @@ const now = new Date();
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
 const delay = (ms = 120) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
+// Durable 16-hex docKeys for the two demo Grasshopper documents.
+const DOC_FACADE = "4f2a91c7d05e83b6";
+const DOC_ATRIUM = "b81d4e9a2c7f5063";
+
 const demoState: RuntimeState = {
   projectId: "prj-tower-a31f924c",
   projectName: "Tower study / Option A",
   rhinoFile: "Tower_Study_A.3dm",
   grasshopperFile: "Facade_Paneling.gh",
+  grasshopperDocs: [
+    { id: DOC_FACADE, file: "C:\\Projects\\Tower\\Facade_Paneling.gh" },
+    { id: DOC_ATRIUM, file: "C:\\Projects\\Tower\\Atrium_Options.gh" },
+  ],
   health: "connected",
   healthDetail: "Rhino 8 · Grasshopper attached",
   revision: 42,
@@ -76,6 +84,7 @@ const demoState: RuntimeState = {
       paused: false,
       terminalOpen: true,
       unread: 1,
+      boundGrasshopperDocId: DOC_FACADE,
       usage: {
         totalTokens: 812_400,
         contextWindow: 272_000,
@@ -131,6 +140,7 @@ const demoState: RuntimeState = {
       effectiveModel: "gpt-5.6-terra",
       reasoning: "low",
       paused: false,
+      boundGrasshopperDocId: DOC_FACADE,
       usage: {
         totalTokens: 96_100,
         contextWindow: 272_000,
@@ -171,6 +181,7 @@ const demoState: RuntimeState = {
       effectiveModel: "gpt-5.6-sol",
       reasoning: "medium",
       paused: true,
+      boundGrasshopperDocId: null,
       messages: [
         {
           id: "m-l-1",
@@ -196,6 +207,7 @@ const demoState: RuntimeState = {
       effectiveModel: "gpt-5.6-sol",
       reasoning: "xhigh",
       paused: false,
+      boundGrasshopperDocId: DOC_ATRIUM,
       messages: [
         {
           id: "m-b-1",
@@ -220,6 +232,7 @@ const demoState: RuntimeState = {
       state: "verifying",
       resource: "GH · 48 components",
       target: "grasshopper",
+      targetDocId: DOC_FACADE,
     },
     {
       id: "job-185",
@@ -228,6 +241,7 @@ const demoState: RuntimeState = {
       state: "ready",
       resource: "GH · 3 wires",
       target: "grasshopper",
+      targetDocId: DOC_FACADE,
     },
     {
       id: "job-187",
@@ -237,6 +251,7 @@ const demoState: RuntimeState = {
       waitingFor: "Manual drift resolution",
       resource: "Rhino · object 7F2A",
       target: "rhino",
+      targetDocId: null,
     },
   ],
   conflicts: [
@@ -275,6 +290,7 @@ const demoState: RuntimeState = {
       { id: "c1d2e3f4-0000-4a4a-b1b1-000000000002", nickName: "Offset" },
       { id: "c1d2e3f4-0000-4a4a-b1b1-000000000003", nickName: "Area" },
     ],
+    docId: DOC_FACADE,
     observedAt: minutesAgo(0),
   },
   lastUpdatedAt: now.toISOString(),
@@ -388,7 +404,7 @@ export function createMockApiClient(): GptinoApiClient {
       listeners.add(onState);
       return () => listeners.delete(onState);
     },
-    async createSession(name: string) {
+    async createSession(name: string, grasshopperDoc?: string) {
       await delay();
       const ordinal = state.sessions.length + 1;
       state.sessions.push({
@@ -400,9 +416,16 @@ export function createMockApiClient(): GptinoApiClient {
         modelProfile: "auto",
         paused: false,
         messages: [],
+        boundGrasshopperDocId: grasshopperDoc ?? null,
       });
       state.orderVersion += 1;
       emit();
+    },
+    async setSessionTarget(sessionId, grasshopperDoc) {
+      await delay();
+      mutateSession(sessionId, (index) => {
+        state.sessions[index].boundGrasshopperDocId = grasshopperDoc;
+      });
     },
     async reorderSessions(request: SessionOrderRequest) {
       await delay();

@@ -126,9 +126,11 @@ public sealed class GptinoPanel : Panel
     }
 
     /// <summary>
-    /// The document states the waiting page explains. "recovered" = pathless or sitting on an
-    /// autosave path (crash recovery / autosave copy opened directly) — such documents are never
-    /// observed, so without an explanation the panel looks stuck for no reason.
+    /// The document states the waiting page explains. "unsaved" = a plain new document (no scary
+    /// wording — every fresh Rhino start looks like this); "autosave" = the document sits on an
+    /// autosave path (crash recovery / autosave copy opened directly) and is never observed;
+    /// "readonly" = Rhino opened the file read-only (another instance or a stale .rhl lock), so
+    /// saves will fail until the lock is cleared.
     /// </summary>
     private string DescribeDocumentState()
     {
@@ -138,9 +140,17 @@ public sealed class GptinoPanel : Panel
             return "unknown";
         }
         var path = document.Path;
-        if (string.IsNullOrWhiteSpace(path) || RhinoAutoSavePaths.IsAutoSavePath(path))
+        if (string.IsNullOrWhiteSpace(path))
         {
-            return "recovered";
+            return "unsaved";
+        }
+        if (RhinoAutoSavePaths.IsAutoSavePath(path))
+        {
+            return "autosave";
+        }
+        if (document.IsReadOnly)
+        {
+            return "readonly";
         }
         return "saved";
     }
@@ -151,17 +161,28 @@ public sealed class GptinoPanel : Panel
     {
         _waitingKey = ComputeWaitingKey();
         var status = WebUtility.HtmlEncode(GptinoRuntimeHost.Instance.Status);
-        var recovered = DescribeDocumentState() == "recovered";
-        var recoveredNotice = recovered
-            ? """
+        var documentState = DescribeDocumentState();
+        var stateNotice = documentState switch
+        {
+            "autosave" => """
               <div class="notice">
-                <b>This document has no saved location</b> — it looks like a recovered or autosave
-                copy, so GPTino cannot attach to it yet. Use <b>Save As</b> to give it a real path.
-                Saving back to the original file path restores that file&#39;s previous GPTino sessions;
-                a new path starts fresh (the old sessions stay on disk under the old path).
+                <b>This document is an autosave copy</b>, so GPTino cannot attach to it. Use
+                <b>Save As</b> to give it a real path. Saving back to the original file path
+                restores that file&#39;s previous GPTino sessions; a new path starts fresh (the old
+                sessions stay on disk under the old path).
               </div>
-              """
-            : string.Empty;
+              """,
+            "readonly" => """
+              <div class="notice">
+                <b>Rhino opened this file read-only</b> — saves will fail with "temporary file"
+                errors. This usually means another Rhino instance still has the file open, or a
+                crash left a stale <b>.3dm.rhl</b> lock file next to it. Close other Rhino
+                instances (check Task Manager), delete the stale <b>.rhl</b> file if the crash is
+                long gone, then reopen the file.
+              </div>
+              """,
+            _ => string.Empty,
+        };
         var html = $$"""
             <!doctype html>
             <html>
@@ -185,7 +206,7 @@ public sealed class GptinoPanel : Panel
               <body>
                 <h3>GPTino is starting</h3>
                 <p>{{status}}</p>
-                {{recoveredNotice}}
+                {{stateNotice}}
                 <a class="cta" href="gptino://open-grasshopper">Open Grasshopper to start</a>
                 <p><small>GPTino pairs one saved Rhino file with one saved Grasshopper file. Open (and save) a Grasshopper definition to begin.</small></p>
                 <small>Rhino document {{_documentSerial}}</small>

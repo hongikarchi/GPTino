@@ -24,7 +24,14 @@ public sealed class GptinoRuntimeHost : IDisposable
     private readonly ConcurrentDictionary<string, DocumentTarget> _targets = new(StringComparer.Ordinal);
     private readonly AutomaticRestartPolicy _automaticRestartPolicy = new();
     private readonly Dictionary<uint, string> _observedRhinoDocuments = [];
+    private readonly HashSet<uint> _readOnlyWarnedSerials = [];
     private readonly Dictionary<Guid, string> _observedGrasshopperDocuments = [];
+    // Monotonic first-observation ordinal per GH document (guarded by _observationGate). Every
+    // registration send is ordered by it so the AgentHost's arrival-order Sequence — which
+    // defines the DEFAULT target — is deterministic across reconnects and restarts instead of
+    // following ConcurrentDictionary enumeration order.
+    private readonly Dictionary<Guid, long> _grasshopperObservationOrdinals = [];
+    private long _grasshopperObservationOrdinal;
     private readonly ConcurrentDictionary<BridgeAdapterOwner, IBridgeOperationHandler> _handlers = new();
     private AgentHostBootstrapper? _bootstrapper;
     private Timer? _selectionDebounceTimer;
@@ -117,7 +124,7 @@ public sealed class GptinoRuntimeHost : IDisposable
         RegisterOperationHandler(new CordycepsRhinoBridgeOperationHandler(adapter));
     }
 
-    /// <summary>Registers a fully specified pair. This method never infers an active document.</summary>
+    /// <summary>Registers a fully specified target. This method never infers an active document.</summary>
     public void RegisterDocument(DocumentTarget target)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -160,9 +167,9 @@ public sealed class GptinoRuntimeHost : IDisposable
     }
 
     /// <summary>
-    /// Records a panel's exact Rhino serial. Automatic pairing occurs only when exactly one saved
-    /// Rhino document and one saved GH document have been observed; otherwise explicit registration
-    /// remains required.
+    /// Records a panel's exact Rhino serial. Automatic registration occurs only when exactly one
+    /// saved Rhino document has been observed; every observed saved GH document then registers as
+    /// its own target. Otherwise explicit registration remains required.
     /// </summary>
     public void ObserveRhinoDocument(uint documentSerial) =>
         ObserveRhinoDocument(documentSerial, explicitPath: null);
@@ -195,6 +202,24 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
 
         var normalizedPath = Path.GetFullPath(rawPath);
+        if (document.IsReadOnly)
+        {
+            // Still observe/register (reads work), but tell the user why saving will fail —
+            // typically another Rhino instance holding the file or a stale .3dm.rhl lock left
+            // by a crash. Once per document serial to avoid command-line spam.
+            var warnReadOnly = false;
+            lock (_observationGate)
+            {
+                warnReadOnly = _readOnlyWarnedSerials.Add(documentSerial);
+            }
+            if (warnReadOnly)
+            {
+                global::Rhino.RhinoApp.WriteLine(
+                    $"GPTino: '{Path.GetFileName(normalizedPath)}' opened READ-ONLY — saving will fail. " +
+                    "Close other Rhino instances holding it, or delete the stale '" +
+                    Path.GetFileName(normalizedPath) + ".rhl' lock file left by a crash, then reopen.");
+            }
+        }
         if (RhinoAutoSavePaths.IsAutoSavePath(normalizedPath))
         {
             // A document living at an autosave path (crash recovery, or the user opening the
@@ -226,7 +251,7 @@ public sealed class GptinoRuntimeHost : IDisposable
         // re-registration / schedule / event churn.
         if (changed)
         {
-            TryRegisterUnambiguousPair();
+            TryRegisterUnambiguousTargets();
         }
     }
 
@@ -245,6 +270,11 @@ public sealed class GptinoRuntimeHost : IDisposable
             changed = !_observedGrasshopperDocuments.TryGetValue(documentId, out var previousPath) ||
                 !string.Equals(previousPath, normalizedPath, StringComparison.OrdinalIgnoreCase);
             _observedGrasshopperDocuments[documentId] = normalizedPath;
+            // First observation stamps the doc's ordinal; a path change (Save As) keeps it.
+            if (!_grasshopperObservationOrdinals.ContainsKey(documentId))
+            {
+                _grasshopperObservationOrdinals[documentId] = ++_grasshopperObservationOrdinal;
+            }
             observedCount = _observedGrasshopperDocuments.Count;
         }
         DevelopmentDiagnosticTrace.TryWrite(
@@ -255,7 +285,7 @@ public sealed class GptinoRuntimeHost : IDisposable
         // it. Skip a true no-op (same id + same path) to avoid redundant re-registration churn.
         if (changed)
         {
-            TryRegisterUnambiguousPair();
+            TryRegisterUnambiguousTargets();
         }
     }
 
@@ -266,11 +296,13 @@ public sealed class GptinoRuntimeHost : IDisposable
             lock (_observationGate)
             {
                 _observedGrasshopperDocuments.Remove(documentId);
+                // A reopened doc is a NEW observation and re-enters at the back of the order.
+                _grasshopperObservationOrdinals.Remove(documentId);
             }
             RemoveTargets(
                 target => target.GrasshopperDocumentId == documentId,
                 "Grasshopper document closed.");
-            TryRegisterUnambiguousPair();
+            TryRegisterUnambiguousTargets();
         }
     }
 
@@ -285,7 +317,7 @@ public sealed class GptinoRuntimeHost : IDisposable
             RemoveTargets(
                 target => target.RhinoDocumentSerial == documentSerial,
                 "Rhino document closed.");
-            TryRegisterUnambiguousPair();
+            TryRegisterUnambiguousTargets();
         }
     }
 
@@ -398,6 +430,7 @@ public sealed class GptinoRuntimeHost : IDisposable
         {
             _observedRhinoDocuments.Clear();
             _observedGrasshopperDocuments.Clear();
+            _grasshopperObservationOrdinals.Clear();
         }
 
         try
@@ -710,9 +743,24 @@ public sealed class GptinoRuntimeHost : IDisposable
                     return;
                 }
 
-                foreach (var target in _targets.Values)
+                // Registration order defines the AgentHost's default target; observation order
+                // keeps it deterministic across reconnects (ConcurrentDictionary enumeration
+                // order is not).
+                var registrationTargets = OrderTargetsByObservation(_targets.Values);
+                foreach (var target in registrationTargets)
                 {
                     await SendRegistrationAsync(connection, target, cancellationToken).ConfigureAwait(false);
+                }
+
+                // Re-registration created fresh per-target state on the AgentHost, which cleared
+                // the cached selections on disconnect. Re-trigger the debounced selection push
+                // once per registered Rhino document so the settled selection re-flows instead of
+                // leaving the panel chip and turn-context hints blank until the next user click.
+                foreach (var serial in registrationTargets
+                    .Select(target => target.RhinoDocumentSerial)
+                    .Distinct())
+                {
+                    NotifySelectionChanged(serial);
                 }
 
                 while (!cancellationToken.IsCancellationRequested && connection.IsConnected)
@@ -1182,9 +1230,10 @@ public sealed class GptinoRuntimeHost : IDisposable
                     return;
                 }
 
-                replacement = _targets.Values
-                    .OrderBy(target => target.StableTargetKey(), StringComparer.Ordinal)
-                    .FirstOrDefault();
+                // The restart bootstrap target follows observation order too, so the
+                // --grasshopper display argument names the first/primary observed document
+                // rather than an arbitrary sibling.
+                replacement = OrderTargetsByObservation(_targets.Values).FirstOrDefault();
                 if (replacement is null)
                 {
                     ResetAutomaticRestartPolicyLocked();
@@ -1296,7 +1345,7 @@ public sealed class GptinoRuntimeHost : IDisposable
     private void OnSelectionDebounceElapsed()
     {
         DocumentPipeConnection? connection;
-        DocumentTarget? target;
+        DocumentTarget[] targets;
         long generation;
         CancellationToken cancellationToken;
         lock (_gate)
@@ -1308,14 +1357,18 @@ public sealed class GptinoRuntimeHost : IDisposable
             var serial = _pendingSelectionSerial;
             connection = _connection;
             generation = _runtimeGeneration;
-            target = _targets.Values.FirstOrDefault(candidate => candidate.RhinoDocumentSerial == serial);
+            // One settled event per registered target of this Rhino document: sibling GH docs share
+            // the serial, and each event carries its own doc's canvas selection so the AgentHost can
+            // attribute selection per target. With a single GH doc this is one event, as before.
+            targets = _targets.Values
+                .Where(candidate => candidate.RhinoDocumentSerial == serial)
+                .ToArray();
             cancellationToken = _lifetime.Token;
         }
-        if (target is null)
+        foreach (var target in targets)
         {
-            return;
+            _ = SendSelectionChangedSafelyAsync(connection, target, generation, cancellationToken);
         }
-        _ = SendSelectionChangedSafelyAsync(connection, target, generation, cancellationToken);
     }
 
     private async Task SendSelectionChangedSafelyAsync(
@@ -1379,7 +1432,7 @@ public sealed class GptinoRuntimeHost : IDisposable
             }
         }
         // Canvas selection is captured by the .gha watcher and read back from the hub here, so
-        // one event carries the settled selection of BOTH documents in the bound pair.
+        // one event carries the settled selection of the Rhino document AND this target's GH doc.
         var grasshopperObjects = BridgeProcessHub.GetGrasshopperSelection(target.GrasshopperDocumentId);
         return new SelectionChangedEvent(
             ids,
@@ -1479,55 +1532,89 @@ public sealed class GptinoRuntimeHost : IDisposable
         return connection.SendAsync(frame, cancellationToken).AsTask();
     }
 
-    private void TryRegisterUnambiguousPair()
+    /// <summary>
+    /// Stable send/pick order for document targets: first-observed first (the side ordinal map),
+    /// with a deterministic StableTargetKey tiebreak for targets that were never observed (only
+    /// possible via explicit registration). Safe to call while holding _gate — the established
+    /// lock order is _gate before _observationGate, never the reverse.
+    /// </summary>
+    private DocumentTarget[] OrderTargetsByObservation(IEnumerable<DocumentTarget> targets)
     {
-        DocumentTarget target;
+        lock (_observationGate)
+        {
+            return targets
+                .OrderBy(target =>
+                    _grasshopperObservationOrdinals.GetValueOrDefault(
+                        target.GrasshopperDocumentId,
+                        long.MaxValue))
+                .ThenBy(target => target.StableTargetKey(), StringComparer.Ordinal)
+                .ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Registers one DocumentTarget per observed Grasshopper document when exactly one saved Rhino
+    /// document is observed. All targets share the Rhino-scoped ProjectId, so N GH docs bind to the
+    /// same AgentHost; with zero GH docs nothing registers (the waiting page stays up).
+    /// </summary>
+    private void TryRegisterUnambiguousTargets()
+    {
+        List<DocumentTarget> targets = [];
         lock (_observationGate)
         {
             DevelopmentDiagnosticTrace.TryWrite(
                 "Rhino",
                 "pair-evaluated",
                 $"rhino={_observedRhinoDocuments.Count};grasshopper={_observedGrasshopperDocuments.Count}");
-            if (_observedRhinoDocuments.Count != 1 || _observedGrasshopperDocuments.Count != 1)
+            if (_observedRhinoDocuments.Count != 1 || _observedGrasshopperDocuments.Count == 0)
             {
                 return;
             }
 
             var rhinoPair = _observedRhinoDocuments.Single();
-            var grasshopperPair = _observedGrasshopperDocuments.Single();
             using var process = Process.GetCurrentProcess();
             var startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
-            target = DocumentRuntimeTarget.Create(
-                CreateProjectId(process.Id, startedAt.UtcTicks, rhinoPair.Key, grasshopperPair.Key),
-                process.Id,
-                startedAt,
-                rhinoPair.Key,
-                grasshopperPair.Key,
-                rhinoPair.Value,
-                grasshopperPair.Value);
+            var projectId = CreateProjectId(process.Id, startedAt.UtcTicks, rhinoPair.Key);
+            // Observation order (not dictionary order) so the first-registered/default target on
+            // the AgentHost is the first/primary observed document, deterministically.
+            foreach (var grasshopperPair in _observedGrasshopperDocuments
+                .OrderBy(pair => _grasshopperObservationOrdinals.GetValueOrDefault(pair.Key, long.MaxValue)))
+            {
+                targets.Add(DocumentRuntimeTarget.Create(
+                    projectId,
+                    process.Id,
+                    startedAt,
+                    rhinoPair.Key,
+                    grasshopperPair.Key,
+                    rhinoPair.Value,
+                    grasshopperPair.Value));
+            }
         }
 
         // Register outside _observationGate: rebinding may tear down the previous AgentHost
         // (up to a 2s process wait), which must not stall concurrent document observation.
-        RegisterDocument(target);
+        foreach (var target in targets)
+        {
+            RegisterDocument(target);
+        }
     }
 
-    // ProjectId identifies the LIVE document pair by its stable runtime identity — the Rhino process,
-    // the RhinoDoc runtime serial, and the Grasshopper DocumentID — NOT by file paths. This makes it
-    // invariant across a Save As / rename, so the AgentHost binding is not torn down when a path changes.
-    // (It is a per-Rhino-session token; the persistent context folder is keyed separately by path.)
+    // ProjectId identifies the LIVE Rhino document by its stable runtime identity — the Rhino process
+    // and the RhinoDoc runtime serial — NOT by file paths and NOT by Grasshopper documents. Every GH
+    // document registered against one Rhino document therefore shares a single ProjectId (one AgentHost
+    // per Rhino document), and the id is invariant across a Save As / rename, so the AgentHost binding
+    // is not torn down when a path changes or when GH docs open/close. (It is a per-Rhino-session token;
+    // the persistent context folder is keyed separately by the Rhino path.)
     private static Guid CreateProjectId(
         int rhinoProcessId,
         long rhinoProcessStartTicks,
-        uint rhinoDocumentSerial,
-        Guid grasshopperDocumentId)
+        uint rhinoDocumentSerial)
     {
         var canonical = string.Join(
             '\n',
             rhinoProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture),
             rhinoProcessStartTicks.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            rhinoDocumentSerial.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            grasshopperDocumentId.ToString("D"));
+            rhinoDocumentSerial.ToString(System.Globalization.CultureInfo.InvariantCulture));
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
         return new Guid(hash.AsSpan(0, 16));
     }

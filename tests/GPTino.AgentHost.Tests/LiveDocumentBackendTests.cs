@@ -1505,6 +1505,263 @@ public sealed class LiveDocumentBackendTests
         Assert.Null(harness.Backend.CurrentTarget);
     }
 
+    [Fact]
+    public async Task RegistrationAcceptsSiblingTargetsSharingOneProject()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var sibling = harness.CreateSiblingTarget();
+
+        var response = await harness.RegisterAsync(sibling);
+
+        Assert.Equal(BridgeMessageKind.Response, response.Kind);
+        Assert.Equal(BridgeMessageTypes.DocumentRegistered, response.PayloadType);
+        Assert.True(harness.Backend.IsConnected);
+        // The DEFAULT target stays the first registered document, so every legacy single-document
+        // consumer (CurrentTarget/CurrentRevision/projector fallback) keeps today's behavior.
+        Assert.Equal(harness.Target.Identity, harness.Backend.CurrentTarget?.Identity);
+        var docs = harness.Backend.RegisteredGrasshopperDocuments;
+        Assert.Equal(2, docs.Count);
+        Assert.Equal(harness.Target.GrasshopperPath, docs[0].File);
+        Assert.Equal(sibling.GrasshopperPath, docs[1].File);
+        Assert.Equal(AgentHostOptions.ComputeDocumentKey(harness.Target.GrasshopperPath), docs[0].Id);
+        Assert.Equal(AgentHostOptions.ComputeDocumentKey(sibling.GrasshopperPath), docs[1].Id);
+        Assert.NotEqual(docs[0].Id, docs[1].Id);
+    }
+
+    [Fact]
+    public async Task UnboundSessionSubmitFailsListingDocsWhenTwoDocumentsRegistered()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var sibling = harness.CreateSiblingTarget();
+        _ = await harness.RegisterAsync(sibling);
+        await using var responder = harness.StartResponder();
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Unbound"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var changeSet = await harness.CreateChangeSetAsync(session, "unbound-operation", snapshot.Revision);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Backend.SubmitChangeAsync(
+                session,
+                Submission(changeSet, snapshot.Id, "unbound-key", "Unbound work"),
+                CancellationToken.None));
+
+        // The failure is actionable: it lists every registered document by file name AND docKey.
+        Assert.Contains("definition.gh", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("definition-b.gh", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            AgentHostOptions.ComputeDocumentKey(harness.Target.GrasshopperPath),
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            AgentHostOptions.ComputeDocumentKey(sibling.GrasshopperPath),
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.Empty(harness.Backend.ReadQueue());
+        Assert.Empty(responder.WriteOperationIds);
+    }
+
+    [Fact]
+    public async Task SessionBoundToUnregisteredDocumentFailsListingRegisteredDocs()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        await using var responder = harness.StartResponder();
+        var session = await harness.Store.CreateSessionAsync(
+            new CreateSessionRequest("Ghost", GrasshopperDoc: "deadbeefdeadbeef"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var changeSet = await harness.CreateChangeSetAsync(session, "ghost-operation", snapshot.Revision);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Backend.SubmitChangeAsync(
+                session,
+                Submission(changeSet, snapshot.Id, "ghost-key", "Ghost work"),
+                CancellationToken.None));
+
+        Assert.Contains("deadbeefdeadbeef", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("definition.gh", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            AgentHostOptions.ComputeDocumentKey(harness.Target.GrasshopperPath),
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.Empty(harness.Backend.ReadQueue());
+        Assert.Empty(responder.WriteOperationIds);
+    }
+
+    [Fact]
+    public async Task SessionBoundToSecondDocumentRoutesReadsAndWritesToIt()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var sibling = harness.CreateSiblingTarget();
+        _ = await harness.RegisterAsync(sibling);
+        var siblingDocKey = AgentHostOptions.ComputeDocumentKey(sibling.GrasshopperPath);
+        await using var responder = harness.StartResponder();
+        var session = await harness.Store.CreateSessionAsync(
+            new CreateSessionRequest("Bound", GrasshopperDoc: siblingDocKey));
+
+        // Reads route by the binding: snapshot state is per document and independent of the default.
+        var boundRead = ToElement(await harness.Backend.ReadSnapshotAsync(
+            session,
+            EmptyArguments(),
+            CancellationToken.None));
+        Assert.Equal(
+            sibling.GrasshopperDocumentId,
+            boundRead.GetProperty("canvas").GetProperty("grasshopperDocumentId").GetGuid());
+        Assert.Equal(1, boundRead.GetProperty("revision").GetInt64());
+        var defaultSnapshot = await harness.CaptureSnapshotViewAsync();
+        Assert.Equal(1, defaultSnapshot.Revision);
+        Assert.NotEqual(defaultSnapshot.Id, boundRead.GetProperty("snapshotId").GetString());
+
+        var changeSet = await harness.CreateChangeSetAsync(
+            session,
+            "bound-operation",
+            boundRead.GetProperty("revision").GetInt64());
+        harness.Backend.SetPaused(true);
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(
+                changeSet,
+                boundRead.GetProperty("snapshotId").GetString()!,
+                "bound-key",
+                "Bound work"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var queued = Assert.Single(harness.Backend.ReadQueue());
+        Assert.Equal(siblingDocKey, queued.TargetDoc);
+
+        harness.Backend.SetPaused(false);
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var jobView = await harness.ReadJobViewAsync(jobId);
+        Assert.True(state == "committed", jobView.GetProperty("message").GetString());
+        var writes = responder.Observed
+            .Where(item => item.Request.Access == BridgeOperationAccess.Write)
+            .ToArray();
+        Assert.NotEmpty(writes);
+        Assert.All(writes, item =>
+            Assert.Equal(sibling.GrasshopperDocumentId, item.Frame.Target!.GrasshopperDocumentId));
+    }
+
+    [Fact]
+    public async Task SelectionSurfacesMostRecentTargetAndRoutesPerDoc()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var sibling = harness.CreateSiblingTarget();
+        _ = await harness.RegisterAsync(sibling);
+        var defaultDocKey = AgentHostOptions.ComputeDocumentKey(harness.Target.GrasshopperPath);
+        var siblingDocKey = AgentHostOptions.ComputeDocumentKey(sibling.GrasshopperPath);
+        await using var responder = harness.StartResponder();
+        var rhinoId = Guid.NewGuid();
+        var canvasObject = new GrasshopperSelectedObject(Guid.NewGuid(), "Python 3 Script", "Grid");
+
+        // One plugin fan-out burst: the sibling's event names canvas objects; the default
+        // target's echo shares the Rhino ids, has no canvas objects, and arrives LAST.
+        await harness.SendSelectionChangedAsync(
+            sibling,
+            new SelectionChangedEvent([rhinoId], null, DateTimeOffset.UtcNow, [canvasObject]));
+        await harness.SendSelectionChangedAsync(
+            harness.Target,
+            new SelectionChangedEvent([rhinoId], null, DateTimeOffset.UtcNow));
+        await harness.WaitUntilAsync(() =>
+            harness.Backend.SelectionFor(siblingDocKey) is not null &&
+            harness.Backend.SelectionFor(defaultDocKey) is not null);
+
+        // The surfaced selection is the burst's canvas-bearing event, attributed to its doc —
+        // not the default target's Rhino-only echo that arrived later.
+        Assert.Equal(siblingDocKey, harness.Backend.CurrentSelectionDocId);
+        var surfaced = harness.Backend.CurrentSelection;
+        Assert.NotNull(surfaced);
+        Assert.Equal(canvasObject.ObjectId, Assert.Single(surfaced!.GrasshopperObjects!).ObjectId);
+        Assert.Equal(rhinoId, Assert.Single(surfaced.RhinoObjectIds));
+
+        // Per-doc lookups route by docKey and never throw: unknown or ambiguous yields null.
+        Assert.Single(harness.Backend.SelectionFor(siblingDocKey)!.GrasshopperObjects!);
+        Assert.Null(harness.Backend.SelectionFor(defaultDocKey)!.GrasshopperObjects);
+        Assert.Null(harness.Backend.SelectionFor(null));
+        Assert.Null(harness.Backend.SelectionFor("deadbeefdeadbeef"));
+
+        // The canvas digest routes the same way: captured for the default doc only, and a null
+        // docKey stays null while two documents are registered.
+        _ = await harness.CaptureSnapshotViewAsync();
+        var digest = harness.Backend.CanvasDigestFor(defaultDocKey);
+        Assert.NotNull(digest);
+        Assert.Equal(1, digest!.ComponentCount);
+        Assert.Null(harness.Backend.CanvasDigestFor(siblingDocKey));
+        Assert.Null(harness.Backend.CanvasDigestFor(null));
+    }
+
+    [Fact]
+    public async Task SaveAsRemapsBindingsQueuedJobsAndHistoryToTheNewDocKey()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var oldDocKey = AgentHostOptions.ComputeDocumentKey(harness.Target.GrasshopperPath);
+        var session = await harness.Store.CreateSessionAsync(
+            new CreateSessionRequest("Bound", GrasshopperDoc: oldDocKey));
+        string? firstCommit;
+        Guid queuedJobId;
+        var firstResponder = harness.StartResponder();
+        try
+        {
+            // Commit once so managed history exists under the OLD docKey…
+            var snapshot = await harness.CaptureSnapshotViewAsync();
+            var firstChange = await harness.CreateChangeSetAsync(session, "before-rename", snapshot.Revision);
+            var first = ToElement(await harness.Backend.SubmitChangeAsync(
+                session,
+                Submission(firstChange, snapshot.Id, "before-rename-key", "Before rename"),
+                CancellationToken.None));
+            Assert.Equal("committed", await harness.WaitForJobStateAsync(first.GetProperty("jobId").GetGuid()));
+            firstCommit = ToElement(await harness.Backend.ReadSnapshotAsync(EmptyArguments(), CancellationToken.None))
+                .GetProperty("gitCommit").GetString();
+            Assert.NotNull(firstCommit);
+
+            // …and freeze a second job to the OLD docKey while the writer is paused.
+            harness.Backend.SetPaused(true);
+            var beforeRename = await harness.CaptureSnapshotViewAsync();
+            var secondChange = await harness.CreateChangeSetAsync(session, "across-rename", beforeRename.Revision);
+            var second = ToElement(await harness.Backend.SubmitChangeAsync(
+                session,
+                Submission(secondChange, beforeRename.Id, "across-rename-key", "Across rename"),
+                CancellationToken.None));
+            queuedJobId = second.GetProperty("jobId").GetGuid();
+            Assert.Equal(oldDocKey, Assert.Single(harness.Backend.ReadQueue()).TargetDoc);
+        }
+        finally
+        {
+            await firstResponder.DisposeAsync();
+        }
+
+        // Save As: the SAME StableTargetKey re-registers with a changed .gh path.
+        var renamed = harness.Target with
+        {
+            GrasshopperPath = Path.Combine(Path.GetTempPath(), "renamed", "definition (renamed).gh"),
+        };
+        var response = await harness.RegisterAsync(renamed);
+        Assert.Equal(BridgeMessageTypes.DocumentRegistered, response.PayloadType);
+        var newDocKey = AgentHostOptions.ComputeDocumentKey(renamed.GrasshopperPath);
+        Assert.NotEqual(oldDocKey, newDocKey);
+
+        // The persisted session binding followed the rename and resolves to the renamed doc…
+        var rebound = await harness.Store.FindSessionAsync(session.Id);
+        Assert.Equal(newDocKey, rebound!.GrasshopperDoc);
+        // …the queued job was re-keyed in memory…
+        Assert.Equal(newDocKey, Assert.Single(harness.Backend.ReadQueue()).TargetDoc);
+        // …and the history folder moved with the rename instead of forking.
+        var dataRoot = harness.Options.ResolveDataDirectory();
+        Assert.False(Directory.Exists(Path.Combine(dataRoot, "histories", oldDocKey)));
+        Assert.True(Directory.Exists(Path.Combine(dataRoot, "histories", newDocKey)));
+
+        // The pre-rename queued job still executes, and its commit lands in the moved history.
+        await using var secondResponder = harness.StartResponder();
+        harness.Backend.SetPaused(false);
+        var state = await harness.WaitForJobStateAsync(queuedJobId);
+        var jobView = await harness.ReadJobViewAsync(queuedJobId);
+        Assert.True(state == "committed", jobView.GetProperty("message").GetString());
+        var afterRename = ToElement(await harness.Backend.ReadSnapshotAsync(
+            rebound,
+            EmptyArguments(),
+            CancellationToken.None));
+        var secondCommit = afterRename.GetProperty("gitCommit").GetString();
+        Assert.NotNull(secondCommit);
+        Assert.NotEqual(firstCommit, secondCommit);
+    }
+
     private static JsonElement EmptyArguments() =>
         JsonSerializer.SerializeToElement(new { }, BridgeProtocol.JsonOptions);
 
@@ -1677,6 +1934,15 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
     public async Task<BridgeFrame> ReceiveAsync() =>
         await RequireConnection().ReceiveAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
 
+    /// <summary>Pushes one plugin-style SelectionChanged event for the given target.</summary>
+    public Task SendSelectionChangedAsync(DocumentRuntime target, SelectionChangedEvent selection) =>
+        RequireConnection().SendAsync(
+            BridgeFrame.Create(
+                BridgeMessageKind.Event,
+                BridgeMessageTypes.SelectionChanged,
+                selection,
+                target)).AsTask();
+
     public Task SendOperationResponseAsync(
         BridgeFrame requestFrame,
         BridgeOperationRequest request,
@@ -1693,7 +1959,21 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
         return RequireConnection().SendAsync(response).AsTask();
     }
 
-    public CanvasSnapshot CreateSnapshot()
+    /// <summary>
+    /// A second Grasshopper document of the SAME Rhino document: identical ProjectId, process and
+    /// Rhino serial, but its own GH DocumentID and file path — exactly what the plugin registers
+    /// when two saved definitions are open against one model.
+    /// </summary>
+    public DocumentRuntime CreateSiblingTarget(string fileName = "definition-b.gh") =>
+        Target with
+        {
+            GrasshopperDocumentId = Guid.NewGuid(),
+            GrasshopperPath = _directory.GetPath(fileName)
+        };
+
+    public CanvasSnapshot CreateSnapshot() => CreateSnapshotFor(Target);
+
+    public CanvasSnapshot CreateSnapshotFor(DocumentRuntime target)
     {
         var state = new CanvasObjectState(
             CanvasObjectId,
@@ -1724,7 +2004,7 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
             }
             : [state];
         return new(
-            Target.GrasshopperDocumentId,
+            target.GrasshopperDocumentId,
             "document-v1",
             objects,
             Array.Empty<WireState>(),
@@ -1737,8 +2017,7 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
         Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory = null) =>
         FakeBridgeResponder.Start(
             RequireConnection(),
-            Target,
-            CreateSnapshot,
+            CreateSnapshotFor,
             writeDelay,
             automaticSnapshotResponses,
             responseFactory);
@@ -1956,8 +2235,7 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
 internal sealed class FakeBridgeResponder : IAsyncDisposable
 {
     private readonly DocumentPipeConnection _connection;
-    private readonly DocumentRuntime _target;
-    private readonly Func<CanvasSnapshot> _snapshotProvider;
+    private readonly Func<DocumentRuntime, CanvasSnapshot> _snapshotProvider;
     private readonly TimeSpan _writeDelay;
     private readonly int _automaticSnapshotResponses;
     private readonly Func<BridgeOperationRequest, BridgeOperationResponse?>? _responseFactory;
@@ -1968,6 +2246,7 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
     private readonly object _writesGate = new();
     private readonly List<string> _writeOperationIds = [];
     private readonly List<BridgeOperationRequest> _requests = [];
+    private readonly List<ObservedBridgeRequest> _observed = [];
     private readonly Task _loop;
     private int _activeWrites;
     private int _maximumConcurrentWrites;
@@ -1975,14 +2254,12 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
 
     private FakeBridgeResponder(
         DocumentPipeConnection connection,
-        DocumentRuntime target,
-        Func<CanvasSnapshot> snapshotProvider,
+        Func<DocumentRuntime, CanvasSnapshot> snapshotProvider,
         TimeSpan writeDelay,
         int automaticSnapshotResponses,
         Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory)
     {
         _connection = connection;
-        _target = target;
         _snapshotProvider = snapshotProvider;
         _writeDelay = writeDelay;
         _automaticSnapshotResponses = automaticSnapshotResponses;
@@ -2014,16 +2291,26 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
         }
     }
 
+    /// <summary>Every observed operation request with its frame, so tests can assert per-frame targets.</summary>
+    public IReadOnlyList<ObservedBridgeRequest> Observed
+    {
+        get
+        {
+            lock (_writesGate)
+            {
+                return _observed.ToArray();
+            }
+        }
+    }
+
     public static FakeBridgeResponder Start(
         DocumentPipeConnection connection,
-        DocumentRuntime target,
-        Func<CanvasSnapshot> snapshotProvider,
+        Func<DocumentRuntime, CanvasSnapshot> snapshotProvider,
         TimeSpan? writeDelay = null,
         int automaticSnapshotResponses = int.MaxValue,
         Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory = null) =>
         new(
             connection,
-            target,
             snapshotProvider,
             writeDelay ?? TimeSpan.Zero,
             automaticSnapshotResponses,
@@ -2040,7 +2327,7 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
             BridgeMessageKind.Error,
             "bridge.failure",
             failure,
-            _target,
+            observed.Frame.Target!,
             observed.Frame.MessageId) with
         {
             ErrorCode = code
@@ -2105,6 +2392,7 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
         lock (_writesGate)
         {
             _requests.Add(request);
+            _observed.Add(new ObservedBridgeRequest(frame, request));
         }
         if (string.Equals(request.Operation, "canvas.snapshot", StringComparison.Ordinal))
         {
@@ -2136,13 +2424,16 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
                 request.Operation,
                 "canvas.snapshot",
                 StringComparison.Ordinal)
-                ? BridgeOperationResponse.Create(request.OperationId, changed: false, _snapshotProvider())
+                ? BridgeOperationResponse.Create(request.OperationId, changed: false, _snapshotProvider(frame.Target!))
                 : BridgeOperationResponse.Create(request.OperationId, changed: false, new { applied = true }));
+            // Echo the frame's target, exactly like the plugin: it resolves each frame against its
+            // registered-target map and stamps that registration on the response. This is what
+            // makes the responder serve sibling Grasshopper documents over the one pipe.
             var response = BridgeFrame.Create(
                 BridgeMessageKind.Response,
                 BridgeMessageTypes.OperationResponse,
                 operationResponse,
-                _target,
+                frame.Target!,
                 frame.MessageId);
             await _connection.SendAsync(response, _stopping.Token);
         }

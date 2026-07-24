@@ -1050,6 +1050,100 @@ button.llm-auth:hover strong {
   line-height: 1;
 }
 
+/* New-session popover — anchored under the + Session button. */
+
+.new-session-anchor {
+  position: relative;
+}
+
+.new-session-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 236px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.45);
+}
+
+.popover-label {
+  color: var(--dim);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.new-session-popover input[type="text"] {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: var(--fs-sec);
+}
+
+.new-session-popover input[type="text"]:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 1px;
+}
+
+.popover-docs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.popover-docs legend {
+  padding: 0 0 4px;
+}
+
+.popover-doc {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: var(--fs-sec);
+  cursor: pointer;
+}
+
+.popover-doc:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.popover-doc input {
+  margin: 0;
+  accent-color: var(--lime);
+}
+
+.popover-create {
+  height: 28px;
+  border: 1px solid #526334;
+  border-radius: 6px;
+  color: var(--lime);
+  background: var(--surface-3);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.popover-create:hover:not(:disabled) {
+  border-color: var(--lime);
+}
+
 .canvas-empty {
   fill: var(--dim);
   font-size: 13px;
@@ -1100,6 +1194,9 @@ button.llm-auth:hover strong {
 .wire-blocked .wire-color { stroke: var(--red); stroke-dasharray: 4 6; }
 .wire-idle .wire-color { stroke: #3d4544; stroke-width: 1.2; }
 .wire-commit .wire-color { stroke: #4a5352; }
+/* Selected session → its bound doc: the commit wire picks up the lime accent. */
+.wire-commit.selected .wire-color { stroke: var(--lime); stroke-width: 2; }
+.wire-commit.selected .wire-port { fill: var(--lime); stroke: #536538; }
 .wire-conflict .wire-color { stroke: var(--red); stroke-dasharray: 3 5; opacity: 0.8; }
 .wire-conflict .wire-under { stroke-width: 3.5; }
 

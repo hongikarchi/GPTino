@@ -79,6 +79,7 @@ public sealed class RuntimeStateProjector
                 routingTaskClass = hasEffectiveModel ? effectiveModel.TaskClass.ToString() : null,
                 routingReason = hasEffectiveModel ? effectiveModel.Rationale : null,
                 routingError = hasEffectiveModel ? effectiveModel.Error : null,
+                boundGrasshopperDocId = session.GrasshopperDoc,
                 paused = session.State == Api.SessionStates.Paused,
                 terminalOpen = _terminals?.IsOpen(session.Id) ?? false,
                 unread = 0,
@@ -127,6 +128,11 @@ public sealed class RuntimeStateProjector
         var rhinoName = string.IsNullOrWhiteSpace(rhinoPath)
             ? "Untitled Rhino"
             : Path.GetFileNameWithoutExtension(rhinoPath);
+        // Every registered Grasshopper document (durable docKey + path) in registration order.
+        // Null (not an empty list) before the first registration so the panel keeps rendering its
+        // legacy single grasshopperFile placeholder node.
+        var registeredDocs = live?.RegisteredGrasshopperDocuments
+            ?? Array.Empty<RegisteredGrasshopperDocument>();
         var projectedQueue = queueItems.Select(item => new
         {
             id = item.JobId,
@@ -135,7 +141,8 @@ public sealed class RuntimeStateProjector
             state = ProjectQueueState(item.State),
             resource = (string?)null,
             waitingFor = (string?)null,
-            target = item.Target
+            target = item.Target,
+            targetDocId = item.TargetDoc
         }).ToArray();
         var sessionsByJob = queueItems.ToDictionary(item => item.JobId, item => item.SessionId);
         var projectedConflicts = (queueControl?.ReadConflicts() ?? Array.Empty<LiveConflictItem>())
@@ -178,6 +185,9 @@ public sealed class RuntimeStateProjector
             projectName = rhinoName,
             rhinoFile = rhinoPath ?? "Untitled.3dm",
             grasshopperFile = grasshopperPath ?? "No Grasshopper definition",
+            grasshopperDocs = registeredDocs.Count > 0
+                ? registeredDocs.Select(doc => new { id = doc.Id, file = doc.File }).ToArray()
+                : null,
             health = _backend.IsConnected ? "connected" : "disconnected",
             healthDetail = _backend.IsConnected
                 ? "Explicit document bridge authenticated."
@@ -207,6 +217,7 @@ public sealed class RuntimeStateProjector
             currentSelection = live?.CurrentSelection is { } selection
                 ? new
                 {
+                    docId = live.CurrentSelectionDocId,
                     rhinoObjectCount = selection.RhinoObjectIds.Count,
                     rhinoObjectIds = selection.RhinoObjectIds
                         .Take(32)

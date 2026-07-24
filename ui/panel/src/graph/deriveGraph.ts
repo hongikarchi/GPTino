@@ -1,4 +1,4 @@
-import type { GptinoSession, RuntimeState } from "../types";
+import type { GptinoSession, GrasshopperDocInfo, RuntimeState } from "../types";
 
 export type GraphNodeKind = "session" | "orchestrator" | "doc";
 export type WireKind = "active" | "queued" | "blocked" | "paused" | "idle" | "commit" | "conflict";
@@ -27,6 +27,8 @@ export interface GraphNode {
   session?: GptinoSession;
   warning?: string;
   docTarget?: DocTarget;
+  /** GH docKey for multi-doc grasshopper nodes; absent on the rhino node and the legacy single GH node. */
+  docId?: string;
   detail?: string;
   /** Full, untruncated hover text when the rendered detail line is clipped. */
   tooltip?: string;
@@ -94,7 +96,13 @@ export function deriveGraph(state: RuntimeState): GraphModel {
   const sessions = state.sessions;
   const sessionCount = sessions.length;
   const sessionStackH = sessionCount > 0 ? sessionCount * SESSION_H + (sessionCount - 1) * SESSION_GAP : 0;
-  const docStackH = DOC_H * 2 + DOC_GAP;
+  // Legacy servers omit grasshopperDocs (or send null) — render the single
+  // doc:gh node from grasshopperFile exactly as before multi-GH support.
+  const ghDocs: GrasshopperDocInfo[] | null =
+    state.grasshopperDocs != null && state.grasshopperDocs.length > 0 ? state.grasshopperDocs : null;
+  const ghCount = ghDocs?.length ?? 1;
+  const docCount = 1 + ghCount;
+  const docStackH = DOC_H * docCount + DOC_GAP * (docCount - 1);
   const contentH = Math.max(sessionStackH, ORCH_H, docStackH);
   const height = contentH + MARGIN * 2;
 
@@ -181,26 +189,49 @@ export function deriveGraph(state: RuntimeState): GraphModel {
   const ghNickNames = (selection?.grasshopperObjects ?? [])
     .map(({ nickName }) => nickName)
     .filter(Boolean);
-  const ghDoc: GraphNode = {
-    id: "doc:gh",
-    kind: "doc",
-    x: DOC_X,
-    y: docStartY + DOC_H + DOC_GAP,
-    w: DOC_W,
-    h: DOC_H,
-    label: "Grasshopper",
-    sublabel: shortFile(state.grasshopperFile),
-    detail:
-      ghSelected !== undefined
-        ? `${ghSelected} selected${ghNickNames.length > 0 ? ` · ${ghNickNames[0]}${ghSelected > 1 ? "…" : ""}` : ""}`
-        : undefined,
-    tooltip:
-      ghSelected !== undefined
-        ? `${ghSelected} component${ghSelected === 1 ? "" : "s"} selected${ghNickNames.length > 0 ? `\n${ghNickNames.join(", ")}` : ""}`
-        : undefined,
-    docTarget: "grasshopper",
-  };
-  nodes.push(rhinoDoc, ghDoc);
+  const ghDetail =
+    ghSelected !== undefined
+      ? `${ghSelected} selected${ghNickNames.length > 0 ? ` · ${ghNickNames[0]}${ghSelected > 1 ? "…" : ""}` : ""}`
+      : undefined;
+  const ghTooltip =
+    ghSelected !== undefined
+      ? `${ghSelected} component${ghSelected === 1 ? "" : "s"} selected${ghNickNames.length > 0 ? `\n${ghNickNames.join(", ")}` : ""}`
+      : undefined;
+  // The GH selection badge lands on the doc the selection was observed in. An
+  // unattributed selection still lands on an only doc (the default-target rule);
+  // with several docs and no attribution it is shown nowhere rather than wrongly.
+  const badgeDocId = ghDocs ? (selection?.docId ?? (ghDocs.length === 1 ? ghDocs[0].id : null)) : null;
+  const ghDocNodes: GraphNode[] = ghDocs
+    ? ghDocs.map((doc, index) => ({
+        id: `doc:gh:${doc.id}`,
+        kind: "doc" as const,
+        x: DOC_X,
+        y: docStartY + (index + 1) * (DOC_H + DOC_GAP),
+        w: DOC_W,
+        h: DOC_H,
+        label: "Grasshopper",
+        sublabel: shortFile(doc.file),
+        detail: badgeDocId === doc.id ? ghDetail : undefined,
+        tooltip: badgeDocId === doc.id ? ghTooltip : undefined,
+        docTarget: "grasshopper" as const,
+        docId: doc.id,
+      }))
+    : [
+        {
+          id: "doc:gh",
+          kind: "doc" as const,
+          x: DOC_X,
+          y: docStartY + DOC_H + DOC_GAP,
+          w: DOC_W,
+          h: DOC_H,
+          label: "Grasshopper",
+          sublabel: shortFile(state.grasshopperFile),
+          detail: ghDetail,
+          tooltip: ghTooltip,
+          docTarget: "grasshopper" as const,
+        },
+      ];
+  nodes.push(rhinoDoc, ...ghDocNodes);
 
   // Session → orchestrator wires. One orchestrator input port per session,
   // distributed down the hub's left edge in priority order.
@@ -260,25 +291,32 @@ export function deriveGraph(state: RuntimeState): GraphModel {
   });
 
   // Orchestrator → document wires. When the executing job declares a target,
-  // only that document's wire animates; without target info both animate.
+  // only that document's wire animates; without target info all animate. With
+  // several GH docs the job's targetDocId narrows the animation to one GH node,
+  // falling back to every GH wire when the backend cannot attribute the doc.
   const writerQueueItem = state.writer
     ? state.queue.find((item) => item.id === state.writer?.jobId)
     : undefined;
   const writerTarget = writerQueueItem?.target;
+  const writerTargetDocId = writerQueueItem?.targetDocId ?? null;
   const animateRhino = state.writer != null && (writerTarget == null || writerTarget === "rhino" || writerTarget === "both");
   const animateGh = state.writer != null && (writerTarget == null || writerTarget === "grasshopper" || writerTarget === "both");
 
-  for (const [doc, animated] of [
-    [rhinoDoc, animateRhino],
-    [ghDoc, animateGh],
-  ] as const) {
+  const commitDocs = [rhinoDoc, ...ghDocNodes];
+  commitDocs.forEach((doc, index) => {
+    const animated =
+      doc.docTarget === "rhino"
+        ? animateRhino
+        : animateGh && (writerTargetDocId == null || doc.docId === undefined || writerTargetDocId === doc.docId);
     const x1 = ORCH_X + ORCH_W;
-    const y1 = orchY + (doc.docTarget === "rhino" ? ORCH_H / 3 : (ORCH_H * 2) / 3);
+    // One orchestrator output port per document, distributed down the hub's
+    // right edge — the same formula as the session input ports on the left.
+    const y1 = orchY + (ORCH_H * (index + 1)) / (commitDocs.length + 1);
     const x2 = doc.x;
     const y2 = doc.y + doc.h / 2;
     const dx = clamp((x2 - x1) / 2, 48, 120);
     edges.push({
-      id: `commit:${doc.docTarget}`,
+      id: doc.docTarget === "rhino" ? "commit:rhino" : doc.docId !== undefined ? `commit:gh:${doc.docId}` : "commit:grasshopper",
       from: "orchestrator",
       to: doc.id,
       kind: "commit",
@@ -292,7 +330,7 @@ export function deriveGraph(state: RuntimeState): GraphModel {
       midX: cubicMid(x1, x1 + dx, x2 - dx, x2),
       midY: cubicMid(y1, y1, y2, y2),
     });
-  }
+  });
 
   // Pairwise conflicts arc along the left of the session column.
   for (const conflict of state.conflicts) {

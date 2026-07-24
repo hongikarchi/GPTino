@@ -28,6 +28,11 @@ public interface ILiveDocumentBackend
 
     Task<object> ListRhinoObjectsAsync(JsonElement arguments, CancellationToken cancellationToken);
 
+    Task<object> InspectCanvasOutputsAsync(
+        SessionRecord session,
+        JsonElement arguments,
+        CancellationToken cancellationToken);
+
     Task<object> InspectCanvasOutputsAsync(JsonElement arguments, CancellationToken cancellationToken);
 
     Task<object> SubmitChangeAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken);
@@ -57,6 +62,12 @@ public sealed class DisconnectedDocumentBackend : ILiveDocumentBackend
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ListRhinoObjectsAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
+
+    public Task<object> InspectCanvasOutputsAsync(
+        SessionRecord session,
+        JsonElement arguments,
+        CancellationToken cancellationToken) =>
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> InspectCanvasOutputsAsync(JsonElement arguments, CancellationToken cancellationToken) =>
@@ -117,7 +128,7 @@ public sealed class DynamicToolDispatcher
                 "rhino_list" => DynamicToolResult.Ok(
                     await _backend.ListRhinoObjectsAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "inspect_outputs" => DynamicToolResult.Ok(
-                    await _backend.InspectCanvasOutputsAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
+                    await InspectOutputsAsync(call, cancellationToken).ConfigureAwait(false)),
                 "artifact_read" => DynamicToolResult.Ok(await ReadArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "artifact_write" => DynamicToolResult.Ok(await WriteArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "change_submit" => DynamicToolResult.Ok(await SubmitChangeAsync(call, cancellationToken).ConfigureAwait(false)),
@@ -241,6 +252,17 @@ public sealed class DynamicToolDispatcher
     {
         var session = await RequireCallingSessionAsync(call.ThreadId, cancellationToken).ConfigureAwait(false);
         return await _backend.ReadSnapshotAsync(session, call.Arguments, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<object> InspectOutputsAsync(
+        DynamicToolCall call,
+        CancellationToken cancellationToken)
+    {
+        // Output inspection reads one Grasshopper document's live component state, so the calling
+        // session is resolved and its document binding routes the read (same rule as snapshot_read).
+        var session = await RequireCallingSessionAsync(call.ThreadId, cancellationToken).ConfigureAwait(false);
+        return await _backend.InspectCanvasOutputsAsync(session, call.Arguments, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task<object> ReadArtifactAsync(DynamicToolCall call, CancellationToken cancellationToken)

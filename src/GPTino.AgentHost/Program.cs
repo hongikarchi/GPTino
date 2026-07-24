@@ -37,6 +37,22 @@ if (developmentDataDirectory is not null &&
         "The explicit AgentHost data directory does not match the validated development run directory.");
 }
 using var runtimeInstance = RuntimeInstanceLock.Acquire(options.ResolveDataDirectory());
+// One-time legacy adoption must run while this process owns the new root's instance lock and
+// before the SessionStore below opens runtime.db. It only applies to the default fingerprint
+// root: an explicit --data-directory (dev-mode/benchmark sandboxes) is skipped inside TryAdopt
+// so production project data is never imported into an isolated run. The app logger pipeline
+// does not exist until Build(), so adoption logs through a short-lived console factory matching
+// the app's format.
+using (var bootstrapLoggers = LoggerFactory.Create(logging => logging.AddSimpleConsole(console =>
+{
+    console.SingleLine = true;
+    console.TimestampFormat = "HH:mm:ss ";
+})))
+{
+    LegacyDataDirectoryAdoption.TryAdopt(
+        options,
+        bootstrapLoggers.CreateLogger(nameof(LegacyDataDirectoryAdoption)));
+}
 var identity = new RuntimeIdentity(
     options.ProjectId,
     options.RhinoPath,
@@ -281,6 +297,17 @@ api.MapPut("/sessions/{id:guid}/pause", async (
 {
     await orchestrator.SetSessionPausedAsync(id, request.Paused, cancellationToken);
     await queueControl.RefreshScheduleAsync(cancellationToken);
+    return Results.NoContent();
+});
+
+api.MapPut("/sessions/{id:guid}/target", async (
+    Guid id,
+    SetSessionTargetRequest request,
+    SessionStore sessionStore,
+    CancellationToken cancellationToken) =>
+{
+    await sessionStore.SetGrasshopperDocAsync(id, request.GrasshopperDoc, cancellationToken);
+    events.Publish();
     return Results.NoContent();
 });
 

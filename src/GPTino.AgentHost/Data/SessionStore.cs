@@ -63,6 +63,17 @@ public sealed class SessionStore
                     WHERE client_message_id IS NOT NULL;
                 INSERT OR IGNORE INTO settings(key, value) VALUES ('order_version', '0');
                 """, cancellationToken).ConfigureAwait(false);
+            // Column migration for pre-existing user databases (CREATE TABLE IF NOT EXISTS never
+            // alters an existing table). Nullable with no backfill: NULL = default-document
+            // resolution, so legacy rows keep today's single-Grasshopper behavior untouched.
+            if (!await HasColumnAsync(connection, "sessions", "gh_doc", cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                await ExecuteAsync(
+                    connection,
+                    "ALTER TABLE sessions ADD COLUMN gh_doc TEXT NULL;",
+                    cancellationToken).ConfigureAwait(false);
+            }
             await NormalizeInterruptedSessionsAsync(connection, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -84,7 +95,7 @@ public sealed class SessionStore
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at FROM sessions WHERE id=$id;";
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc FROM sessions WHERE id=$id;";
         command.Parameters.AddWithValue("$id", id.ToString("D"));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? MapSession(reader) : null;
@@ -94,7 +105,7 @@ public sealed class SessionStore
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at FROM sessions WHERE codex_thread_id=$thread;";
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc FROM sessions WHERE codex_thread_id=$thread;";
         command.Parameters.AddWithValue("$thread", threadId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? MapSession(reader) : null;
@@ -119,11 +130,12 @@ public sealed class SessionStore
                 cancellationToken).ConfigureAwait(false);
             var id = Guid.NewGuid();
             var now = DateTimeOffset.UtcNow;
+            var grasshopperDoc = NormalizeGrasshopperDoc(request.GrasshopperDoc);
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
-                INSERT INTO sessions(id,name,role,model_profile,model,state,sort_order,created_at,updated_at)
-                VALUES($id,$name,$role,$profile,$model,$state,$order,$created,$updated);
+                INSERT INTO sessions(id,name,role,model_profile,model,state,sort_order,created_at,updated_at,gh_doc)
+                VALUES($id,$name,$role,$profile,$model,$state,$order,$created,$updated,$ghDoc);
                 """;
             command.Parameters.AddWithValue("$id", id.ToString("D"));
             command.Parameters.AddWithValue("$name", request.Name.Trim());
@@ -134,6 +146,7 @@ public sealed class SessionStore
             command.Parameters.AddWithValue("$order", order);
             command.Parameters.AddWithValue("$created", now.ToString("O"));
             command.Parameters.AddWithValue("$updated", now.ToString("O"));
+            command.Parameters.AddWithValue("$ghDoc", (object?)grasshopperDoc ?? DBNull.Value);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             transaction.Commit();
             return new SessionRecord(
@@ -147,7 +160,8 @@ public sealed class SessionStore
                 null,
                 null,
                 now,
-                now);
+                now,
+                grasshopperDoc);
         }
         finally
         {
@@ -410,6 +424,81 @@ public sealed class SessionStore
         }
     }
 
+    /// <summary>
+    /// Binds the session to one Grasshopper document (a durable docKey) or clears the binding
+    /// (null = default-document resolution). Follows the UpdatePreferencesAsync pattern; the value
+    /// is deliberately not validated against live targets — resolution happens at tool-call time
+    /// with an actionable message listing the registered documents.
+    /// </summary>
+    public async Task SetGrasshopperDocAsync(
+        Guid id,
+        string? grasshopperDoc,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeGrasshopperDoc(grasshopperDoc);
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE sessions
+                SET gh_doc=$ghDoc,
+                    updated_at=$updated
+                WHERE id=$id;
+                """;
+            command.Parameters.AddWithValue("$ghDoc", (object?)normalized ?? DBNull.Value);
+            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$id", id.ToString("D"));
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new KeyNotFoundException($"Session {id:D} was not found.");
+            }
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Rewrites every session bound to one Grasshopper docKey to another in a single UPDATE.
+    /// Called when a Save As re-registration recomputes a target's path-derived docKey: the
+    /// StableTargetKey proves it is the same live document, so bindings follow the rename
+    /// instead of stranding sessions on a key that no longer resolves. Matching is
+    /// case-insensitive (docKeys are canonical lowercase hex, but the column is unvalidated).
+    /// </summary>
+    public async Task<int> RemapGrasshopperDocAsync(
+        string oldGrasshopperDoc,
+        string newGrasshopperDoc,
+        CancellationToken cancellationToken = default)
+    {
+        var oldNormalized = NormalizeGrasshopperDoc(oldGrasshopperDoc)
+            ?? throw new ArgumentException("The old Grasshopper docKey is required.", nameof(oldGrasshopperDoc));
+        var newNormalized = NormalizeGrasshopperDoc(newGrasshopperDoc)
+            ?? throw new ArgumentException("The new Grasshopper docKey is required.", nameof(newGrasshopperDoc));
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE sessions
+                SET gh_doc=$new,
+                    updated_at=$updated
+                WHERE gh_doc=$old COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$new", newNormalized);
+            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$old", oldNormalized);
+            return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
     private async Task UpdateSessionAsync(
         Guid id,
         string? state,
@@ -519,7 +608,7 @@ public sealed class SessionStore
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at FROM sessions ORDER BY sort_order;";
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc FROM sessions ORDER BY sort_order;";
         var sessions = new List<SessionRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -541,7 +630,8 @@ public sealed class SessionStore
             reader.IsDBNull(7) ? null : reader.GetString(7),
             reader.IsDBNull(8) ? null : reader.GetString(8),
             DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture),
-            DateTimeOffset.Parse(reader.GetString(10), System.Globalization.CultureInfo.InvariantCulture));
+            DateTimeOffset.Parse(reader.GetString(10), System.Globalization.CultureInfo.InvariantCulture),
+            reader.IsDBNull(11) ? null : reader.GetString(11));
 
     private static async Task<HashSet<Guid>> ReadSessionIdsAsync(
         SqliteConnection connection,
@@ -585,6 +675,31 @@ public sealed class SessionStore
 
     private static string Normalize(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim().ToLowerInvariant();
+
+    // Lowercased to match ComputeDocumentKey's canonical lowercase-hex form: the backend resolves
+    // docKeys case-insensitively, but the panel compares boundGrasshopperDocId strictly, so a
+    // non-canonical stored casing would render a correctly-executing session as unbound.
+    private static string? NormalizeGrasshopperDoc(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+
+    private static async Task<bool> HasColumnAsync(
+        SqliteConnection connection,
+        string table,
+        string column,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 }
 
 public sealed class SessionOrderConcurrencyException(long expected, long actual)

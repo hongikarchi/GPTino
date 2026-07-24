@@ -55,6 +55,12 @@ export interface SessionUsage {
   rateLimits?: { label: string; usedPercent: number; resetsAt?: string | null }[] | null;
 }
 
+/** One Grasshopper document registered with the runtime. `id` is the durable 16-hex docKey. */
+export interface GrasshopperDocInfo {
+  id: string;
+  file: string;
+}
+
 export interface GptinoSession {
   id: string;
   title: string;
@@ -78,6 +84,8 @@ export interface GptinoSession {
   messages: ChatMessage[];
   job?: SessionJob;
   usage?: SessionUsage;
+  /** docKey of the GH doc this session writes to; null = unbound (default doc when only one exists). */
+  boundGrasshopperDocId?: string | null;
 }
 
 export type QueueItemState = "ready" | "waiting" | "applying" | "verifying";
@@ -90,6 +98,8 @@ export interface QueueItem {
   resource?: string | null;
   waitingFor?: string | null;
   target?: "rhino" | "grasshopper" | "both" | null;
+  /** docKey of the GH doc this job writes to; null when the job is not doc-attributable. */
+  targetDocId?: string | null;
 }
 
 export interface RuntimeConflict {
@@ -118,6 +128,8 @@ export interface CurrentSelection {
   activeLayer?: string | null;
   grasshopperObjectCount?: number;
   grasshopperObjects?: { id: string; nickName: string }[];
+  /** docKey of the GH doc the grasshopper selection belongs to; null when not attributable. */
+  docId?: string | null;
   observedAt: string;
 }
 
@@ -133,6 +145,8 @@ export interface RuntimeState {
   projectName: string;
   rhinoFile: string;
   grasshopperFile: string;
+  /** All registered GH docs; null/absent = legacy single-doc server (fall back to grasshopperFile). */
+  grasshopperDocs?: GrasshopperDocInfo[] | null;
   health: RuntimeHealth;
   healthDetail?: string;
   revision: number;

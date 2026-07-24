@@ -18,9 +18,11 @@ export interface GptinoApiClient {
     onError?: (error: Error) => void,
   ): () => void;
   listModels(): Promise<ModelInfo[]>;
-  createSession(name: string): Promise<void>;
+  createSession(name: string, grasshopperDoc?: string): Promise<void>;
   reorderSessions(request: SessionOrderRequest): Promise<void>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
+  /** Bind (docKey) or unbind (null) the GH document this session's writes target. */
+  setSessionTarget(sessionId: string, grasshopperDoc: string | null): Promise<void>;
   setSessionMode(sessionId: string, mode: SessionMode): Promise<void>;
   setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
   sendMessage(sessionId: string, request: MessageRequest): Promise<void>;
@@ -139,13 +141,14 @@ class HttpApiClient implements GptinoApiClient {
     });
   }
 
-  createSession(name: string): Promise<void> {
+  createSession(name: string, grasshopperDoc?: string): Promise<void> {
     return this.request("/sessions", {
       method: "POST",
       body: JSON.stringify({
         name,
         role: "modeler",
         modelProfile: "auto",
+        ...(grasshopperDoc ? { grasshopperDoc } : {}),
       }),
     });
   }
@@ -154,6 +157,13 @@ class HttpApiClient implements GptinoApiClient {
     return this.request(`/sessions/${encodeURIComponent(sessionId)}/pause`, {
       method: "PUT",
       body: JSON.stringify({ paused }),
+    });
+  }
+
+  setSessionTarget(sessionId: string, grasshopperDoc: string | null): Promise<void> {
+    return this.request(`/sessions/${encodeURIComponent(sessionId)}/target`, {
+      method: "PUT",
+      body: JSON.stringify({ grasshopperDoc }),
     });
   }
 

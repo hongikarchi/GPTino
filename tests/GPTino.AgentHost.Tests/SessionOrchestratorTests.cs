@@ -111,6 +111,77 @@ public sealed class SessionOrchestratorTests
     }
 
     [Fact]
+    public async Task TurnSelectionContextFollowsTheSessionsGrasshopperDocBinding()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient
+        {
+            ReadTurn = (_, _, _) => Task.FromResult<CodexTurnReadResult?>(Completed("done"))
+        };
+        const string boundDocKey = "abcdef0123456789";
+        var boundSelection = new GPTino.BridgeContract.SelectionChangedEvent(
+            [],
+            null,
+            DateTimeOffset.UtcNow,
+            [
+                new GPTino.BridgeContract.GrasshopperSelectedObject(
+                    Guid.Parse("2af31c58-6b1a-49f2-8de3-0a1b2c3d4e5f"),
+                    "Python 3 Script",
+                    "Bound Doc Object")
+            ]);
+        var defaultSelection = new GPTino.BridgeContract.SelectionChangedEvent(
+            [],
+            null,
+            DateTimeOffset.UtcNow,
+            [
+                new GPTino.BridgeContract.GrasshopperSelectedObject(
+                    Guid.Parse("9b8c7d6e-5f40-4131-a2b3-c4d5e6f70819"),
+                    "Python 3 Script",
+                    "Wrong Doc Object")
+            ]);
+        var selectionContext = new RoutingSelectionContext(boundDocKey, boundSelection, defaultSelection);
+        using var harness = await CreateHarnessAsync(directory, client, selectionContext: selectionContext);
+        await harness.Store.SetGrasshopperDocAsync(harness.Session.Id, boundDocKey);
+
+        await harness.Orchestrator.SubmitMessageAsync(
+            harness.Session.Id,
+            new SendMessageRequest("바인딩된 문서의 선택 알려줘", "bound-selection-1"),
+            CancellationToken.None);
+
+        await WaitForStateAsync(harness.Store, harness.Session.Id, SessionStates.Idle);
+        // The bound session's turn context carries ITS document's selection and digest — never
+        // the default target's (the pre-fix behavior).
+        var startedTurn = Assert.Single(client.StartedTurns);
+        Assert.Contains("Bound Doc Object", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("Canvas: 42 component(s) @ r7", startedTurn.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Wrong Doc Object", startedTurn.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Routes per docKey like the live backend: the bound doc's selection for its key,
+    /// the default target's selection otherwise. Lets the test prove the orchestrator asks for
+    /// the SESSION's document rather than reading the sessionless current-selection surface.</summary>
+    private sealed class RoutingSelectionContext(
+        string boundDocKey,
+        GPTino.BridgeContract.SelectionChangedEvent boundSelection,
+        GPTino.BridgeContract.SelectionChangedEvent defaultSelection)
+        : ISelectionContextSource
+    {
+        public GPTino.BridgeContract.SelectionChangedEvent? CurrentSelection => defaultSelection;
+
+        public CanvasDigest? CurrentCanvasDigest => null;
+
+        public GPTino.BridgeContract.SelectionChangedEvent? SelectionFor(string? docKey) =>
+            string.Equals(docKey, boundDocKey, StringComparison.OrdinalIgnoreCase)
+                ? boundSelection
+                : defaultSelection;
+
+        public CanvasDigest? CanvasDigestFor(string? docKey) =>
+            string.Equals(docKey, boundDocKey, StringComparison.OrdinalIgnoreCase)
+                ? new CanvasDigest(7, 42)
+                : null;
+    }
+
+    [Fact]
     public async Task AttachmentsPersistShortLinesAndCarryPathsOnlyInTheTurnInput()
     {
         using var directory = new TestDirectory();

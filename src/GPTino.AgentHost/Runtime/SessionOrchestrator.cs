@@ -284,7 +284,7 @@ public sealed class SessionOrchestrator : IDisposable
                 {
                     turnId = await _codex.StartTurnAsync(
                         threadId,
-                        ComposeTurnInput(content, attachmentsBlock),
+                        ComposeTurnInput(latest, content, attachmentsBlock),
                         selection.Model,
                         selection.Effort,
                         cancellationToken).ConfigureAwait(false);
@@ -302,7 +302,7 @@ public sealed class SessionOrchestrator : IDisposable
                         cancellationToken).ConfigureAwait(false);
                     turnId = await _codex.StartTurnAsync(
                         threadId,
-                        ComposeTurnInput(content, attachmentsBlock),
+                        ComposeTurnInput(latest, content, attachmentsBlock),
                         selection.Model,
                         selection.Effort,
                         cancellationToken).ConfigureAwait(false);
@@ -465,16 +465,19 @@ public sealed class SessionOrchestrator : IDisposable
     /// wording never influences model escalation — and only when a selection exists. Ids are
     /// hints, not fingerprints: writes still require snapshot_read fingerprints. When the message
     /// carried attachments, the tagged attachment block is appended after the user content —
-    /// turn input only, never the persisted transcript row.
+    /// turn input only, never the persisted transcript row. Selection and digest are routed by
+    /// the session's Grasshopper-document binding so a bound session never receives another
+    /// document's context; an unbound session falls back to the sole registered document (the
+    /// pre-multi-document behavior) and gets no hint when several documents are open.
     /// </summary>
-    private string ComposeTurnInput(string content, string? attachmentsBlock = null)
+    private string ComposeTurnInput(SessionRecord session, string content, string? attachmentsBlock = null)
     {
         if (!string.IsNullOrEmpty(attachmentsBlock))
         {
             content = content.Length > 0 ? $"{content}\n{attachmentsBlock}" : attachmentsBlock;
         }
-        var selection = _selectionContext?.CurrentSelection;
-        var digest = _selectionContext?.CurrentCanvasDigest;
+        var selection = _selectionContext?.SelectionFor(session.GrasshopperDoc);
+        var digest = _selectionContext?.CanvasDigestFor(session.GrasshopperDoc);
         var grasshopperObjects = selection?.GrasshopperObjects;
         var hasSelection = selection is not null &&
             (selection.RhinoObjectIds.Count > 0 ||
