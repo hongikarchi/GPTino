@@ -5,11 +5,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$SessionId,
-    [Parameter(Mandatory)][string]$Content,
+    [string]$Content,
+    [string]$ContentFile,
     [int]$TimeoutSeconds = 300,
     [string]$Run
 )
 $ErrorActionPreference = 'Stop'
+if ($ContentFile) { $Content = Get-Content -LiteralPath $ContentFile -Raw }
+if (-not $Content) { throw 'Provide -Content or -ContentFile.' }
 $repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 if (-not $Run) {
     $Run = (Get-ChildItem (Join-Path $repo 'artifacts\dev-loop') -Directory |
