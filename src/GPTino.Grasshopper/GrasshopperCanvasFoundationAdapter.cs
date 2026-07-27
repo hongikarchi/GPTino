@@ -90,13 +90,21 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         var documentObject = document.FindObject(request.ObjectId, true)
             ?? throw new KeyNotFoundException(
                 $"Grasshopper object {request.ObjectId:D} was not found.");
-        if (documentObject is not IGH_Component component)
+        // A component exposes its Output parameters; a STANDALONE parameter — a Rhino reference
+        // parameter created by referenceRhinoObjects, or a Number Slider — IS its own single output
+        // and holds the data directly. Inspect whichever applies. Only objects with neither (a
+        // Scribble, a group) are genuinely un-inspectable. Previously a standalone param threw
+        // NotSupportedException, which the Verify path swallowed but logged as a bridge failure and
+        // which blocked semantic predicates on the parameter's own data.
+        IReadOnlyList<IGH_Param> outputParameters = documentObject switch
         {
-            throw new NotSupportedException(
-                $"Grasshopper object {request.ObjectId:D} does not expose component outputs.");
-        }
+            IGH_Component component => component.Params.Output,
+            IGH_Param parameter => new[] { parameter },
+            _ => throw new NotSupportedException(
+                $"Grasshopper object {request.ObjectId:D} exposes no inspectable outputs.")
+        };
 
-        var outputs = component.Params.Output
+        var outputs = outputParameters
             .Select(parameter => InspectOutputParameter(parameter, request.IncludeMassProperties, cancellationToken))
             .ToArray();
         var canonical = JsonSerializer.Serialize(outputs);
