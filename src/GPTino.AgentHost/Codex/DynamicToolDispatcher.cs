@@ -141,12 +141,19 @@ public sealed class DynamicToolDispatcher
                 "memory_append" => AppendMemory(call),
                 _ => DynamicToolResult.Fail($"Unsupported GPTino tool: {call.Tool}")
             };
+            // Dev-only latency stream: EVERY call (incl. job_status polls, which RecordActivityAsync
+            // filters out) so a benchmark can split turn wall-clock into model-inference gaps vs
+            // GPTino tool-handling. No-op unless GPTINO_DEV_MODE is set.
+            GPTino.BridgeContract.AuthoringLatencyTrace.TryToolCall(
+                call.Tool, stopwatch.ElapsedMilliseconds, ok: true, call.ThreadId);
             await RecordActivityAsync(call, ok: true, stopwatch.ElapsedMilliseconds, cancellationToken)
                 .ConfigureAwait(false);
             return result;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            GPTino.BridgeContract.AuthoringLatencyTrace.TryToolCall(
+                call.Tool, stopwatch.ElapsedMilliseconds, ok: false, call.ThreadId);
             await RecordActivityAsync(
                 call,
                 ok: false,
