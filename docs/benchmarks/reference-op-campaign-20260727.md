@@ -68,6 +68,27 @@ on it work).
 issue across the whole campaign is E1 (caught, cosmetic + predicate-blocking). Heavy-solve
 self-refusal, concurrency serialization, and runtime-error capture all behaved as designed.
 
+## Decomposition test — heavy code auto-split (✅)
+
+Task (deliberately heavy, NO split instruction, to test autonomous decomposition): from the
+referenced NURBS surface build a 40×25 = 1000-panel structural facade with attractor-driven
+openings, 50 mm solids, and per-panel diagonal bracing — 3000 closed Breps total.
+
+Ground truth (git snapshot): the agent did NOT author one monolithic component. It produced a
+staged, linearly-wired, per-stage-grouped chain — 21 objects, 19 wires, 4 groups:
+`UV Panel Grid` [4] → `Openings - Attractor Profiles` [7] → `Panel Solids - Thickness` [2] →
+`Structure - Diagonal Bracing` [3], plus 11 named control sliders. 14 staged commits, 0
+conflicts, 0 generation failures.
+
+Solve time (agent-measured): full 1000-panel / 3000-Brep recompute ≈ **4.08 s TOTAL**, i.e.
+≈1 s per stage. A single monolithic component would have been one ~4 s+ op, far over the 1 s
+op_duration threshold. Splitting kept every component fast — the house-rules "split by logical
+unit at ~1 s + linear-flow wiring + per-stage grouping" work autonomously on a heavy real task.
+
+Caveat: the RESULT solves fast, but the deep model took ~15 min of authoring wall-clock (14
+staged commits) to produce it — an authoring-latency observation (model speed/effort), not a
+decomposition-logic problem.
+
 ## Automation win
 The whole run needed zero manual Rhino interaction: `dev-loop.ps1` boots Rhino in dev-mode,
 opens the scene, panel, and Grasshopper doc via `/runscript` chaining, and waits for the
