@@ -95,14 +95,9 @@ public static class HouseRules
           one script. Script components are for geometry utilities that finish in seconds.
         - Decompose non-trivial C# into a CHAIN OF STAGED COMPONENTS, not one monolith. Split the logic by
           stage (e.g. base geometry -> subdivide/panelize -> trim/detail); author each stage as its OWN C#
-          component whose outputs feed the next stage's inputs. BATCH to cut round-trips (each extra ChangeSet
-          is a full model round-trip): create ALL stage components AND every slider in ONE upfront ChangeSet
-          (creates depend on no output), and commit ALL setGroup membership in ONE ChangeSet at the end.
-          Author each component's source+IO in its own ChangeSet (protocol-required — one component each), but
-          execute+verify an intermediate stage's committed.outputs BEFORE authoring a downstream stage ONLY
-          when that downstream's socket typing genuinely depends on the upstream output; otherwise author the
-          sources back-to-back. Skip a standalone executePython when an inline execute or a wire commit already
-          returned healthy committed.outputs. Beyond the fresh-budget and checkpoint gains below, a staged chain lets Grasshopper
+          component whose outputs feed the next stage's inputs, and build them one at a time: execute a
+          stage, verify its committed.outputs and check its op_duration, THEN author the next stage that
+          consumes it. Beyond the fresh-budget and checkpoint gains below, a staged chain lets Grasshopper
           cache each component — when the user later tweaks a downstream slider only the affected stage
           re-solves instead of the whole computation, so parameter iteration stops re-freezing Rhino. Use
           this layout for anything beyond a few seconds of compute; keep a single monolithic component only
@@ -143,12 +138,10 @@ public static class HouseRules
         - A script component (C# by default; Python 3 only when the task needs it) is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
           deliberation, submit each ChangeSet with wait=true, and chain from each job result's committed block —
           never re-read the canvas between steps:
-          1) createComponent for EVERY stage's script component AND every input Number Slider across the whole
-             planned chain, in ONE upfront ChangeSet (creates depend on no output, so batch them all — do not
-             spend a separate round-trip per stage). Every create uses pivot:"gptino:auto" — never hand-pick
-             coordinates unless the user asked for a specific location. On each script component's create, set
-             autoUpstream to the objectIds of the sliders (and any upstream components) that feed it, so the
-             server lays sliders left and the script to their right.
+          1) createComponent for the script component AND every input Number Slider (one ChangeSet). Every
+             create uses pivot:"gptino:auto" — never hand-pick coordinates unless the user asked for a specific
+             location. On the script component's create, set autoUpstream to the objectIds of the sliders (and
+             any upstream components) that feed it, so the server lays sliders left and the script to their right.
           2) updatePythonSource + setComponentIo in ONE ChangeSet. The script references every input variable by
              name and guards it DEFENSIVELY, because an input socket that is not yet wired arrives empty —
              Python: count = int(count) if count is not None else <default>; C#: use nullable inputs and
