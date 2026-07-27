@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArchiveBrowser } from "./components/ArchiveBrowser";
 import { ChatPane } from "./components/ChatPane";
+import { DeletedSessions } from "./components/DeletedSessions";
 import { Icon } from "./components/Icons";
 import { SessionCanvas } from "./components/SessionCanvas";
 import { ToastStack } from "./components/Toast";
@@ -140,7 +141,25 @@ export default function App() {
   const completion = useSessionCompletion(serverRuntime, selectedId, setSelectedId);
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [canvasCollapsed, setCanvasCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("gptino.canvasCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleCanvas = () =>
+    setCanvasCollapsed((collapsed) => {
+      const next = !collapsed;
+      try {
+        localStorage.setItem("gptino.canvasCollapsed", next ? "1" : "0");
+      } catch {
+        // localStorage may be unavailable; the toggle still works for this session.
+      }
+      return next;
+    });
   const newSessionAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // Esc or a press outside the + Session button / popover closes it.
@@ -338,15 +357,17 @@ export default function App() {
         </>
       ) : null}
 
-      <section className="canvas-row" aria-label="Session graph">
-        <SessionCanvas
-          runtime={runtime}
-          selectedId={selectedId}
-          unseenIds={completion.unseen}
-          onSelect={setSelectedId}
-          onReorder={actions.reorder}
-          onPauseToggle={(id, paused) => void actions.pauseSession(id, paused)}
-        />
+      <section className={`canvas-row${canvasCollapsed ? " collapsed" : ""}`} aria-label="Session graph">
+        {canvasCollapsed ? null : (
+          <SessionCanvas
+            runtime={runtime}
+            selectedId={selectedId}
+            unseenIds={completion.unseen}
+            onSelect={setSelectedId}
+            onReorder={actions.reorder}
+            onPauseToggle={(id, paused) => void actions.pauseSession(id, paused)}
+          />
+        )}
         <div className="canvas-toolbar">
           <div className="new-session-anchor" ref={newSessionAnchorRef}>
             <button
@@ -374,6 +395,15 @@ export default function App() {
           <div className="canvas-global-actions">
             <button
               type="button"
+              className="secondary-button"
+              onClick={toggleCanvas}
+              aria-expanded={!canvasCollapsed}
+              title={canvasCollapsed ? "Show the session graph" : "Collapse the session graph"}
+            >
+              {canvasCollapsed ? `▸ Graph (${runtime.sessions.length})` : "▾ Graph"}
+            </button>
+            <button
+              type="button"
               className={`secondary-button ${runtime.paused ? "resume" : ""}`}
               onClick={() => void actions.pauseRuntime(!runtime.paused)}
               disabled={busyActions.has("pause-runtime")}
@@ -391,6 +421,14 @@ export default function App() {
             >
               <Icon name="stop" />
               Stop current
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setTrashOpen(true)}
+              title="Restore or permanently remove deleted sessions"
+            >
+              Deleted
             </button>
           </div>
         </div>
@@ -412,6 +450,13 @@ export default function App() {
             requestNotifyPermissionOnce();
             return actions.sendMessage(selected.id, content, attachments);
           }}
+          onDelete={() => {
+            if (!selected) return;
+            const deletedId = selected.id;
+            void actions.deleteSession(deletedId);
+            if (selectedId === deletedId) setSelectedId(null);
+          }}
+          onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
         />
       </main>
 
@@ -421,6 +466,15 @@ export default function App() {
           listArchive={actions.listArchive}
           readMessages={actions.readArchiveMessages}
           importSession={actions.importArchiveSession}
+        />
+      ) : null}
+
+      {trashOpen ? (
+        <DeletedSessions
+          onClose={() => setTrashOpen(false)}
+          list={actions.listDeleted}
+          onRestore={actions.restoreSession}
+          onPurge={actions.purgeSession}
         />
       ) : null}
 

@@ -1,4 +1,6 @@
+using System.Text.Json;
 using GPTino.AgentHost.Runtime;
+using GPTino.BridgeContract;
 using GPTino.Contracts;
 
 namespace GPTino.AgentHost.Tests;
@@ -224,5 +226,115 @@ public sealed class FingerprintAutoFillTests
         Assert.Empty(conflicts);
         Assert.Same(changeSet, resolved); // no auto anywhere -> identical instance returned
         Assert.Equal("concrete-fp", Assert.Single(resolved.WriteSet).ExpectedFingerprint);
+    }
+
+    // --- Self-attributable stale concrete rebase (roadmap A-1) -------------------------------------
+    // Value/geometry writes carry a concrete fingerprint gptino:auto cannot fill. When the current
+    // live state IS this session's own last write (per the ledger), a stale base is rebased to live
+    // instead of Blocking; every foreign/drift/unknown case is left untouched so the Block still fires.
+
+    private static ResourceAddress Value(string id) =>
+        new(ResourceKind.GrasshopperComponentValue, id, "*");
+
+    private static LiveDocumentBackend.PreparedOperation ValueOperation(ResourceAddress resource, string payloadFingerprint)
+    {
+        var operation = new TypedOperation(
+            "op-1",
+            OperationKind.SetValue,
+            AdapterOwner.Cordyceps,
+            Array.Empty<ResourceAddress>(),
+            new[] { resource },
+            Reversible: false);
+        var json = $$"""{"operationId":"op-1","objectId":"{{resource.Id}}","expectedFingerprint":"{{payloadFingerprint}}","value":5}""";
+        using var document = JsonDocument.Parse(json);
+        return new LiveDocumentBackend.PreparedOperation(
+            operation,
+            BridgeAdapterOwner.CordycepsCanvas,
+            "canvas.setNumberSlider",
+            document.RootElement.Clone(),
+            Array.Empty<byte>(),
+            "sha");
+    }
+
+    [Fact]
+    public void SelfStaleConcreteRebasesWriteSetAndPayloadToLive()
+    {
+        var session = Guid.NewGuid();
+        var value = Value("00000000-0000-0000-0000-000000000501");
+        var changeSet = ChangeSetWith(session, new ResourceExpectation(value, "stale-fp"));
+        var snapshot = SnapshotWith(new ResourceFingerprint(value, "live-fp"));
+        var ledger = Ledger(value, "live-fp", session); // live == this session's own last write
+
+        var (resolved, operations, rebased) = LiveDocumentBackend.ResolveSelfStaleConcreteRebase(
+            changeSet, new[] { ValueOperation(value, "stale-fp") }, snapshot, session, ledger);
+
+        Assert.Equal("live-fp", Assert.Single(resolved.WriteSet).ExpectedFingerprint);
+        var item = Assert.Single(rebased);
+        Assert.Equal("stale-fp", item.StaleFingerprint);
+        Assert.Equal("live-fp", item.LiveFingerprint);
+        // The payload fingerprint is rewritten too, so the payload/writeSet alignment preflight passes.
+        Assert.Equal("live-fp", Assert.Single(operations).Arguments.GetProperty("expectedFingerprint").GetString());
+    }
+
+    [Fact]
+    public void ForeignStaleConcreteIsNotRebased()
+    {
+        var session = Guid.NewGuid();
+        var value = Value("00000000-0000-0000-0000-000000000502");
+        var changeSet = ChangeSetWith(session, new ResourceExpectation(value, "stale-fp"));
+        var snapshot = SnapshotWith(new ResourceFingerprint(value, "live-fp"));
+        var ledger = Ledger(value, "live-fp", Guid.NewGuid()); // another session last wrote it
+
+        var (resolved, _, rebased) = LiveDocumentBackend.ResolveSelfStaleConcreteRebase(
+            changeSet, new[] { ValueOperation(value, "stale-fp") }, snapshot, session, ledger);
+
+        Assert.Empty(rebased); // left stale so ConflictDetector Blocks the genuine conflict
+        Assert.Equal("stale-fp", Assert.Single(resolved.WriteSet).ExpectedFingerprint);
+    }
+
+    [Fact]
+    public void DriftedStaleConcreteIsNotRebased()
+    {
+        var session = Guid.NewGuid();
+        var value = Value("00000000-0000-0000-0000-000000000503");
+        var changeSet = ChangeSetWith(session, new ResourceExpectation(value, "stale-fp"));
+        var snapshot = SnapshotWith(new ResourceFingerprint(value, "live-fp"));
+        var ledger = Ledger(value, "ledger-fp", session); // this session's last write != live (manual drift)
+
+        var (_, _, rebased) = LiveDocumentBackend.ResolveSelfStaleConcreteRebase(
+            changeSet, new[] { ValueOperation(value, "stale-fp") }, snapshot, session, ledger);
+
+        Assert.Empty(rebased);
+    }
+
+    [Fact]
+    public void ConcreteStaleWithNoLedgerRowIsNotRebased()
+    {
+        var session = Guid.NewGuid();
+        var value = Value("00000000-0000-0000-0000-000000000504");
+        var changeSet = ChangeSetWith(session, new ResourceExpectation(value, "stale-fp"));
+        var snapshot = SnapshotWith(new ResourceFingerprint(value, "live-fp"));
+        var ledger = new Dictionary<string, LiveDocumentBackend.ResourceLedgerEntry>(StringComparer.Ordinal);
+
+        var (_, _, rebased) = LiveDocumentBackend.ResolveSelfStaleConcreteRebase(
+            changeSet, new[] { ValueOperation(value, "stale-fp") }, snapshot, session, ledger);
+
+        Assert.Empty(rebased);
+    }
+
+    [Fact]
+    public void ConcreteAlreadyMatchingLiveIsNotRebased()
+    {
+        var session = Guid.NewGuid();
+        var value = Value("00000000-0000-0000-0000-000000000505");
+        var changeSet = ChangeSetWith(session, new ResourceExpectation(value, "live-fp"));
+        var snapshot = SnapshotWith(new ResourceFingerprint(value, "live-fp"));
+        var ledger = Ledger(value, "live-fp", session);
+
+        var (resolved, operations, rebased) = LiveDocumentBackend.ResolveSelfStaleConcreteRebase(
+            changeSet, new[] { ValueOperation(value, "live-fp") }, snapshot, session, ledger);
+
+        Assert.Empty(rebased);
+        Assert.Same(changeSet, resolved); // unchanged instance returned when nothing rebases
     }
 }

@@ -43,6 +43,49 @@ public sealed class SessionStoreTests
     }
 
     [Fact]
+    public async Task SoftDeleteHidesRestoreRecoversAndPurgeRemovesSessions()
+    {
+        using var directory = new TestDirectory();
+        var store = new SessionStore(directory.GetPath("sessions.db"));
+        await store.InitializeAsync();
+
+        var a = await store.CreateSessionAsync(new CreateSessionRequest("A"));
+        var b = await store.CreateSessionAsync(new CreateSessionRequest("B"));
+        var c = await store.CreateSessionAsync(new CreateSessionRequest("C"));
+        await store.AppendMessageOnceAsync(b.Id, "user", "hello from B");
+
+        // Soft-delete B: gone from the active list, present in the deleted list, still findable.
+        await store.SetSessionDeletedAsync(b.Id, deleted: true);
+        var (active, version) = await store.ReadStateAsync();
+        Assert.Equal(new[] { a.Id, c.Id }, active.Select(session => session.Id).ToArray());
+        var deleted = await store.ReadDeletedSessionsAsync();
+        Assert.Equal(b.Id, Assert.Single(deleted).Id);
+        Assert.NotNull(await store.FindSessionAsync(b.Id));
+
+        // Reordering the live set while a deleted row is parked out of band must not collide on the
+        // UNIQUE sort_order (the deleted row sits at a deep negative, clear of the reorder temporaries).
+        await store.ReorderAsync(new[] { c.Id, a.Id }, version);
+        var (reordered, _) = await store.ReadStateAsync();
+        Assert.Equal(new[] { c.Id, a.Id }, reordered.Select(session => session.Id).ToArray());
+
+        // Restore B: back in the active list (appended at the end), out of the deleted list.
+        await store.SetSessionDeletedAsync(b.Id, deleted: false);
+        var (restored, _) = await store.ReadStateAsync();
+        Assert.Contains(b.Id, restored.Select(session => session.Id));
+        Assert.Equal(b.Id, restored[^1].Id);
+        Assert.Empty(await store.ReadDeletedSessionsAsync());
+        Assert.Equal("hello from B", Assert.Single(await store.ReadMessagesAsync(b.Id)).Content);
+
+        // Purge A permanently: gone from every view, transcript removed, others intact.
+        await store.AppendMessageOnceAsync(a.Id, "user", "hello from A");
+        await store.PurgeSessionAsync(a.Id);
+        Assert.Null(await store.FindSessionAsync(a.Id));
+        Assert.Empty(await store.ReadMessagesAsync(a.Id));
+        var (afterPurge, _) = await store.ReadStateAsync();
+        Assert.Equal(new[] { c.Id, b.Id }, afterPurge.Select(session => session.Id).ToArray());
+    }
+
+    [Fact]
     public async Task GrasshopperDocStoresCanonicalLowercaseAndRemapFollowsRename()
     {
         using var directory = new TestDirectory();

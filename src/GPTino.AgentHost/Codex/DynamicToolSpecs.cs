@@ -6,7 +6,9 @@ internal static class DynamicToolSpecs
         "payload-guide.md",
         DefaultPayloadGuide);
 
-    private const string DefaultPayloadGuide = """
+    // internal (not private) so a parity test can assert this compiled fallback stays byte-identical
+    // to assets/instructions/payload-guide.md — the two are edited together and must never drift.
+    internal const string DefaultPayloadGuide = """
 
         PAYLOADS — first call artifact_write with one JSON object per operation (exactly {"bridgeOperation":"...","arguments":{...}}), then set payloadArtifact to that session-relative path. Property and enum names are camelCase.
         bridgeOperation mapping:
@@ -14,6 +16,7 @@ internal static class DynamicToolSpecs
         - setValue -> canvas.setNumberSlider {operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces} (Number Slider only)
         - connectWire/disconnectWire -> canvas.setWire {operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:connect|disconnect,rejectCycles:true}
         - createComponent -> canvas.create {operationId,objectId,componentTypeId,pivot:"gptino:auto",autoUpstream:[objectId,...],nickName} — ALWAYS use pivot:"gptino:auto" and list in autoUpstream the objectIds of the components/sliders that will feed this one; the server computes a clean, non-overlapping downstream position (sources left, results right). autoUpstream is optional and valid ONLY with the sentinel. Hand-pick pivot:{x,y} ONLY when the user asked for a specific location (an explicit point must NOT carry autoUpstream).
+        - referenceRhinoObjects -> canvas.referenceRhinoObjects {operationId,objectId,rhinoObjectIds:[guid,...],paramType:curve|brep|mesh|surface|point|geometry,pivot:"gptino:auto",nickName} — creates a typed GH parameter that PERSISTENTLY REFERENCES existing Rhino objects by GUID (a live reference, not a baked copy). This is how "use the curves/geometry I selected in Rhino" becomes an editable definition: reference the selected object ids here, then wire this parameter downstream — never re-author the geometry in a script. writeSet is grasshopperComponent with gptino:absent, exactly like createComponent (it creates a new canvas object at objectId). Pick paramType to match the selection; "geometry" accepts mixed types.
         - deleteComponent -> canvas.delete {operationId,objectId,expectedFingerprint}
         - setGroup -> canvas.setGroup {operationId,groupId,name,objectIds,argbColor}
         - updatePythonSource -> python.setSource {operationId,componentId,expectedSourceSha256,source,runtime:csharp|cpython3|ironPython2,expireSolution} — the python.* operations drive every Rhino 8 script component regardless of language; runtime must match the component that was created. Use expectedSourceSha256:"gptino:auto" (a fresh component's seeded template hash is unknowable; the fingerprint chain still guards concurrent edits) — pass a concrete sha only to assert a specific prior source
@@ -51,7 +54,7 @@ internal static class DynamicToolSpecs
             {
                 Function(
                     "snapshot_read",
-                    "Read an immutable snapshot. Parallel-safe; never acquires the writer lease. The response includes the exact sessionId and target projectId required by ChangeSet. Use exact scopes before drafting a change.",
+                    "Read an immutable snapshot. Parallel-safe; never acquires the writer lease. The response always includes the exact sessionId and target projectId required by ChangeSet. Use exact scopes before drafting a change.",
                     new
                     {
                         type = "object",
@@ -60,7 +63,7 @@ internal static class DynamicToolSpecs
                             scopes = new
                             {
                                 type = "array",
-                                description = "Optional reads: canvas, wireify:<component-guid>, wireify-messages:<component-guid>, or rhino:<object-guid>.",
+                                description = "Optional reads. Omit (empty) or include \"canvas\" for a full-document orientation read (all component resources + the whole canvas). Give ONLY targeted scopes — wireify:<component-guid>, wireify-messages:<component-guid>, rhino:<object-guid> — to inspect just those and skip the heavy full-document dump (use this on large definitions).",
                                 items = new { type = "string" }
                             },
                             knownSnapshotId = NullableString("Return unchanged=true when this still identifies the current snapshot.")
@@ -69,7 +72,7 @@ internal static class DynamicToolSpecs
                     }),
                 Function(
                     "component_catalog",
-                    "Search the installed Grasshopper component catalog before creating a component. Parallel-safe and read-only.",
+                    "Look up a component's type GUID in the installed Grasshopper catalog when you do not already know it. Skip this for well-known GUIDs (the script/slider/panel types in the gh-authoring skill); only search for unknown types, or when a create is rejected for an unknown GUID. Parallel-safe and read-only.",
                     new
                     {
                         type = "object",
@@ -256,7 +259,8 @@ internal static class DynamicToolSpecs
                 "updatePythonSource", "setComponentIo", "convertSocket", "createComponent", "deleteComponent",
                 "setLayout", "createRhinoObject", "modifyRhinoObject", "deleteRhinoObject",
                 "bakeGeometry", "updateRhinoAttributes", "setGroup",
-                "executePython", "readRuntimeMessages", "createRhinoPrimitive", "transformRhinoObject"),
+                "executePython", "readRuntimeMessages", "createRhinoPrimitive", "transformRhinoObject",
+                "referenceRhinoObjects"),
             owner = Enum("wireify", "cordyceps", "rhinoBridge"),
             reads = new { type = "array", items = ResourceAddressSchema() },
             writes = new { type = "array", items = ResourceAddressSchema() },
@@ -308,7 +312,9 @@ internal static class DynamicToolSpecs
             name = new { type = "string", minLength = 1 },
             kind = Enum(
                 "fingerprintEquals", "runtimeErrorAbsent", "wireExists", "wireAbsent",
-                "objectExists", "objectAbsent"),
+                "objectExists", "objectAbsent",
+                "outputCountInRange", "geometryClosed", "areaInRange",
+                "dataTreeBranchCountInRange", "volumeInRange", "boundingBoxInRange"),
             resource = new { oneOf = new object[] { ResourceAddressSchema(), new { type = "null" } } },
             expectedValue = NullableString("Expected fingerprint/value, or null for existence and runtime-error checks.")
         },

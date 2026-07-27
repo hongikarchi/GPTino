@@ -31,6 +31,7 @@ public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHand
             "canvas.setNumberSlider" => await MutationAsync<SetNumberSliderValueRequest>(target, request, _adapter.SetNumberSliderValueAsync, cancellationToken).ConfigureAwait(false),
             "canvas.setWire" => await MutationAsync<SetWireRequest>(target, request, _adapter.SetWireAsync, cancellationToken).ConfigureAwait(false),
             "canvas.setGroup" => await MutationAsync<SetGroupRequest>(target, request, _adapter.SetGroupAsync, cancellationToken).ConfigureAwait(false),
+            "canvas.referenceRhinoObjects" => await MutationAsync<ReferenceRhinoObjectsRequest>(target, request, _adapter.ReferenceRhinoObjectsAsync, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
                 "unknown_cordyceps_canvas_operation",
                 $"Unknown Cordyceps canvas operation '{request.Operation}'."),

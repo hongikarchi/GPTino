@@ -41,6 +41,7 @@ public sealed class SessionOrchestrator : IDisposable
     private readonly SessionActivityLog? _activity;
     private readonly SessionUsageState? _usage;
     private readonly AttachmentStore _attachments;
+    private readonly ImageUrlAttachmentFetcher _urlFetcher;
     private readonly CancellationToken _shutdown;
     private readonly TimeSpan _turnPollInterval;
     private readonly TimeSpan _turnReadTimeout;
@@ -62,12 +63,14 @@ public sealed class SessionOrchestrator : IDisposable
         ISelectionContextSource? selectionContext = null,
         SessionActivityLog? activity = null,
         SessionUsageState? usage = null,
-        AttachmentStore? attachments = null)
+        AttachmentStore? attachments = null,
+        ImageUrlAttachmentFetcher? urlFetcher = null)
     {
         _selectionContext = selectionContext;
         _activity = activity;
         _usage = usage;
         _attachments = attachments ?? new AttachmentStore(options.ResolveDataDirectory());
+        _urlFetcher = urlFetcher ?? new ImageUrlAttachmentFetcher(_attachments);
         _store = store;
         _codex = codex;
         _models = models;
@@ -118,9 +121,54 @@ public sealed class SessionOrchestrator : IDisposable
         }
         await _store.SetSessionStateAsync(sessionId, SessionStates.Waiting, request.Content, cancellationToken).ConfigureAwait(false);
         _events.Publish();
-        var attachmentsBlock = attachments is null ? null : BuildAttachmentsTurnBlock(attachments);
-        _ = Task.Run(() => RunTurnAsync(sessionId, request.Content, attachmentsBlock, _shutdown), CancellationToken.None);
+        // Images go to codex as native `localImage` input items (it sees them directly); every other
+        // file type keeps the path-in-text block for the agent to read from disk. Splitting here keeps
+        // the two transports independent — an image never lands in the text block and vice versa.
+        var imageAttachments = attachments?
+            .Where(a => a.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var fileAttachments = attachments?
+            .Where(a => !a.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var attachmentsBlock = fileAttachments is { Length: > 0 } ? BuildAttachmentsTurnBlock(fileAttachments) : null;
+        var attachedImagePaths = imageAttachments is { Length: > 0 }
+            ? imageAttachments.Select(a => a.AbsolutePath).ToArray()
+            : Array.Empty<string>();
+        var messageContent = request.Content;
+        // Image URLs pasted into the message are downloaded here (the AgentHost has network; the
+        // sandboxed agent does not) and merged into the same localImage channel as file attachments.
+        // The fetch runs inside the background turn task so the API response is never blocked on a
+        // slow download.
+        _ = Task.Run(
+            async () =>
+            {
+                var urlImages = await _urlFetcher
+                    .FetchAsync(sessionId, messageContent, _shutdown)
+                    .ConfigureAwait(false);
+                var imagePaths = urlImages.Count == 0
+                    ? (attachedImagePaths.Length > 0 ? attachedImagePaths : null)
+                    : attachedImagePaths.Concat(urlImages.Select(a => a.AbsolutePath)).ToArray();
+                await RunTurnAsync(sessionId, messageContent, attachmentsBlock, imagePaths, _shutdown)
+                    .ConfigureAwait(false);
+            },
+            CancellationToken.None);
         return new AcceptedTurn(sessionId, append.Message.Id, SessionStates.Waiting);
+    }
+
+    /// <summary>
+    /// "Stop &amp; edit": interrupts any active turn, returns the session to Idle, and retracts the last
+    /// user message (and its partial reply), returning that text for the panel to reload into the
+    /// composer. Lets a user stop work and edit a message they already sent, then resend it fresh.
+    /// </summary>
+    public async Task<string?> StopAndRetractLastMessageAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        _ = await _store.FindSessionAsync(sessionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new KeyNotFoundException($"Session {sessionId:D} was not found.");
+        await InterruptActiveTurnAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        await _store.SetSessionStateAsync(sessionId, SessionStates.Idle, null, cancellationToken).ConfigureAwait(false);
+        var content = await _store.RetractLastUserMessageAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        _events.Publish();
+        return content;
     }
 
     public async Task SetSessionPausedAsync(Guid sessionId, bool paused, CancellationToken cancellationToken)
@@ -182,6 +230,7 @@ public sealed class SessionOrchestrator : IDisposable
         Guid sessionId,
         string content,
         string? attachmentsBlock,
+        IReadOnlyList<string>? imagePaths,
         CancellationToken cancellationToken)
     {
         var sessionGate = _sessionGates.GetOrAdd(sessionId, static _ => new SemaphoreSlim(1, 1));
@@ -288,6 +337,7 @@ public sealed class SessionOrchestrator : IDisposable
                         ComposeTurnInput(latest, content, attachmentsBlock),
                         selection.Model,
                         selection.Effort,
+                        imagePaths,
                         cancellationToken).ConfigureAwait(false);
                 }
                 catch (CodexProtocolException exception) when (
@@ -306,6 +356,7 @@ public sealed class SessionOrchestrator : IDisposable
                         ComposeTurnInput(latest, content, attachmentsBlock),
                         selection.Model,
                         selection.Effort,
+                        imagePaths,
                         cancellationToken).ConfigureAwait(false);
                 }
                 _activity?.Record(
@@ -608,7 +659,7 @@ public sealed class SessionOrchestrator : IDisposable
                 .Append(attachment.AbsolutePath)
                 .Append('\n');
         }
-        builder.Append("View image files with your image-viewing tool; read text files directly from the path.\n");
+        builder.Append("Read these files directly from the path. (Any attached images are delivered separately as viewable image inputs.)\n");
         builder.Append("</gptino_attachments>");
         return builder.ToString();
     }

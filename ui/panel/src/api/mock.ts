@@ -3,6 +3,7 @@ import type {
   ArchiveMessage,
   ArchiveProject,
   ChatMessage,
+  DeletedSession,
   MessageRequest,
   MessageRole,
   ModelInfo,
@@ -378,6 +379,7 @@ export function createDemoRuntimeState(): RuntimeState {
 export function createMockApiClient(): GptinoApiClient {
   let state = createDemoRuntimeState();
   const listeners = new Set<(next: RuntimeState) => void>();
+  const deleted: DeletedSession[] = [];
 
   const emit = () => {
     state.lastUpdatedAt = new Date().toISOString();
@@ -414,7 +416,8 @@ export function createMockApiClient(): GptinoApiClient {
         summary: "Ready for a modeling request",
         status: "idle",
         mode: "auto",
-        modelProfile: "auto",
+        modelProfile: "deep",
+        pinnedModel: "gpt-5.6-sol",
         paused: false,
         messages: [],
         boundGrasshopperDocId: grasshopperDoc ?? null,
@@ -427,6 +430,50 @@ export function createMockApiClient(): GptinoApiClient {
       mutateSession(sessionId, (index) => {
         state.sessions[index].boundGrasshopperDocId = grasshopperDoc;
       });
+    },
+    async deleteSession(sessionId) {
+      await delay();
+      const index = state.sessions.findIndex((session) => session.id === sessionId);
+      if (index >= 0) {
+        const [removed] = state.sessions.splice(index, 1);
+        deleted.unshift({
+          id: removed.id,
+          name: removed.title,
+          state: removed.status,
+          updatedAt: new Date().toISOString(),
+        });
+        state.orderVersion += 1;
+        emit();
+      }
+    },
+    async restoreSession(sessionId) {
+      await delay();
+      const index = deleted.findIndex((session) => session.id === sessionId);
+      if (index >= 0) {
+        const [restored] = deleted.splice(index, 1);
+        state.sessions.push({
+          id: restored.id,
+          title: restored.name,
+          summary: "Restored session",
+          status: "idle",
+          mode: "auto",
+          modelProfile: "auto",
+          paused: false,
+          messages: [],
+          boundGrasshopperDocId: null,
+        });
+        state.orderVersion += 1;
+        emit();
+      }
+    },
+    async purgeSession(sessionId) {
+      await delay();
+      const index = deleted.findIndex((session) => session.id === sessionId);
+      if (index >= 0) deleted.splice(index, 1);
+    },
+    async listDeletedSessions() {
+      await delay(60);
+      return deleted.map((session) => ({ ...session }));
     },
     async reorderSessions(request: SessionOrderRequest) {
       await delay();
@@ -443,6 +490,24 @@ export function createMockApiClient(): GptinoApiClient {
         state.sessions[index].paused = paused;
         state.sessions[index].status = paused ? "paused" : "idle";
       });
+    },
+    async retractLastMessage(sessionId) {
+      await delay();
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session) return null;
+      let index = -1;
+      for (let i = session.messages.length - 1; i >= 0; i--) {
+        if (session.messages[i].role === "user") {
+          index = i;
+          break;
+        }
+      }
+      if (index < 0) return null;
+      const content = session.messages[index].content;
+      session.messages = session.messages.slice(0, index);
+      session.status = "idle";
+      emit();
+      return content;
     },
     async setSessionMode(sessionId, mode: SessionMode) {
       await delay();

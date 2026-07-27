@@ -70,20 +70,17 @@ public sealed class CodexAppServerClientProtocolTests
     [Fact]
     public void ConfiguredExecutableMustBeNamedCodexExe()
     {
-        var resolve = typeof(CodexAppServerClient).GetMethod(
-            "ResolveConfiguredCodex",
-            BindingFlags.NonPublic | BindingFlags.Static);
+        // A configured path that exists but is not codex.exe (nor an npm codex shim) is authoritative
+        // yet unresolvable — the resolver offers NO candidate rather than silently falling back to a
+        // discovered binary, so execution fails fast instead of launching a different install.
         var processPath = Environment.ProcessPath;
-
-        Assert.NotNull(resolve);
         Assert.False(string.IsNullOrWhiteSpace(processPath));
-        Assert.False(string.Equals(
-            "codex.exe",
-            Path.GetFileName(processPath),
-            StringComparison.OrdinalIgnoreCase));
-        var exception = Assert.Throws<TargetInvocationException>(
-            () => resolve.Invoke(null, [processPath]));
-        Assert.IsType<FileNotFoundException>(exception.InnerException);
+        Assert.False(string.Equals("codex.exe", Path.GetFileName(processPath), StringComparison.OrdinalIgnoreCase));
+
+        var candidates = CodexExecutableResolver.EnumerateCandidates(
+            new AgentHostOptions { CodexExecutable = processPath });
+
+        Assert.Empty(candidates);
     }
 
     [Fact]

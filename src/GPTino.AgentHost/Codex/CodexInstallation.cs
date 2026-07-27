@@ -50,77 +50,20 @@ public static class CodexInstallation
     }
 
     /// <summary>
-    /// Best-effort location of a launchable Codex CLI. Returns false when nothing is found rather
-    /// than throwing, so callers can distinguish "not installed" from "installed but signed out".
+    /// Best-effort location of a launchable Codex CLI. Delegates to the shared
+    /// <see cref="CodexExecutableResolver"/> so the "is Codex installed?" answer the UI shows always
+    /// matches the binary execution will actually launch (same priority order, same npm-shim → native
+    /// resolution). Returns false when nothing launchable is found rather than throwing, so callers
+    /// can distinguish "not installed" from "installed but signed out".
     /// </summary>
     public static bool TryLocateExecutable(AgentHostOptions options, out string path)
     {
+        if (CodexExecutableResolver.TryResolve(options, out var candidate))
+        {
+            path = candidate.Path;
+            return true;
+        }
         path = string.Empty;
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(options.CodexExecutable) && File.Exists(options.CodexExecutable))
-            {
-                path = Path.GetFullPath(options.CodexExecutable);
-                return true;
-            }
-            var configured = Environment.GetEnvironmentVariable("CODEX_EXECUTABLE");
-            if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured))
-            {
-                path = Path.GetFullPath(configured);
-                return true;
-            }
-            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var bundled = Path.Combine(userProfile, ".codex", ".sandbox-bin", "codex.exe");
-            if (File.Exists(bundled))
-            {
-                path = bundled;
-                return true;
-            }
-            var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            foreach (var candidate in new[]
-                     {
-                         Path.Combine(roaming, "npm", "codex.cmd"),
-                         Path.Combine(roaming, "npm", "codex.exe"),
-                     })
-            {
-                if (File.Exists(candidate))
-                {
-                    path = candidate;
-                    return true;
-                }
-            }
-            foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-                         .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-            {
-                var trimmed = directory.Trim().Trim('"');
-                if (string.IsNullOrWhiteSpace(trimmed))
-                {
-                    continue;
-                }
-                string full;
-                try
-                {
-                    full = Path.GetFullPath(trimmed);
-                }
-                catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
-                {
-                    continue;
-                }
-                foreach (var name in new[] { "codex.exe", "codex.cmd" })
-                {
-                    var executable = Path.Combine(full, name);
-                    if (File.Exists(executable))
-                    {
-                        path = executable;
-                        return true;
-                    }
-                }
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            // Treat any probing failure as "not found".
-        }
         return false;
     }
 }

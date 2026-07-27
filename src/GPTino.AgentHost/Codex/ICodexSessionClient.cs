@@ -24,6 +24,7 @@ public interface ICodexSessionClient
         string message,
         string? model,
         string? effort,
+        IReadOnlyList<string>? imagePaths = null,
         CancellationToken cancellationToken = default);
 
     Task InterruptTurnAsync(

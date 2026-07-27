@@ -51,6 +51,13 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
     public Task<CanvasMutationResult> SetGroupAsync(DocumentTarget target, SetGroupRequest request, CancellationToken cancellationToken = default) =>
         SetGroupCoreAsync(Resolve(target), request, cancellationToken);
 
+    public Task<CanvasMutationResult> ReferenceRhinoObjectsAsync(DocumentTarget target, ReferenceRhinoObjectsRequest request, CancellationToken cancellationToken = default) =>
+        // referenceRhinoObjects is the one canvas op that also touches the paired Rhino document: it
+        // loads the referenced geometry to validate the reference. The core is handed the SAME Rhino
+        // document serial that the Rhino scene adapter resolves for rhino_list — never RhinoDoc.ActiveDoc
+        // — so the objects it validates are exactly the ones the model listed and referenced by GUID.
+        ReferenceRhinoObjectsCoreAsync(Resolve(target), target.RhinoDocumentSerial, request, cancellationToken);
+
     protected abstract Task<CanvasSnapshot> CaptureSnapshotCoreAsync(TDocument document, CancellationToken cancellationToken);
     protected abstract Task<CanvasObjectState> InspectObjectCoreAsync(TDocument document, Guid objectId, CancellationToken cancellationToken);
     protected abstract Task<CanvasOutputInspection> InspectOutputsCoreAsync(TDocument document, InspectCanvasOutputsRequest request, CancellationToken cancellationToken);
@@ -61,6 +68,7 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
     protected abstract Task<CanvasMutationResult> SetNumberSliderValueCoreAsync(TDocument document, SetNumberSliderValueRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> SetWireCoreAsync(TDocument document, SetWireRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> SetGroupCoreAsync(TDocument document, SetGroupRequest request, CancellationToken cancellationToken);
+    protected abstract Task<CanvasMutationResult> ReferenceRhinoObjectsCoreAsync(TDocument document, uint rhinoDocumentSerial, ReferenceRhinoObjectsRequest request, CancellationToken cancellationToken);
 
     private TDocument Resolve(DocumentTarget target)
     {

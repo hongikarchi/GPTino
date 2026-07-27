@@ -69,6 +69,7 @@ builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(identity);
 builder.Services.AddSingleton(new SessionStore(Path.Combine(options.ResolveDataDirectory(), "runtime.db")));
 builder.Services.AddSingleton(new AttachmentStore(options.ResolveDataDirectory()));
+builder.Services.AddSingleton<ImageUrlAttachmentFetcher>();
 builder.Services.AddSingleton(new ProjectContextStore(options.ResolveDataDirectory()));
 builder.Services.AddSingleton(new ProjectArchiveReader(
     ProjectArchiveReader.DefaultProjectsParentDirectory(),
@@ -283,7 +284,20 @@ api.MapPost("/sessions", async (
     ILiveDocumentQueueControl queue,
     CancellationToken cancellationToken) =>
 {
-    var session = await sessionStore.CreateSessionAsync(request, cancellationToken);
+    // Normalize the UI profile to the internal string the runtime/projector expect, so a created
+    // session persists the same canonical value SetModel would (e.g. "deep" -> "high-assurance",
+    // which projects back to "deep" in the panel). Accept internal spellings too for API callers.
+    var normalizedProfile = request.ModelProfile.Trim().ToLowerInvariant() switch
+    {
+        "auto" => "auto",
+        "fast" or "fast-safe" => "fast-safe",
+        "standard" => "standard",
+        "deep" or "high-assurance" => "high-assurance",
+        _ => throw new ArgumentException("Model profile must be auto, fast, standard, or deep.")
+    };
+    var session = await sessionStore.CreateSessionAsync(
+        request with { ModelProfile = normalizedProfile },
+        cancellationToken);
     await queue.RefreshScheduleAsync(cancellationToken);
     events.Publish();
     return Results.Created($"/api/v1/sessions/{session.Id:D}", session);
@@ -310,6 +324,17 @@ api.MapPut("/sessions/{id:guid}/pause", async (
     await orchestrator.SetSessionPausedAsync(id, request.Paused, cancellationToken);
     await queueControl.RefreshScheduleAsync(cancellationToken);
     return Results.NoContent();
+});
+
+// Stop & edit: interrupt the turn and pull the last user message back for editing.
+api.MapPost("/sessions/{id:guid}/retract-last", async (
+    Guid id,
+    SessionOrchestrator orchestrator,
+    CancellationToken cancellationToken) =>
+{
+    var content = await orchestrator.StopAndRetractLastMessageAsync(id, cancellationToken);
+    await queueControl.RefreshScheduleAsync(cancellationToken);
+    return Results.Ok(new { content });
 });
 
 api.MapPut("/sessions/{id:guid}/target", async (
@@ -361,6 +386,47 @@ api.MapPut("/sessions/{id:guid}/model", async (
         request.Model,
         true,
         cancellationToken);
+    events.Publish();
+    return Results.NoContent();
+});
+
+// Soft-delete: hide from the active list but keep everything, so it can be restored.
+api.MapDelete("/sessions/{id:guid}", async (
+    Guid id,
+    SessionStore sessionStore,
+    CancellationToken cancellationToken) =>
+{
+    await sessionStore.SetSessionDeletedAsync(id, deleted: true, cancellationToken);
+    await queueControl.RefreshScheduleAsync(cancellationToken);
+    events.Publish();
+    return Results.NoContent();
+});
+
+api.MapGet("/sessions/deleted", async (
+    SessionStore sessionStore,
+    CancellationToken cancellationToken) =>
+    Results.Ok(await sessionStore.ReadDeletedSessionsAsync(cancellationToken)));
+
+api.MapPost("/sessions/{id:guid}/restore", async (
+    Guid id,
+    SessionStore sessionStore,
+    CancellationToken cancellationToken) =>
+{
+    await sessionStore.SetSessionDeletedAsync(id, deleted: false, cancellationToken);
+    await queueControl.RefreshScheduleAsync(cancellationToken);
+    events.Publish();
+    return Results.NoContent();
+});
+
+// Permanent delete: removes the session and its transcript for good (panel gates this behind an
+// explicit confirmation).
+api.MapDelete("/sessions/{id:guid}/purge", async (
+    Guid id,
+    SessionStore sessionStore,
+    CancellationToken cancellationToken) =>
+{
+    await sessionStore.PurgeSessionAsync(id, cancellationToken);
+    await queueControl.RefreshScheduleAsync(cancellationToken);
     events.Publish();
     return Results.NoContent();
 });

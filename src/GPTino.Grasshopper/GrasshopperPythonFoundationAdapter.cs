@@ -158,7 +158,9 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         // below anyway), default the nickname to the variable name, and default the type hint to
         // a generic object socket.
         var normalizedInputs = NormalizeRequestedParameters(request.Inputs);
-        var normalizedOutputs = NormalizeRequestedParameters(request.Outputs);
+        var normalizedOutputs = PreserveManagedConsoleOutputs(
+            outputs.Select(ToParameter).ToArray(),
+            NormalizeRequestedParameters(request.Outputs));
         ValidateSchema(normalizedInputs, normalizedOutputs);
         // The model does not manage socket UUIDs: they belong to Grasshopper (existing sockets
         // keep their id; a fresh script component's default socket has an id the model cannot
@@ -626,6 +628,65 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
     // Rewrites each requested socket's ParameterId to the actual socket id at the same position,
     // so socket UUIDs are owned by Grasshopper, not the model. Positions beyond the actual sockets
     // (to be appended) keep their requested id.
+    // The socket name of RhinoCode's managed console output (the print/stdout capture stream).
+    private const string ConsoleOutputName = "out";
+
+    /// <summary>
+    /// RhinoCode script components carry a managed console output socket named "out" (the print/
+    /// stdout stream). Models routinely omit it when re-declaring a component's outputs, and on C#
+    /// they cannot re-declare it by name ("out" is a reserved keyword) — so they get trapped
+    /// between the append-only guard (omitting it looks like socket removal) and the reserved-
+    /// keyword guard (declaring it fails to compile). Rather than make the model thread that
+    /// needle, preserve the existing console socket automatically at its live position whenever the
+    /// declaration leaves it out. Renames/retypes the model DID make are respected; genuine removal
+    /// of non-console sockets still fails downstream (the returned list stays short of the live
+    /// count, so ValidateAppendOnlySchema rejects it before any write).
+    /// </summary>
+    private static IReadOnlyList<PythonParameter> PreserveManagedConsoleOutputs(
+        IReadOnlyList<PythonParameter> liveOutputs,
+        IReadOnlyList<PythonParameter> declaredOutputs)
+    {
+        // A declaration at least as long as the live set neither omits nor removes — take it as-is.
+        if (declaredOutputs.Count >= liveOutputs.Count)
+        {
+            return declaredOutputs;
+        }
+        // The model kept or renamed the console socket itself (an "out" entry survives) — do not
+        // second-guess it.
+        if (declaredOutputs.Any(parameter =>
+                string.Equals(parameter.Name, ConsoleOutputName, StringComparison.Ordinal)))
+        {
+            return declaredOutputs;
+        }
+        // Nothing managed to preserve.
+        if (!liveOutputs.Any(parameter =>
+                string.Equals(parameter.Name, ConsoleOutputName, StringComparison.Ordinal)))
+        {
+            return declaredOutputs;
+        }
+        // Rebuild aligned to live positions: reinsert each live console socket unchanged where it
+        // lives, and slot the model's declared sockets into the remaining positions in order.
+        var merged = new List<PythonParameter>(liveOutputs.Count);
+        var cursor = 0;
+        foreach (var liveOutput in liveOutputs)
+        {
+            if (string.Equals(liveOutput.Name, ConsoleOutputName, StringComparison.Ordinal))
+            {
+                merged.Add(liveOutput);
+            }
+            else if (cursor < declaredOutputs.Count)
+            {
+                merged.Add(declaredOutputs[cursor++]);
+            }
+        }
+        // Genuine appends beyond the live socket count stay at the tail.
+        for (; cursor < declaredOutputs.Count; cursor++)
+        {
+            merged.Add(declaredOutputs[cursor]);
+        }
+        return merged;
+    }
+
     private static IReadOnlyList<PythonParameter> ReconcileSocketIds(
         IReadOnlyList<ScriptParameterObject> actual,
         IReadOnlyList<PythonParameter> requested) =>

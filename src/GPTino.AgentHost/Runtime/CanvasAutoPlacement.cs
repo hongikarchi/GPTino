@@ -368,7 +368,11 @@ internal static class CanvasAutoPlacement
     private static bool IsSentinelCreate(LiveDocumentBackend.PreparedOperation operation, out Guid objectId)
     {
         objectId = Guid.Empty;
-        if (!string.Equals(operation.BridgeOperation, "canvas.create", StringComparison.Ordinal))
+        // Both create-shaped ops carry {objectId, pivot} and reserve a brand-new canvas object, so both
+        // participate in server placement. referenceRhinoObjects has no autoUpstream — ReadAutoUpstream
+        // just returns empty — so it is placed as a lone node with a clean, non-overlapping pivot.
+        if (!string.Equals(operation.BridgeOperation, "canvas.create", StringComparison.Ordinal) &&
+            !string.Equals(operation.BridgeOperation, "canvas.referenceRhinoObjects", StringComparison.Ordinal))
         {
             return false;
         }

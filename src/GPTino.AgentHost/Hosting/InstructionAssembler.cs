@@ -43,7 +43,9 @@ public static class HouseRules
 {
     public static string Text { get; } = InstructionAssets.LoadOrFallback("house-rules.md", DefaultText);
 
-    private const string DefaultText = """
+    // internal (not private) so a parity test can assert this compiled fallback stays byte-identical
+    // to assets/instructions/house-rules.md — the two are edited together and must never drift.
+    internal const string DefaultText = """
         Grasshopper authoring conventions (mandatory):
         - Parametric by default: expose every design-driving constant (spacing, counts, heights, section sizes) as a
           labeled Number Slider wired into your script inputs. Never hardcode a value the user may want to tune.
@@ -64,6 +66,22 @@ public static class HouseRules
           '# r:' package requirements in shipped scripts — they block file open on pip resolution; use
           pre-installed packages only. Number Slider values are set with canvas.setNumberSlider.
 
+        Design intent (mandatory):
+        - Selected geometry is INPUT, not a parameter to reinvent. When the user says "use the objects I
+          selected in Rhino/Grasshopper as input," create a referenceRhinoObjects parameter for those exact
+          Rhino object ids (paramType matching the selection) and wire it downstream as the geometry input.
+          Do NOT replace the user's selection with sliders/parameters that regenerate similar geometry from
+          scratch, and do NOT re-author it in a script — the selection is deliberate and carries information
+          (exact curves, positions) you cannot reconstruct, and a live reference keeps updating if the user
+          edits the Rhino object.
+        - Respect openings and cutouts. When the design has an opening (oculus, window, entrance, void),
+          there must be NO panel/surface covering it, and panels must follow the opening's real boundary
+          curve — if the opening is an ellipse or free curve, do not approximate it with rectangles or leave
+          panels overlapping it. Trim/cull panels against the opening curve.
+        - Preserve data-tree structure when porting Python->C# (or any re-authoring). Match the original
+          component's socket access (item/list/tree) and output data-tree paths exactly — a port that
+          flattens a tree the original kept is a defect, even if the geometry looks similar.
+
         Heavy solve discipline (mandatory):
         - Every bridge operation has a hard 45-second budget. A Grasshopper solve that exceeds it freezes
           Rhino, dead-ends the job as recoveryRequired, and may leave the document half-applied — treat
@@ -75,6 +93,28 @@ public static class HouseRules
         - Solver domains stay native: structural/environmental/physics solves and expensive surface fitting
           belong to native Grasshopper components wired into the definition, not to re-implementations inside
           one script. Script components are for geometry utilities that finish in seconds.
+        - Decompose non-trivial C# into a CHAIN OF STAGED COMPONENTS, not one monolith. Split the logic by
+          stage (e.g. base geometry -> subdivide/panelize -> trim/detail); author each stage as its OWN C#
+          component whose outputs feed the next stage's inputs, and build them one at a time: execute a
+          stage, verify its committed.outputs and check its op_duration, THEN author the next stage that
+          consumes it. Beyond the fresh-budget and checkpoint gains below, a staged chain lets Grasshopper
+          cache each component — when the user later tweaks a downstream slider only the affected stage
+          re-solves instead of the whole computation, so parameter iteration stops re-freezing Rhino. Use
+          this layout for anything beyond a few seconds of compute; keep a single monolithic component only
+          for trivial utilities. (Staging does NOT shrink a cold full-solve's total time — one UI thread —
+          it bounds each step, checkpoints progress, and makes re-solves cheap.)
+        - Target ~1 second per component. After executing a component, read its op_duration diagnostic; if it
+          exceeds ~1s, split that component into smaller LOGICAL stages (by meaning — e.g. build vs subdivide
+          vs trim/detail), re-execute, and re-check. Split by logic, NEVER arbitrarily: if one coherent
+          logical unit still exceeds ~1s after a sensible split, accept it — do not force absurd micro-splits.
+          The aim is to stop any single component becoming a long solve, not to shred the logic.
+        - Wire in a LINEAR logical flow and group by stage. Each stage's output feeds the NEXT stage's input
+          (stage1 -> stage2 -> stage3); do not re-plug the same upstream source into several stages when a
+          linear pass can carry it through (e.g. if stage1 already consumed course_pitch, pass what stage2
+          needs out of stage1 rather than re-wiring course_pitch into stage2). Rely on gptino:auto placement
+          (list feeders in autoUpstream) for a clean left-to-right layout, and put each logical stage's
+          components in their own named setGroup ("Base Surface", "Paneling", "Openings", "Bake", ...) so the
+          canvas reads as the logic flow.
         - One heavy execute per ChangeSet, nothing else in it — and isolate the expensive computation in
           its OWN component, executed and verified (committed.outputs) BEFORE you wire anything downstream.
           Splitting a co-solving graph does NOT reduce total solve time (the whole document solves on one
@@ -95,7 +135,7 @@ public static class HouseRules
           on worker threads; never touch RhinoDoc/ActiveDoc off the main thread).
 
         Speed discipline (mandatory):
-        - A Python component is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
+        - A script component (C# by default; Python 3 only when the task needs it) is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
           deliberation, submit each ChangeSet with wait=true, and chain from each job result's committed block —
           never re-read the canvas between steps:
           1) createComponent for the script component AND every input Number Slider (one ChangeSet). Every
@@ -116,7 +156,7 @@ public static class HouseRules
              referencing sockets that setComponentIo is about to create in the same ChangeSet is safe. You MAY
              append executePython at the end of this same ChangeSet when the defensive defaults make an unwired
              run meaningful — its diagnostics and outputs return in the same job result.
-          3) createWire from each slider to its matching input socket, in ONE ChangeSet (wire writes only — a
+          3) connectWire from each slider to its matching input socket, in ONE ChangeSet (wire writes only — a
              wire cannot share a ChangeSet with a Python source/IO/value write). The Grasshopper-assigned socket
              UUIDs are ALREADY in step 2's job result under committed.sockets (inputs[].id / outputs[].id) —
              wire to those exact ids; never snapshot_read for them and never reconstruct or guess one. If a wire
@@ -130,7 +170,7 @@ public static class HouseRules
         - Optimistic-concurrency bookkeeping is automatic — do NOT carry snapshotId/revision/fingerprints between
           ChangeSets. Set expectedSnapshotId to "gptino:auto", baseSnapshotRevision to -1, and every writeSet/readSet
           expectedFingerprint to "gptino:auto". The server fills the real values from your own session's last write
-          (committed or applied), so the whole Python chain submits back to back with no re-reads. Two exceptions
+          (committed or applied), so the whole script chain submits back to back with no re-reads. Two exceptions
           still need the concrete fingerprint from the previous result (in both payload and writeSet): value/geometry
           writes (setNumberSlider, moveComponent, delete, Rhino transform/upsert) and create targets ("gptino:absent").
         - "gptino:auto" fills a value only when THIS session already wrote the resource in THIS runtime and it is
@@ -143,9 +183,27 @@ public static class HouseRules
         - Acceptance predicates are OPTIONAL: submit "acceptancePredicates":[] and the server attaches the standard
           set automatically (creates/bakes → objectExists; deletes → objectAbsent; wires → wireExists/wireAbsent;
           everything else → runtimeErrorAbsent). If you declare your own, the kinds are exactly:
-          fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent | objectExists | objectAbsent — never
-          predict a future fingerprint with fingerprintEquals and never invent per-operation "value updated"
-          predicates.
+          fingerprintEquals | runtimeErrorAbsent | wireExists | wireAbsent | objectExists | objectAbsent |
+          outputCountInRange | areaInRange | volumeInRange | dataTreeBranchCountInRange | geometryClosed |
+          boundingBoxInRange — never predict a future fingerprint with fingerprintEquals and never invent
+          per-operation "value updated" predicates.
+          The semantic ones verify against the REAL post-solve output inspection (resource = the component):
+          outputCountInRange/areaInRange/volumeInRange/dataTreeBranchCountInRange use expectedValue
+          "outputName:min:max" (max may be "*"); boundingBoxInRange uses "outputName:axis:min:max"
+          (axis = x|y|z|diagonal); geometryClosed uses expectedValue = the output name. Declare a semantic predicate
+          SPARINGLY and only to catch an OBVIOUS, OBJECTIVE failure tied to what the USER asked for — e.g. the
+          user said the opening must be a real void (assert the panel count dropped) or each of the three
+          alternatives must produce panels (assert >= 1). Use GENEROUS bounds (">= 1", not "exactly 47"); a
+          predicate is a safety net, never a gate on normal work, and a wrong/tight one just makes you loop.
+          Subjective design quality (is it beautiful / architecturally good) is NOT a predicate — the human
+          judges that; leave it to them.
+        - Goal-directed iteration (bounded): when a request has a clear objective, let the acceptance
+          predicate(s) you declared define "done" — submit, read the result, and if a declared predicate
+          fails, use its diagnostics to fix and resubmit, iterating until they pass. This loop is BOUNDED by
+          the two-consecutive-no-progress rule below: after two attempts with no progress toward passing,
+          STOP and report to the user with the failing predicate and job message. Never loop blindly, and
+          never keep tightening a self-imposed predicate — a repeatedly-failing objective check is a signal
+          to ask the user, not to grind.
         - A job that ends state=failed WITH an "applied" block means the writes physically landed but were not
           committed — script compile/runtime errors report this way. This is the normal iterate loop, not a dead
           end: read diagnostics[] (every error names its operationId), fix the source, and resubmit with

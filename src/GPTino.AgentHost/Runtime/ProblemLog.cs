@@ -84,6 +84,58 @@ public sealed class ProblemLog
         });
     }
 
+    /// <summary>
+    /// A self-attributable stale fingerprint the server auto-rebased to live (the resource was
+    /// unchanged since THIS session last wrote it). Logged so we can measure how often the model
+    /// submits a stale base for its own resources and keep improving the guidance.
+    /// </summary>
+    public void RecordSelfStaleRebase(
+        Guid jobId,
+        Guid sessionId,
+        ResourceAddress resource,
+        string staleFingerprint,
+        string liveFingerprint)
+    {
+        Append(new
+        {
+            at = DateTimeOffset.UtcNow,
+            kind = "self-stale-rebase",
+            jobId,
+            sessionId,
+            resource = FormatResource(resource),
+            staleFingerprint,
+            liveFingerprint
+        });
+    }
+
+    /// <summary>
+    /// One acceptance-predicate evaluation outcome, logged so we can later mine which predicates the
+    /// model actually declares and whether they catch real problems — the data foundation for tuning
+    /// the predicate library over time (kept opt-in and generous meanwhile).
+    /// </summary>
+    public void RecordPredicateOutcome(
+        Guid jobId,
+        Guid sessionId,
+        string predicateName,
+        string predicateKind,
+        ResourceAddress? resource,
+        string? expectedValue,
+        bool passed)
+    {
+        Append(new
+        {
+            at = DateTimeOffset.UtcNow,
+            kind = "predicate-outcome",
+            jobId,
+            sessionId,
+            predicateName,
+            predicateKind,
+            resource = FormatResource(resource),
+            expectedValue,
+            passed
+        });
+    }
+
     internal static string? FormatResource(ResourceAddress? resource) =>
         resource is null ? null : $"{resource.Kind}:{resource.Id}:{resource.Field}";
 

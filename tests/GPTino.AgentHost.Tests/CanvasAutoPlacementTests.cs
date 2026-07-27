@@ -247,6 +247,25 @@ public sealed class CanvasAutoPlacementTests
     }
 
     [Fact]
+    public void ResolveAutoPivots_ResolvesReferenceRhinoObjectsSentinelAndKeepsItsFields()
+    {
+        var objectId = Guid.NewGuid();
+        var reference = SentinelReference("ref-1", objectId);
+
+        var rewritten = CanvasAutoPlacement.ResolveAutoPivots(new[] { reference }, EmptyCanvas());
+
+        var arguments = rewritten[0].Arguments;
+        // The sentinel pivot is resolved to a concrete point (so the adapter's RequireFinite passes)...
+        Assert.Equal(JsonValueKind.Object, arguments.GetProperty("pivot").ValueKind);
+        Assert.True(arguments.GetProperty("pivot").TryGetProperty("x", out _));
+        Assert.True(arguments.GetProperty("pivot").TryGetProperty("y", out _));
+        // ...while every reference-specific field is preserved untouched.
+        Assert.Equal("curve", arguments.GetProperty("paramType").GetString());
+        Assert.Equal(1, arguments.GetProperty("rhinoObjectIds").GetArrayLength());
+        Assert.Equal(objectId, arguments.GetProperty("objectId").GetGuid());
+    }
+
+    [Fact]
     public void ResolveAutoPivots_LeavesExplicitPivotAndNonCreateOperationsUntouched()
     {
         var explicitCreate = ExplicitCreate("create-explicit", Guid.NewGuid(), x: 42, y: 24);
@@ -506,6 +525,39 @@ public sealed class CanvasAutoPlacementTests
             }
             """;
         return PreparedCreate(operationId, objectId, json);
+    }
+
+    private static LiveDocumentBackend.PreparedOperation SentinelReference(
+        string operationId,
+        Guid objectId)
+    {
+        var json = $$"""
+            {
+              "operationId": "{{operationId}}",
+              "objectId": "{{objectId:D}}",
+              "rhinoObjectIds": ["{{Guid.NewGuid():D}}"],
+              "paramType": "curve",
+              "pivot": "gptino:auto",
+              "nickName": "Referenced"
+            }
+            """;
+        using var document = JsonDocument.Parse(json);
+        var arguments = document.RootElement.Clone();
+        var resource = new ResourceAddress(ResourceKind.GrasshopperComponent, objectId.ToString("D"));
+        return new LiveDocumentBackend.PreparedOperation(
+            new TypedOperation(
+                operationId,
+                OperationKind.ReferenceRhinoObjects,
+                AdapterOwner.Cordyceps,
+                Array.Empty<ResourceAddress>(),
+                [resource],
+                true,
+                $"operations/{operationId}.json"),
+            BridgeAdapterOwner.CordycepsCanvas,
+            "canvas.referenceRhinoObjects",
+            arguments,
+            Array.Empty<byte>(),
+            "sha");
     }
 
     private static LiveDocumentBackend.PreparedOperation ExplicitCreate(

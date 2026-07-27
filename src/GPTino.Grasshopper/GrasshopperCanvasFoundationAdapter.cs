@@ -7,7 +7,10 @@ using System.Text.Json;
 using System.Runtime.CompilerServices;
 using GPTino.CordycepsAdapter;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Data;
+using Grasshopper.Kernel.Parameters;
 using Grasshopper.Kernel.Special;
+using Grasshopper.Kernel.Types;
 
 namespace GPTino.Grasshopper;
 
@@ -94,7 +97,7 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         }
 
         var outputs = component.Params.Output
-            .Select(parameter => InspectOutputParameter(parameter, cancellationToken))
+            .Select(parameter => InspectOutputParameter(parameter, request.IncludeMassProperties, cancellationToken))
             .ToArray();
         var canonical = JsonSerializer.Serialize(outputs);
         var fingerprint = Convert.ToHexString(
@@ -232,6 +235,192 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             new[] { documentObject.InstanceGuid }));
     }
 
+    protected override Task<CanvasMutationResult> ReferenceRhinoObjectsCoreAsync(
+        GH_Document document,
+        uint rhinoDocumentSerial,
+        ReferenceRhinoObjectsRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        RequireOperationId(request.OperationId);
+        RequireFinite(request.Pivot, "Pivot");
+        if (request.RhinoObjectIds is null || request.RhinoObjectIds.Count == 0)
+        {
+            throw new InvalidOperationException("At least one Rhino object id is required.");
+        }
+        // Resolve the session's PAIRED Rhino document by serial — the same document the Rhino scene
+        // adapter uses for rhino_list — never RhinoDoc.ActiveDoc. Referencing by GUID against the active
+        // doc would silently validate against the wrong model if the user tabbed to another document.
+        var rhinoDoc = global::Rhino.RhinoDoc.FromRuntimeSerialNumber(rhinoDocumentSerial)
+            ?? throw new InvalidOperationException(
+                $"Paired Rhino document {rhinoDocumentSerial} is not open; cannot reference its objects.");
+
+        // Idempotent re-create: an existing object with this id is returned unchanged.
+        if (request.ObjectId != Guid.Empty && document.FindObject(request.ObjectId, true) is { } existing)
+        {
+            var existingState = ToObjectState(existing, BuildParameterOwners(document));
+            return Task.FromResult(new CanvasMutationResult(
+                request.OperationId,
+                Changed: false,
+                existingState.Fingerprint,
+                existingState.Fingerprint,
+                new[] { request.ObjectId }));
+        }
+
+        var (parameter, loaded) = BuildReferenceParameter(request.ParamType, request.RhinoObjectIds, rhinoDoc);
+        if (loaded == 0)
+        {
+            throw new InvalidOperationException(
+                "None of the requested Rhino objects could be referenced — check the object ids exist and " +
+                $"match the '{request.ParamType}' parameter type.");
+        }
+        if (request.ObjectId != Guid.Empty)
+        {
+            parameter.NewInstanceGuid(request.ObjectId);
+            if (parameter.InstanceGuid != request.ObjectId)
+            {
+                throw new InvalidOperationException("Grasshopper did not accept the requested object identity.");
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(request.NickName))
+        {
+            parameter.NickName = request.NickName.Trim();
+        }
+        if (parameter.Attributes is null)
+        {
+            parameter.CreateAttributes();
+        }
+        var attributes = parameter.Attributes
+            ?? throw new InvalidOperationException("Grasshopper did not create attributes for the reference parameter.");
+        attributes.Pivot = new System.Drawing.PointF(request.Pivot.X, request.Pivot.Y);
+        document.UndoUtil.RecordAddObjectEvent($"GPTino: {request.OperationId}", parameter);
+        if (!document.AddObject(parameter, update: true))
+        {
+            throw new InvalidOperationException("Grasshopper rejected the new reference parameter.");
+        }
+        if (request.ObjectId != Guid.Empty && parameter.InstanceGuid != request.ObjectId)
+        {
+            document.RemoveObject(parameter, update: false);
+            throw new InvalidOperationException(
+                "Grasshopper changed the requested object identity while adding it; the object was removed.");
+        }
+        parameter.ExpireSolution(recompute: false);
+        document.NewSolution(expireAllObjects: false);
+        global::Grasshopper.Instances.ActiveCanvas?.Invalidate();
+
+        var after = ToObjectState(parameter, BuildParameterOwners(document));
+        return Task.FromResult(new CanvasMutationResult(
+            request.OperationId,
+            Changed: true,
+            string.Empty,
+            after.Fingerprint,
+            new[] { parameter.InstanceGuid }));
+    }
+
+    // Creates the typed parameter and appends referenced Rhino geometry as persistent data. Each goo
+    // carries the Rhino object's GUID as its ReferenceID and hydrates from the live document via
+    // LoadGeometry, so the parameter stays a LIVE reference (edit the Rhino object -> the definition
+    // updates) rather than a baked copy. Returns the parameter plus how many objects were referenced.
+    private static (IGH_Param Parameter, int Loaded) BuildReferenceParameter(
+        string paramType,
+        IReadOnlyList<Guid> ids,
+        global::Rhino.RhinoDoc rhinoDoc)
+    {
+        switch ((paramType ?? string.Empty).Trim().ToLowerInvariant())
+        {
+            case "curve":
+            {
+                var parameter = new Param_Curve();
+                return (parameter, AppendReferences(parameter.PersistentData, ids, rhinoDoc, id => new GH_Curve { ReferenceID = id }));
+            }
+            case "brep":
+            {
+                var parameter = new Param_Brep();
+                return (parameter, AppendReferences(parameter.PersistentData, ids, rhinoDoc, id => new GH_Brep { ReferenceID = id }));
+            }
+            case "mesh":
+            {
+                var parameter = new Param_Mesh();
+                return (parameter, AppendReferences(parameter.PersistentData, ids, rhinoDoc, id => new GH_Mesh { ReferenceID = id }));
+            }
+            case "surface":
+            {
+                var parameter = new Param_Surface();
+                return (parameter, AppendReferences(parameter.PersistentData, ids, rhinoDoc, id => new GH_Surface { ReferenceID = id }));
+            }
+            case "point":
+            {
+                var parameter = new Param_Point();
+                return (parameter, AppendReferences(parameter.PersistentData, ids, rhinoDoc, id => new GH_Point { ReferenceID = id }));
+            }
+            case "":
+            case "geometry":
+            {
+                var parameter = new Param_Geometry();
+                return (parameter, AppendGenericReferences(parameter, ids, rhinoDoc));
+            }
+            default:
+                throw new InvalidOperationException(
+                    $"Unsupported reference parameter type '{paramType}'. Use curve|brep|mesh|surface|point|geometry.");
+        }
+    }
+
+    private static int AppendReferences<T>(
+        GH_Structure<T> data,
+        IReadOnlyList<Guid> ids,
+        global::Rhino.RhinoDoc rhinoDoc,
+        Func<Guid, T> makeReference)
+        where T : class, IGH_GeometricGoo
+    {
+        var loaded = 0;
+        foreach (var id in ids)
+        {
+            if (id == Guid.Empty)
+            {
+                continue;
+            }
+            var goo = makeReference(id);
+            if (goo.LoadGeometry(rhinoDoc))
+            {
+                data.Append(goo);
+                loaded++;
+            }
+        }
+        return loaded;
+    }
+
+    // For the generic Geometry parameter, pick the goo type from each Rhino object's actual geometry.
+    private static int AppendGenericReferences(
+        Param_Geometry parameter,
+        IReadOnlyList<Guid> ids,
+        global::Rhino.RhinoDoc rhinoDoc)
+    {
+        var loaded = 0;
+        foreach (var id in ids)
+        {
+            if (id == Guid.Empty)
+            {
+                continue;
+            }
+            var rhinoObject = rhinoDoc.Objects.FindId(id);
+            IGH_GeometricGoo? goo = rhinoObject?.Geometry switch
+            {
+                global::Rhino.Geometry.Curve => new GH_Curve { ReferenceID = id },
+                global::Rhino.Geometry.Brep => new GH_Brep { ReferenceID = id },
+                global::Rhino.Geometry.Mesh => new GH_Mesh { ReferenceID = id },
+                global::Rhino.Geometry.Surface => new GH_Surface { ReferenceID = id },
+                global::Rhino.Geometry.Point => new GH_Point { ReferenceID = id },
+                _ => null
+            };
+            if (goo is not null && goo.LoadGeometry(rhinoDoc))
+            {
+                parameter.PersistentData.Append(goo);
+                loaded++;
+            }
+        }
+        return loaded;
+    }
+
     protected override Task<CanvasMutationResult> DeleteObjectCoreAsync(
         GH_Document document,
         DeleteCanvasObjectRequest request,
@@ -331,6 +520,11 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
                 foreach (var change in changes)
                 {
                     change.DocumentObject.Attributes.Pivot = change.Pivot;
+                    // Setting Pivot alone moves the attribute origin but does not re-flow the
+                    // object's layout — the canvas keeps drawing it at the old spot until something
+                    // forces a re-layout (which is why a manual nudge "fixed" it before). Expire the
+                    // layout now so the new position takes effect without user intervention.
+                    change.DocumentObject.Attributes.ExpireLayout();
                 }
             }
             catch (Exception mutationFailure)
@@ -351,6 +545,10 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
                 }
                 throw;
             }
+            // Force the visible canvas to repaint the moved objects at their new pivots. Control
+            // .Invalidate() is safe to call off the UI thread (it just marshals a repaint request),
+            // and a null active canvas (headless) simply means there is nothing on screen to redraw.
+            global::Grasshopper.Instances.ActiveCanvas?.Invalidate();
         }
 
         var afterSnapshot = await CaptureSnapshotCoreAsync(document, cancellationToken).ConfigureAwait(false);
@@ -695,12 +893,17 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
 
     private static CanvasOutputParameterInspection InspectOutputParameter(
         IGH_Param parameter,
+        bool includeMassProperties,
         CancellationToken cancellationToken)
     {
         var count = 0;
         var typeNames = new HashSet<string>(StringComparer.Ordinal);
         var samples = new List<string>(MaximumSampleValuesPerParameter);
         Rhino.Geometry.BoundingBox? bounds = null;
+        var branchCount = parameter.VolatileData.PathCount;
+        bool? closedAll = null;
+        double? areaSum = null;
+        double? volumeSum = null;
         foreach (var goo in parameter.VolatileData.AllData(true))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -738,6 +941,51 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
                 union.Union(candidate);
                 bounds = union;
             }
+
+            // Closed-ness (curve/Brep/mesh): all-closed across the output, null when nothing has a
+            // closed notion. Cheap (a property/flag read), so always computed. Area/volume below are
+            // AreaMassProperties/VolumeMassProperties integrations — expensive on dense Breps/meshes —
+            // so they are gated behind includeMassProperties and stay null on the common Verify path.
+            var isClosed = geometry switch
+            {
+                Rhino.Geometry.Curve curve => (bool?)curve.IsClosed,
+                Rhino.Geometry.Brep brep => brep.IsSolid,
+                Rhino.Geometry.Extrusion extrusion => extrusion.IsSolid,
+                Rhino.Geometry.Mesh mesh => mesh.IsClosed,
+                _ => null
+            };
+            if (isClosed is { } closedValue)
+            {
+                closedAll = (closedAll ?? true) && closedValue;
+            }
+            if (!includeMassProperties)
+            {
+                continue;
+            }
+            var area = geometry switch
+            {
+                Rhino.Geometry.Brep brep => Rhino.Geometry.AreaMassProperties.Compute(brep)?.Area,
+                Rhino.Geometry.Surface surface => Rhino.Geometry.AreaMassProperties.Compute(surface)?.Area,
+                Rhino.Geometry.Mesh mesh => Rhino.Geometry.AreaMassProperties.Compute(mesh)?.Area,
+                Rhino.Geometry.Curve curve when curve.IsClosed && curve.IsPlanar() =>
+                    Rhino.Geometry.AreaMassProperties.Compute(curve)?.Area,
+                _ => null
+            };
+            if (area is { } areaValue)
+            {
+                areaSum = (areaSum ?? 0) + areaValue;
+            }
+            var volume = geometry switch
+            {
+                Rhino.Geometry.Brep { IsSolid: true } brep => Rhino.Geometry.VolumeMassProperties.Compute(brep)?.Volume,
+                Rhino.Geometry.Extrusion { IsSolid: true } extrusion => Rhino.Geometry.VolumeMassProperties.Compute(extrusion.ToBrep())?.Volume,
+                Rhino.Geometry.Mesh { IsClosed: true } mesh => Rhino.Geometry.VolumeMassProperties.Compute(mesh)?.Volume,
+                _ => null
+            };
+            if (volume is { } volumeValue)
+            {
+                volumeSum = (volumeSum ?? 0) + volumeValue;
+            }
         }
 
         return new CanvasOutputParameterInspection(
@@ -747,7 +995,11 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             count,
             typeNames.OrderBy(item => item, StringComparer.Ordinal).ToArray(),
             bounds is { } value ? ToCanvasBounds(value) : null,
-            samples);
+            samples,
+            branchCount,
+            closedAll,
+            areaSum,
+            volumeSum);
     }
 
     private static CanvasBoundingBox3d ToCanvasBounds(Rhino.Geometry.BoundingBox bounds) =>

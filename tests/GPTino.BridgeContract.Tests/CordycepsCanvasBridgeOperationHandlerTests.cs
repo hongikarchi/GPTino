@@ -195,5 +195,8 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
 
         public Task<CanvasMutationResult> SetGroupAsync(DocumentTarget target, SetGroupRequest request, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<CanvasMutationResult> ReferenceRhinoObjectsAsync(DocumentTarget target, ReferenceRhinoObjectsRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

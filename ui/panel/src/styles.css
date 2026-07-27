@@ -37,7 +37,10 @@
 html,
 body,
 #root {
-  min-width: 320px;
+  /* No hard min-width: a docked Rhino panel can be narrower than 320px, and a fixed floor forced the
+     content wider than the panel so it clipped left/right (body overflow is hidden). 0 lets the layout
+     reflow to the actual panel width; flex children already carry min-width:0 to shrink cleanly. */
+  min-width: 0;
   min-height: 100%;
   margin: 0;
 }
@@ -480,6 +483,30 @@ button.llm-auth:hover strong {
 
 .chat-title-block { min-width: 0; }
 
+.chat-delete {
+  flex: none;
+  align-self: center;
+  padding: 4px 10px;
+  font-size: var(--fs-micro, 10px);
+  color: #e7a3a3;
+  background: rgba(200, 80, 80, 0.08);
+  border: 1px solid rgba(200, 80, 80, 0.35);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.chat-delete:hover:not(:disabled) { background: rgba(200, 80, 80, 0.16); }
+.chat-delete:disabled { opacity: 0.5; cursor: default; }
+
+.deleted-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.deleted-session-actions { display: flex; gap: 6px; flex: none; }
+
 .chat-title-row {
   display: flex;
   align-items: center;
@@ -662,6 +689,18 @@ button.llm-auth:hover strong {
   gap: 4px;
   color: var(--muted);
 }
+
+.stop-edit-button {
+  margin-left: 10px;
+  padding: 2px 8px;
+  font-size: var(--fs-micro, 10px);
+  color: #e7c98a;
+  background: rgba(230, 184, 92, 0.1);
+  border: 1px solid rgba(230, 184, 92, 0.4);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.stop-edit-button:hover { background: rgba(230, 184, 92, 0.18); }
 
 .thinking-row > span {
   width: 4px;
@@ -995,6 +1034,13 @@ button.llm-auth:hover strong {
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: #0c0e0f;
+}
+
+/* Collapsed: the node graph is hidden and the row shrinks to just the toolbar, reclaiming
+   vertical space for the chat. The toolbar stays reachable (the ▸ Graph toggle re-expands). */
+.canvas-row.collapsed {
+  height: auto;
+  min-height: 44px;
 }
 
 .canvas-toolbar {

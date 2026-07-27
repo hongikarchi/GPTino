@@ -143,6 +143,7 @@ export function useRuntime() {
   // archive overlay keys its fetch effects on these, and they must not re-fire
   // every time a runtime event re-memoizes `actions`.
   const listArchive = useCallback(() => clientRef.current!.listArchive(), []);
+  const listDeleted = useCallback(() => clientRef.current!.listDeletedSessions(), []);
   const readArchiveMessages = useCallback(
     (fingerprint: string, sessionId: string, limit?: number) =>
       clientRef.current!.readArchiveMessages(fingerprint, sessionId, limit),
@@ -182,6 +183,13 @@ export function useRuntime() {
           })),
           (activeClient) => activeClient.setSessionPaused(sessionId, paused),
         );
+      },
+      async retractLast(sessionId: string): Promise<string | null> {
+        const content = await clientRef.current!.retractLastMessage(sessionId);
+        const next = await clientRef.current!.getRuntime();
+        setRuntime(next);
+        setServerRuntime(next);
+        return content;
       },
       setMode(sessionId: string, mode: SessionMode) {
         return runAction(
@@ -232,6 +240,29 @@ export function useRuntime() {
           (activeClient) => activeClient.openTerminal(sessionId),
         );
       },
+      deleteSession(sessionId: string) {
+        return runAction(
+          `delete:${sessionId}`,
+          // Optimistically drop it from the visible list; the refetch confirms.
+          (current) => ({ ...current, sessions: current.sessions.filter((session) => session.id !== sessionId) }),
+          (activeClient) => activeClient.deleteSession(sessionId),
+        );
+      },
+      restoreSession(sessionId: string) {
+        return runAction(
+          `restore:${sessionId}`,
+          undefined,
+          (activeClient) => activeClient.restoreSession(sessionId),
+        );
+      },
+      purgeSession(sessionId: string) {
+        return runAction(
+          `purge:${sessionId}`,
+          undefined,
+          (activeClient) => activeClient.purgeSession(sessionId),
+        );
+      },
+      listDeleted,
       pauseRuntime(paused: boolean) {
         return runAction(
           "pause-runtime",
@@ -257,7 +288,7 @@ export function useRuntime() {
         );
       },
     }),
-    [listArchive, readArchiveMessages, reorder, runAction, shift, updateSession],
+    [listArchive, listDeleted, readArchiveMessages, reorder, runAction, shift, updateSession],
   );
 
   return {

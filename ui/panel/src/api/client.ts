@@ -1,6 +1,7 @@
 import type {
   ArchiveMessage,
   ArchiveProject,
+  DeletedSession,
   MessageRequest,
   ModelInfo,
   ModelProfile,
@@ -21,11 +22,19 @@ export interface GptinoApiClient {
   createSession(name: string, grasshopperDoc?: string): Promise<void>;
   reorderSessions(request: SessionOrderRequest): Promise<void>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
+  /** Stop the current turn and pull the last user message back for editing; returns its text. */
+  retractLastMessage(sessionId: string): Promise<string | null>;
   /** Bind (docKey) or unbind (null) the GH document this session's writes target. */
   setSessionTarget(sessionId: string, grasshopperDoc: string | null): Promise<void>;
   setSessionMode(sessionId: string, mode: SessionMode): Promise<void>;
   setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
   sendMessage(sessionId: string, request: MessageRequest): Promise<void>;
+  /** Soft-delete: hide from the active list, recoverable from the trash. */
+  deleteSession(sessionId: string): Promise<void>;
+  restoreSession(sessionId: string): Promise<void>;
+  /** Permanent delete: removes the session and its transcript for good. */
+  purgeSession(sessionId: string): Promise<void>;
+  listDeletedSessions(): Promise<DeletedSession[]>;
   openTerminal(sessionId: string): Promise<void>;
   openLoginTerminal(): Promise<void>;
   setRuntimePaused(paused: boolean): Promise<void>;
@@ -149,7 +158,9 @@ class HttpApiClient implements GptinoApiClient {
       body: JSON.stringify({
         name,
         role: "modeler",
-        modelProfile: "auto",
+        // New sessions default to Deep quality on the GPT-5.6-Sol model (see also mock.ts).
+        modelProfile: "deep",
+        model: "gpt-5.6-sol",
         ...(grasshopperDoc ? { grasshopperDoc } : {}),
       }),
     });
@@ -160,6 +171,14 @@ class HttpApiClient implements GptinoApiClient {
       method: "PUT",
       body: JSON.stringify({ paused }),
     });
+  }
+
+  async retractLastMessage(sessionId: string): Promise<string | null> {
+    const result = await this.request<{ content: string | null }>(
+      `/sessions/${encodeURIComponent(sessionId)}/retract-last`,
+      { method: "POST" },
+    );
+    return result?.content ?? null;
   }
 
   setSessionTarget(sessionId: string, grasshopperDoc: string | null): Promise<void> {
@@ -188,6 +207,22 @@ class HttpApiClient implements GptinoApiClient {
       method: "POST",
       body: JSON.stringify(request),
     });
+  }
+
+  deleteSession(sessionId: string): Promise<void> {
+    return this.request(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+  }
+
+  restoreSession(sessionId: string): Promise<void> {
+    return this.request(`/sessions/${encodeURIComponent(sessionId)}/restore`, { method: "POST" });
+  }
+
+  purgeSession(sessionId: string): Promise<void> {
+    return this.request(`/sessions/${encodeURIComponent(sessionId)}/purge`, { method: "DELETE" });
+  }
+
+  listDeletedSessions(): Promise<DeletedSession[]> {
+    return this.request<DeletedSession[]>("/sessions/deleted");
   }
 
   openTerminal(sessionId: string): Promise<void> {

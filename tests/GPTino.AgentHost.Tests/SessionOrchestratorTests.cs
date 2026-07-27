@@ -102,6 +102,43 @@ public sealed class SessionOrchestratorTests
         Assert.EndsWith("지금 선택한 컴포넌트 뭐야?", startedTurn.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ImageAttachmentsAreDeliveredAsImageInputsAndKeptOutOfTheTextBlock()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient
+        {
+            ReadTurn = (_, _, _) => Task.FromResult<CodexTurnReadResult?>(Completed("done"))
+        };
+        using var harness = await CreateHarnessAsync(directory, client);
+
+        await harness.Orchestrator.SubmitMessageAsync(
+            harness.Session.Id,
+            new SendMessageRequest(
+                "이 참조 이미지대로 패널링해줘",
+                "attach-1",
+                [
+                    new IncomingAttachment("ref.png", "image/png", Convert.ToBase64String([0x89, 0x50, 0x4E, 0x47])),
+                    new IncomingAttachment("notes.txt", "text/plain", Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("brief")))
+                ]),
+            CancellationToken.None);
+
+        await WaitForStateAsync(harness.Store, harness.Session.Id, SessionStates.Idle);
+
+        // The image rides the native image-input channel...
+        var imageTurn = Assert.Single(client.StartedTurnImagePaths);
+        var imagePath = Assert.Single(imageTurn.ImagePaths);
+        Assert.EndsWith("ref.png", imagePath, StringComparison.OrdinalIgnoreCase);
+
+        // ...and never leaks into the text the model reads as prose.
+        var startedTurn = Assert.Single(client.StartedTurns);
+        Assert.DoesNotContain("ref.png", startedTurn.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("View image files with your image-viewing tool", startedTurn.Message, StringComparison.Ordinal);
+        // The non-image file still travels as a readable path in the attachments block.
+        Assert.Contains("<gptino_attachments>", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("notes.txt", startedTurn.Message, StringComparison.Ordinal);
+    }
+
     private sealed class StaticSelectionContext(GPTino.BridgeContract.SelectionChangedEvent? selection)
         : ISelectionContextSource
     {
@@ -903,6 +940,7 @@ public sealed class SessionOrchestratorTests
     {
         private readonly object _startedTurnsGate = new();
         private readonly List<(string ThreadId, string Message)> _startedTurns = [];
+        private readonly List<(string ThreadId, IReadOnlyList<string> ImagePaths)> _startedTurnImagePaths = [];
         private int _readCount;
         private int _stopCount;
         private int _startThreadCount;
@@ -929,6 +967,17 @@ public sealed class SessionOrchestratorTests
                 lock (_startedTurnsGate)
                 {
                     return [.. _startedTurns];
+                }
+            }
+        }
+
+        public IReadOnlyList<(string ThreadId, IReadOnlyList<string> ImagePaths)> StartedTurnImagePaths
+        {
+            get
+            {
+                lock (_startedTurnsGate)
+                {
+                    return [.. _startedTurnImagePaths];
                 }
             }
         }
@@ -988,12 +1037,17 @@ public sealed class SessionOrchestratorTests
             string message,
             string? model,
             string? effort,
+            IReadOnlyList<string>? imagePaths = null,
             CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _startTurnCount);
             lock (_startedTurnsGate)
             {
                 _startedTurns.Add((threadId, message));
+                if (imagePaths is { Count: > 0 })
+                {
+                    _startedTurnImagePaths.Add((threadId, [.. imagePaths]));
+                }
             }
             var turnId = StartTurn is null
                 ? "turn-1"

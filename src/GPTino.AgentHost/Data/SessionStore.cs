@@ -74,6 +74,17 @@ public sealed class SessionStore
                     "ALTER TABLE sessions ADD COLUMN gh_doc TEXT NULL;",
                     cancellationToken).ConfigureAwait(false);
             }
+            // Soft-delete marker: NULL = live (default for all legacy rows), a timestamp = hidden
+            // from the active list but recoverable. Deleted rows are parked at a deep-negative
+            // sort_order (see SetSessionDeletedAsync) so they never collide with the reorder path.
+            if (!await HasColumnAsync(connection, "sessions", "deleted_at", cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                await ExecuteAsync(
+                    connection,
+                    "ALTER TABLE sessions ADD COLUMN deleted_at TEXT NULL;",
+                    cancellationToken).ConfigureAwait(false);
+            }
             await NormalizeInterruptedSessionsAsync(connection, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -365,6 +376,143 @@ public sealed class SessionStore
             }
             transaction.Commit();
             return nextVersion;
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Soft-deletes (deleted=true) or restores (deleted=false) a session. A soft-deleted session is
+    /// hidden from the active list but keeps its row, messages, and thread so it can be restored
+    /// intact. To stay clear of the reorder path (which parks live rows at temporary negatives
+    /// -1..-n), a deleted row is moved to a deep-negative sort_order strictly below any existing
+    /// value and below -1,000,000; a restored row re-appends at the end of the live order.
+    /// </summary>
+    public async Task SetSessionDeletedAsync(Guid id, bool deleted, CancellationToken cancellationToken = default)
+    {
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = deleted
+                ? """
+                  UPDATE sessions
+                  SET deleted_at=$now, updated_at=$now,
+                      sort_order = MIN(-1000000, (SELECT MIN(sort_order) FROM sessions) - 1)
+                  WHERE id=$id AND deleted_at IS NULL;
+                  """
+                : """
+                  UPDATE sessions
+                  SET deleted_at=NULL, updated_at=$now,
+                      sort_order = COALESCE((SELECT MAX(sort_order) FROM sessions WHERE deleted_at IS NULL), -1) + 1
+                  WHERE id=$id AND deleted_at IS NOT NULL;
+                  """;
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$id", id.ToString("D"));
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    /// <summary>Lists soft-deleted sessions (most-recently-deleted first) for a restore/purge view.</summary>
+    public async Task<IReadOnlyList<SessionRecord>> ReadDeletedSessionsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc FROM sessions WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC;";
+        var sessions = new List<SessionRecord>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            sessions.Add(MapSession(reader));
+        }
+        return sessions;
+    }
+
+    /// <summary>
+    /// Permanently removes a session and its transcript (messages cascade on the FK). Irreversible;
+    /// callers gate this behind an explicit user confirmation. Live-jobs history and attachment
+    /// files keyed by this session id are left on disk — harmless orphans that never surface once
+    /// the session row is gone.
+    /// </summary>
+    public async Task PurgeSessionAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = connection.BeginTransaction();
+            // Delete the transcript explicitly rather than relying on ON DELETE CASCADE — this
+            // connection does not enable PRAGMA foreign_keys, so the cascade would not fire and
+            // would leave orphaned message rows behind.
+            await using (var messages = connection.CreateCommand())
+            {
+                messages.Transaction = transaction;
+                messages.CommandText = "DELETE FROM messages WHERE session_id=$id;";
+                messages.Parameters.AddWithValue("$id", id.ToString("D"));
+                await messages.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            await using (var session = connection.CreateCommand())
+            {
+                session.Transaction = transaction;
+                session.CommandText = "DELETE FROM sessions WHERE id=$id;";
+                session.Parameters.AddWithValue("$id", id.ToString("D"));
+                await session.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            transaction.Commit();
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Retracts the session's most recent user message and everything after it (its assistant reply /
+    /// partial turn output), returning that message's text so the panel can reload it into the
+    /// composer for editing. Used by "Stop &amp; edit": the user pauses, pulls the message back, edits,
+    /// and resends as a fresh turn. Returns null when there is no user message to retract.
+    /// </summary>
+    public async Task<string?> RetractLastUserMessageAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = connection.BeginTransaction();
+            long lastUserId;
+            string content;
+            await using (var find = connection.CreateCommand())
+            {
+                find.Transaction = transaction;
+                find.CommandText =
+                    "SELECT id, content FROM messages WHERE session_id=$id AND role='user' ORDER BY id DESC LIMIT 1;";
+                find.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+                await using var reader = await find.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    return null;
+                }
+                lastUserId = reader.GetInt64(0);
+                content = reader.GetString(1);
+            }
+            await using (var delete = connection.CreateCommand())
+            {
+                delete.Transaction = transaction;
+                // Remove the user message and anything after it (assistant reply / partial output).
+                delete.CommandText = "DELETE FROM messages WHERE session_id=$id AND id>=$from;";
+                delete.Parameters.AddWithValue("$id", sessionId.ToString("D"));
+                delete.Parameters.AddWithValue("$from", lastUserId);
+                await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            transaction.Commit();
+            return content;
         }
         finally
         {
@@ -745,7 +893,7 @@ public sealed class SessionStore
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc FROM sessions ORDER BY sort_order;";
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc FROM sessions WHERE deleted_at IS NULL ORDER BY sort_order;";
         var sessions = new List<SessionRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -777,7 +925,9 @@ public sealed class SessionStore
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT id FROM sessions;";
+        // Reorder operates on the live set only; deleted rows are parked out of band and the panel
+        // never includes them in an order request.
+        command.CommandText = "SELECT id FROM sessions WHERE deleted_at IS NULL;";
         var ids = new HashSet<Guid>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

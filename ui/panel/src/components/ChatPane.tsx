@@ -37,6 +37,10 @@ interface ChatPaneProps {
   onTarget(grasshopperDoc: string | null): void;
   /** Resolves false when the send failed (the composer restores its draft). */
   onSend(content: string, attachments?: MessageAttachment[]): Promise<boolean | void> | void;
+  /** Soft-delete this session (hidden from the list, recoverable from the trash). */
+  onDelete(): void;
+  /** Stop the current turn and retract the last user message; resolves its text (or null) to edit. */
+  onStopEdit(): Promise<string | null>;
 }
 
 /** One staged composer attachment; the bytes stay in the File until send encodes them. */
@@ -173,7 +177,7 @@ function UsageChip({ usage }: { usage: SessionUsage }) {
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onTarget, onSend }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onTarget, onSend, onDelete, onStopEdit }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -340,6 +344,19 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
           <p>{session.summary}</p>
         </div>
         {session.usage ? <UsageChip usage={session.usage} /> : null}
+        <button
+          type="button"
+          className="chat-delete"
+          title="Delete session (recoverable from Deleted)"
+          disabled={busyActions.has(`delete:${session.id}`)}
+          onClick={() => {
+            if (window.confirm(`Delete session "${session.title}"? You can restore it from Deleted.`)) {
+              onDelete();
+            }
+          }}
+        >
+          Delete
+        </button>
       </header>
 
       <div className="chat-stream" ref={streamRef} aria-live="polite">
@@ -393,6 +410,19 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
             <span />
             <span />
             <em>{session.status === "drafting" ? "Drafting a ChangeSet" : "Working"}</em>
+            <button
+              type="button"
+              className="stop-edit-button"
+              title="Stop the current work and pull your message back to edit it"
+              onClick={async () => {
+                const content = await onStopEdit();
+                if (typeof content === "string") {
+                  setDraft((current) => (current.trim().length > 0 ? current : content));
+                }
+              }}
+            >
+              Stop &amp; edit
+            </button>
           </div>
         ) : null}
       </div>

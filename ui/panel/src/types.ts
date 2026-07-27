@@ -195,6 +195,14 @@ export interface ArchiveMessage {
   createdAt: string;
 }
 
+/** A soft-deleted session, listed in the trash for restore or permanent removal. */
+export interface DeletedSession {
+  id: string;
+  name: string;
+  state: string;
+  updatedAt: string;
+}
+
 export interface SessionOrderRequest {
   orderedSessionIds: string[];
   orderVersion: number;

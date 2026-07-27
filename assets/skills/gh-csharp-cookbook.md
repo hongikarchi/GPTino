@@ -32,7 +32,7 @@ points = pts;   // assign each output socket variable exactly once
 
 - **Directive**: `// #! csharp` first line. A `#! python 3` directive on a C# component (or
   vice versa) is rejected by the adapter — runtime must match the created component
-  (`canvas.create` GUID `ae3b6678-0856-4e38-8100-3e31ceb6779b`, `python.setSource`
+  (`canvas.create` GUID `b6ba1144-02d6-4a2d-b53c-ec62e290eeb7`, `python.setSource`
   runtime `"csharp"`).
 - **Null-guard inputs**: slider-fed generic inputs arrive as `object` (often boxed `double`)
   and are `null` until wired. Coalesce then cast: `var n = (int)(count ?? 5.0);`. Casting
@@ -56,8 +56,10 @@ points = pts;   // assign each output socket variable exactly once
 - **No component context in script-mode**: there is NO `ghenv`, NO `Component`, NO `RunScript`
   this-object. Read the document directly (`Rhino.RhinoDoc.ActiveDoc` and its Layers/Objects tables).
 - **Socket names are C# identifiers**: never name a socket a C# reserved keyword — `out` foremost
-  (the console output socket is not yours to declare). Use plain ASCII identifier names; names with
-  spaces or non-ASCII characters are rejected before anything runs.
+  (the console output socket is not yours to declare). When you set a component's schema, list only
+  YOUR sockets and simply omit the console `out`; GPTino preserves it automatically at its live
+  position, so omitting it is never a "removed socket" error. Use plain ASCII identifier names;
+  names with spaces or non-ASCII characters are rejected before anything runs.
 - **Verify RhinoCommon signatures against Rhino 8**: for uncertain APIs (`Unroller`, duplicate/offset
   families) keep to the documented forms in this cookbook — a wrong overload fails at compile with
   the exact [line:col]; fix the signature and resubmit rather than guessing variants.

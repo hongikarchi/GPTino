@@ -6,6 +6,7 @@ using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using GPTino.AgentHost.Api;
 using GPTino.AgentHost.Codex;
 using GPTino.AgentHost.Data;
@@ -281,6 +282,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var knownId = arguments.TryGetProperty("knownSnapshotId", out var knownElement)
             ? knownElement.GetString()
             : null;
+        // The full per-domain resources list and the whole-canvas dump are the heavy part of the
+        // payload. Return them only for a full-document read — an empty scopes array (the default
+        // orientation read) or one that explicitly asks for "canvas". When the caller narrows to
+        // targeted inspection scopes (wireify:<guid> / rhino:<guid>), omit the full document so a
+        // large definition's unrelated JSON does not crowd the model's context.
+        var wantsFullDocument = scopes.Length == 0 ||
+            scopes.Any(scope => string.Equals(scope, "canvas", StringComparison.OrdinalIgnoreCase));
         return new
         {
             sessionId,
@@ -291,8 +299,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             gitCommit = snapshot.State.GitCommit,
             capturedAt = snapshot.State.CapturedAt,
             target = snapshot.State.Target,
-            resources = snapshot.State.Resources,
-            canvas = snapshot.Canvas,
+            resources = wantsFullDocument ? snapshot.State.Resources : null,
+            canvas = wantsFullDocument ? snapshot.Canvas : null,
             inspections = inspectionTasks.Select(task => task.Result).ToArray()
         };
     }
@@ -358,8 +366,19 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             targetState,
             BridgeAdapterOwner.CordycepsCanvas,
             "canvas.inspectOutputs",
-            arguments,
+            WithMassProperties(arguments),
             cancellationToken);
+    }
+
+    // An explicit inspect_outputs read is a deliberate, low-frequency call — unlike the per-job Verify
+    // path, which requests mass properties only when a predicate needs them — so it always asks for the
+    // full area/volume semantics, preserving the model's view regardless of what it passed.
+    private static JsonElement WithMassProperties(JsonElement arguments)
+    {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(arguments.GetRawText())?.AsObject()
+            ?? throw new InvalidOperationException("inspect_outputs arguments must be a JSON object.");
+        node["includeMassProperties"] = true;
+        return JsonSerializer.SerializeToElement(node, BridgeProtocol.JsonOptions);
     }
 
     private async Task<object> ReadBridgeQueryAsync(
@@ -840,9 +859,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     public IReadOnlyList<LiveProblemItem> ReadRecentProblems(int limit = 20)
     {
         var boundedLimit = Math.Clamp(limit, 1, 100);
+        // A problem is only worth surfacing while it is the session's CURRENT job. Once the session
+        // enqueues a newer job (a resubmitted fix, or simply its next turn) — or that newer job
+        // commits — the old Blocked/Failed/RecoveryRequired entry is resolved and must drop off the
+        // warning banner, otherwise a fixed conflict lingers and looks unresolved.
+        var latestSequenceBySession = _jobs.Values
+            .GroupBy(entry => entry.Job.ChangeSet.SessionId)
+            .ToDictionary(group => group.Key, group => group.Max(entry => entry.Job.EnqueueSequence));
         return _jobs.Values
             .Where(entry => entry.State is
                 JobState.RecoveryRequired or JobState.Blocked or JobState.Failed)
+            .Where(entry => latestSequenceBySession.TryGetValue(entry.Job.ChangeSet.SessionId, out var latest) &&
+                entry.Job.EnqueueSequence == latest)
             .OrderByDescending(entry => entry.UpdatedAt)
             .Take(boundedLimit)
             .Select(entry =>
@@ -925,6 +953,26 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 var autoMessage = string.Join(" ", autoConflicts);
                 await SetJobPhaseAsync(entry, JobState.Blocked, autoMessage).ConfigureAwait(false);
                 return new JobExecutionResult(job.JobId, JobState.Blocked, autoMessage);
+            }
+            // Rebase self-attributable stale concrete fingerprints (the session's own prior commit
+            // advanced them) to live BEFORE validation, so a stale base for a value/geometry write no
+            // longer Blocks. Foreign/drifted resources are left for ValidateAgainstSnapshot to Block.
+            var selfStaleRebase = ResolveSelfStaleConcreteRebase(
+                resolvedChangeSet,
+                preparedOperations,
+                before.State,
+                job.ChangeSet.SessionId,
+                _resourceLedger);
+            resolvedChangeSet = selfStaleRebase.ChangeSet;
+            preparedOperations = selfStaleRebase.Operations;
+            foreach (var (resource, staleFingerprint, liveFingerprint) in selfStaleRebase.Rebased)
+            {
+                _problemLog?.RecordSelfStaleRebase(
+                    job.JobId,
+                    job.ChangeSet.SessionId,
+                    resource,
+                    staleFingerprint,
+                    liveFingerprint);
             }
             var conflicts = _conflictDetector.ValidateAgainstSnapshot(resolvedChangeSet, before.State);
             if (conflicts.Count > 0)
@@ -1060,11 +1108,41 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             _events.Publish();
             var after = await CaptureSnapshotAsync(targetState, force: true, execution.Token)
                 .ConfigureAwait(false);
+            // Collect the post-solve output inspection up front so semantic acceptance predicates
+            // (OutputCountInRange) verify against real counts. Best-effort: on failure outputs stay
+            // empty and count predicates fail closed (an unverifiable claim never passes).
+            IReadOnlyList<JobComponentOutputs> componentOutputs = Array.Empty<JobComponentOutputs>();
+            try
+            {
+                componentOutputs = await CollectComponentOutputsAsync(
+                    targetState.Target, job.ChangeSet, after, execution.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "Could not collect component outputs for job {JobId}.", job.JobId);
+            }
+            entry.Outputs = componentOutputs;
+            var predicateOutcomes = new List<PredicateOutcome>();
             var verificationProblems = Verify(
                 job.ChangeSet,
                 after,
                 diagnostics,
-                operationObservations);
+                operationObservations,
+                componentOutputs,
+                predicateOutcomes);
+            // Log every predicate outcome (pass and fail) so we can later mine which predicates the
+            // model declares and whether they catch real problems — data-first tuning of the library.
+            foreach (var outcome in predicateOutcomes)
+            {
+                _problemLog?.RecordPredicateOutcome(
+                    job.JobId,
+                    job.ChangeSet.SessionId,
+                    outcome.Name,
+                    outcome.Kind.ToString(),
+                    outcome.Resource,
+                    outcome.ExpectedValue,
+                    outcome.Passed);
+            }
             if (verificationProblems.Count > 0)
             {
                 // Deterministic failure: every operation completed and the after-snapshot is in
@@ -1080,11 +1158,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 {
                     entry.Applied = BuildCommittedJobView(job.ChangeSet, after);
                     entry.Sockets = CollectComponentSockets(job.ChangeSet, after);
-                    entry.Outputs = await CollectComponentOutputsAsync(
-                        targetState.Target,
-                        job.ChangeSet,
-                        after,
-                        execution.Token).ConfigureAwait(false);
+                    // entry.Outputs was already collected before Verify.
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
@@ -1124,17 +1198,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
             try
             {
-                // Post-solve observations, captured while this job still holds the write lease so
-                // they are consistent with the commit: the Grasshopper-assigned socket identities of
-                // reshaped components (from the after-snapshot; kills the follow-up snapshot_read)
-                // and a live output inspection per written component (counts/types/bounds/samples).
-                // Same never-demote discipline as the committed view above.
+                // Post-solve socket identities of reshaped components (from the after-snapshot; kills
+                // the follow-up snapshot_read), captured while the write lease is still held. The
+                // output inspection (counts/types/bounds/samples) was already collected before Verify
+                // and is on entry.Outputs. Same never-demote discipline as the committed view above.
                 entry.Sockets = CollectComponentSockets(job.ChangeSet, after);
-                entry.Outputs = await CollectComponentOutputsAsync(
-                    targetState.Target,
-                    job.ChangeSet,
-                    after,
-                    execution.Token).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -1838,10 +1906,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         "version.";
 
     /// <summary>
-    /// Ops slower than this get an Information "op_duration" diagnostic in the terminal job view,
-    /// so a session sees which solves approach the bridge budget before one times out.
+    /// Ops slower than this get an Information "op_duration" diagnostic in the terminal job view, so a
+    /// session sees which component exceeded the ~1s per-component target and should be split into
+    /// smaller logical stages (well before any solve approaches the 45s bridge budget).
     /// </summary>
-    internal static readonly TimeSpan OperationDurationDiagnosticThreshold = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan OperationDurationDiagnosticThreshold = TimeSpan.FromSeconds(1);
 
     internal static string FormatOperationDuration(
         string bridgeOperation,
@@ -2339,7 +2408,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
             var requestedInputs = CountSchemaSockets(item.Arguments, "inputs");
             var requestedOutputs = CountSchemaSockets(item.Arguments, "outputs");
-            if (requestedInputs < component.Inputs.Count || requestedOutputs < component.Outputs.Count)
+            // The managed console output ('out') is auto-preserved by the adapter when a
+            // declaration omits it (GrasshopperPythonFoundationAdapter.PreserveManagedConsoleOutputs),
+            // so it does not count against the append-only floor. Only genuine removal of a
+            // model-owned socket is rejected here. Keep this in lockstep with the adapter.
+            var declaredOutputNames = SchemaSocketNames(item.Arguments, "outputs");
+            var autoPreservedConsoleOutputs = component.Outputs
+                .Count(parameter =>
+                    string.Equals(parameter.Name, "out", StringComparison.Ordinal) &&
+                    !declaredOutputNames.Contains("out", StringComparer.Ordinal));
+            var effectiveLiveOutputs = component.Outputs.Count - autoPreservedConsoleOutputs;
+            if (requestedInputs < component.Inputs.Count || requestedOutputs < effectiveLiveOutputs)
             {
                 throw new InvalidOperationException(BuildAppendOnlySchemaRejection(
                     item.Operation.OperationId,
@@ -2365,7 +2444,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var liveInputs = component.Inputs.Select(parameter => parameter.Name).ToArray();
         var liveOutputs = component.Outputs.Select(parameter => parameter.Name).ToArray();
         var undeclaredInputs = UndeclaredSocketNames(liveInputs, declaredInputs);
-        var undeclaredOutputs = UndeclaredSocketNames(liveOutputs, declaredOutputs);
+        // The console output ('out') is auto-preserved, so it is never something the model must
+        // declare — leave it out of the "undeclared" listing to keep the guidance about genuine
+        // removals only.
+        IReadOnlyList<string> undeclaredOutputs = UndeclaredSocketNames(liveOutputs, declaredOutputs)
+            .Where(name => !string.Equals(name, "out", StringComparison.Ordinal))
+            .ToArray();
         var message = new StringBuilder();
         message.Append(
             $"Operation '{operationId}' would remove sockets from component " +
@@ -2382,17 +2466,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             message.Append($" Undeclared existing output(s): {SocketNameList(undeclaredOutputs)}.");
         }
-        if (undeclaredOutputs.Contains("out", StringComparer.Ordinal))
-        {
-            message.Append(
-                " 'out' is the script console output — do not declare a socket named 'out' " +
-                "(C# reserved keyword) and keep your own outputs distinct from it; list the " +
-                "existing console socket at its position renamed (e.g. 'console_log') — renaming " +
-                "existing sockets is allowed.");
-        }
         message.Append(
             " List every existing socket in order, then appended ones; you may rename or retype " +
-            "existing sockets but not remove them.");
+            "existing sockets but not remove them. (The console 'out' output is preserved " +
+            "automatically — you never need to declare it.)");
         return message.ToString();
     }
 
@@ -2474,7 +2551,119 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 case "python.setSchema":
                     PreflightSchemaSocketNames(item, prepared, before);
                     break;
+                case "python.execute":
+                    PreflightExecuteCost(item, before);
+                    break;
             }
+        }
+    }
+
+    // The GH document solves on Rhino's single UI thread, so a script whose loop count is driven by
+    // large resolution sliders can freeze Rhino for the whole solve — there is no way to abort it
+    // mid-flight. When the count-like sliders wired straight into an executed component multiply out
+    // to an egregiously large element count, reject the execute BEFORE it runs so the model lowers
+    // the counts or stages the work first. Conservative by design: only whole-number sliders whose
+    // socket name reads like a resolution knob are counted, and the threshold is high, so ordinary
+    // work is never blocked — a heavy solve with no such slider simply is not caught here.
+    private const long ExecuteElementCostBlockThreshold = 2_000_000;
+
+    private static readonly string[] CountKnobKeywords =
+    [
+        "count", "num", "span", "div", "segment", "seg", "sample", "resolution", "res",
+        "subdiv", "grid", "row", "col", "column", "density", "cell", "step", "tile",
+    ];
+
+    private static void PreflightExecuteCost(PreparedOperation item, SnapshotEnvelope before)
+    {
+        if (!item.Arguments.TryGetProperty("componentId", out var componentElement) ||
+            !componentElement.TryGetGuid(out var componentId))
+        {
+            return;
+        }
+        var (estimate, knobs) = EstimateExecuteElementCost(before.Canvas, componentId);
+        if (estimate <= ExecuteElementCostBlockThreshold)
+        {
+            return;
+        }
+        throw new InvalidOperationException(
+            $"Operation '{item.Operation.OperationId}': executing component {componentId:D} would solve " +
+            $"~{estimate:N0} elements from its resolution sliders ({string.Join(", ", knobs)}), which will " +
+            "freeze Rhino on the UI thread — Grasshopper cannot abort a running solve. Rejected before any " +
+            "write. Lower those slider counts and run a low-resolution pass first, or split the work into " +
+            "staged components (each executed and verified in turn); raise resolution only after a committed " +
+            "low-resolution solve.");
+    }
+
+    /// <summary>
+    /// Estimates the element count an execute would solve as the product of the whole-number
+    /// "resolution" sliders wired directly into the component's inputs (a socket named like a count
+    /// — see <see cref="CountKnobKeywords"/>). Pure so the estimator is unit-tested without a live
+    /// document. Returns (0, empty) when no such slider drives the component, so it never guesses.
+    /// </summary>
+    internal static (long Estimate, IReadOnlyList<string> Knobs) EstimateExecuteElementCost(
+        CanvasSnapshot canvas,
+        Guid componentId)
+    {
+        var component = canvas.Objects.FirstOrDefault(obj => obj.ObjectId == componentId);
+        if (component is null)
+        {
+            return (0, Array.Empty<string>());
+        }
+        long product = 1;
+        var knobs = new List<string>();
+        foreach (var input in component.Inputs)
+        {
+            var socketName = $"{input.Name} {input.NickName}".ToLowerInvariant();
+            if (!CountKnobKeywords.Any(keyword => socketName.Contains(keyword, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+            foreach (var source in input.CurrentSources)
+            {
+                var sourceObject = canvas.Objects.FirstOrDefault(obj => obj.ObjectId == source.OwnerObjectId);
+                if (sourceObject?.ValueJson is not { } valueJson ||
+                    !TryReadWholeSliderValue(valueJson, out var value) ||
+                    value < 2)
+                {
+                    continue;
+                }
+                // Clamp to avoid overflow on absurd inputs; the clamp is still far past the threshold.
+                product = value > long.MaxValue / product ? long.MaxValue : product * value;
+                knobs.Add($"{(string.IsNullOrWhiteSpace(input.NickName) ? input.Name : input.NickName)}={value}");
+            }
+        }
+        return knobs.Count > 0 ? (product, knobs) : (0, Array.Empty<string>());
+    }
+
+    private static bool TryReadWholeSliderValue(string valueJson, out long value)
+    {
+        value = 0;
+        try
+        {
+            using var document = JsonDocument.Parse(valueJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("kind", out var kind) ||
+                kind.ValueKind != JsonValueKind.String ||
+                !string.Equals(kind.GetString(), "numberSlider", StringComparison.Ordinal) ||
+                !root.TryGetProperty("value", out var valueElement) ||
+                valueElement.ValueKind != JsonValueKind.Number)
+            {
+                return false;
+            }
+            // Only whole-number sliders count as loop knobs; a fractional slider (e.g. sag=1.5) is a
+            // dimension, not an iteration count.
+            var raw = valueElement.GetDouble();
+            if (Math.Abs(raw - Math.Round(raw)) > 1e-9)
+            {
+                return false;
+            }
+            value = (long)Math.Round(raw);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 
@@ -2533,11 +2722,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         var available = side.Count == 0
             ? "none"
             : string.Join(", ", side.Select(parameter => $"{parameter.Name}={parameter.ParameterId:D}"));
+        // Common mistake: using the component's own object id as the socket id. Sockets have their
+        // own ids, distinct from the component that owns them — name it explicitly.
+        var confusionHint = parameterId == objectId
+            ? $" (You used the {(source ? "source" : "target")} object's own id as its parameter id; a " +
+              "socket id is never the component id — pick one of the listed socket ids.)"
+            : string.Empty;
         throw new InvalidOperationException(
             $"Operation '{item.Operation.OperationId}': Grasshopper {(source ? "source" : "target")} " +
             $"parameter {parameterId:D} on object {objectId:D} was not found in the pre-write snapshot. " +
             $"Available {(source ? "output" : "input")} sockets: {available}. Rejected before any write; " +
-            "wire to one of the listed name=id pairs.");
+            "wire to one of the listed name=id pairs." + confusionHint);
     }
 
     private static void PreflightTypingTarget(
@@ -2568,11 +2763,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             ? "none"
             : string.Join(", ", component.Inputs.Select(parameter =>
                 $"{parameter.Name}={parameter.ParameterId:D}"));
+        var confusionHint = parameterId == componentId
+            ? " (You used the component's own id as the input parameter id; a socket id is never the " +
+              "component id — pick one of the listed socket ids.)"
+            : string.Empty;
         throw new InvalidOperationException(
             $"Operation '{item.Operation.OperationId}': Python input {parameterId:D} was not found on " +
             $"component {componentId:D} in the pre-write snapshot. Available input sockets: {available}. " +
             "Rejected before any write; use one of the listed name=id pairs (job results carry them " +
-            "under committed.sockets).");
+            "under committed.sockets)." + confusionHint);
     }
 
     // Socket names become script variables. Two deterministic adapter/compiler rejections are
@@ -2934,6 +3133,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             OperationKind.SetValue => "canvas.setNumberSlider",
             OperationKind.ConnectWire or OperationKind.DisconnectWire => "canvas.setWire",
             OperationKind.CreateComponent => "canvas.create",
+            OperationKind.ReferenceRhinoObjects => "canvas.referenceRhinoObjects",
             OperationKind.DeleteComponent => "canvas.delete",
             OperationKind.SetGroup => "canvas.setGroup",
             OperationKind.UpdatePythonSource => "python.setSource",
@@ -2985,6 +3185,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             },
             "canvas.setWire" => new[] { "operationId", "wire", "action", "rejectCycles" },
             "canvas.create" => new[] { "operationId", "objectId", "componentTypeId", "pivot" },
+            "canvas.referenceRhinoObjects" => new[] { "operationId", "objectId", "rhinoObjectIds", "paramType", "pivot" },
             "canvas.delete" => new[] { "operationId", "objectId", "expectedFingerprint" },
             "canvas.setGroup" => new[] { "operationId", "groupId", "name", "objectIds", "argbColor" },
             "python.setSource" => new[]
@@ -3802,6 +4003,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private static IReadOnlyList<string> GuidArguments(string bridgeOperation) => bridgeOperation switch
     {
         "canvas.create" => ["objectId", "componentTypeId"],
+        "canvas.referenceRhinoObjects" => ["objectId"],
         "canvas.delete" => ["objectId"],
         "canvas.setNumberSlider" => ["objectId"],
         "canvas.setGroup" => ["groupId"],
@@ -4037,6 +4239,124 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         return (changeSet with { ReadSet = readSet, WriteSet = writeSet }, Array.Empty<string>());
     }
 
+    /// <summary>
+    /// Auto-rebases SELF-ATTRIBUTABLE stale concrete fingerprints to live. Value/geometry writes
+    /// (setNumberSlider, move, delete, rhino transform/upsert) carry a concrete fingerprint that
+    /// gptino:auto cannot fill, so a session that already advanced a resource's fingerprint with its
+    /// OWN prior commit then submits a stale base and Blocks — the dominant conflict in the field.
+    /// Using the exact same safety test as <see cref="ResolveAutoExpectations"/> (the current live
+    /// fingerprint equals what THIS session last wrote, per the ledger — no foreign write, no manual
+    /// drift), we rebase both the writeSet expectation AND the operation payload fingerprint to live.
+    /// A foreign/drifted resource is left untouched, so <see cref="ConflictDetector"/> still Blocks a
+    /// genuine conflict. Returns the (possibly) rewritten change set and operations plus the rebased
+    /// resource keys for logging.
+    /// </summary>
+    internal static (ChangeSet ChangeSet, IReadOnlyList<PreparedOperation> Operations, IReadOnlyList<(ResourceAddress Resource, string StaleFingerprint, string LiveFingerprint)> Rebased)
+        ResolveSelfStaleConcreteRebase(
+            ChangeSet changeSet,
+            IReadOnlyList<PreparedOperation> operations,
+            StateSnapshot liveState,
+            Guid sessionId,
+            IReadOnlyDictionary<string, ResourceLedgerEntry> resourceLedger)
+    {
+        var rebased = new List<(ResourceAddress Resource, string StaleFingerprint, string LiveFingerprint)>();
+        var staleToLive = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var expectation in changeSet.WriteSet)
+        {
+            if (expectation.IsAuto || expectation.ExpectsAbsence)
+            {
+                continue;
+            }
+            var live = liveState.Resources.FirstOrDefault(resource =>
+                ExactDomainOverlaps(resource.Resource, expectation.Resource));
+            if (live is null ||
+                string.IsNullOrWhiteSpace(live.Fingerprint) ||
+                string.Equals(expectation.ExpectedFingerprint, live.Fingerprint, StringComparison.Ordinal))
+            {
+                continue; // absent, unmanaged, or not stale — nothing to rebase here.
+            }
+            var key = $"{expectation.Resource.Kind}:{expectation.Resource.Id}:{expectation.Resource.Field}";
+            // Rebase ONLY when the live state is this session's own last write (no foreign write, no
+            // manual drift) — identical to the gptino:auto self-sequential test.
+            if (!resourceLedger.TryGetValue(key, out var ledger) ||
+                ledger.SessionId != sessionId ||
+                !string.Equals(ledger.Fingerprint, live.Fingerprint, StringComparison.Ordinal))
+            {
+                continue;
+            }
+            rebased.Add((expectation.Resource, expectation.ExpectedFingerprint, live.Fingerprint));
+            staleToLive[expectation.ExpectedFingerprint] = live.Fingerprint;
+        }
+        if (rebased.Count == 0)
+        {
+            return (changeSet, operations, Array.Empty<(ResourceAddress, string, string)>());
+        }
+        var rebasedResources = rebased.Select(item => item.Resource).ToArray();
+        var newWriteSet = changeSet.WriteSet
+            .Select(expectation => rebasedResources.Any(resource => ExactDomainOverlaps(resource, expectation.Resource)) &&
+                staleToLive.TryGetValue(expectation.ExpectedFingerprint, out var live)
+                    ? expectation with { ExpectedFingerprint = live }
+                    : expectation)
+            .ToArray();
+        var newOperations = operations
+            .Select(operation =>
+            {
+                if (!operation.Operation.Writes.Any(write =>
+                        rebasedResources.Any(resource => ExactDomainOverlaps(write, resource))))
+                {
+                    return operation;
+                }
+                var rewritten = RewritePayloadFingerprints(operation.Arguments, staleToLive);
+                return rewritten is { } arguments ? operation with { Arguments = arguments } : operation;
+            })
+            .ToArray();
+        return (changeSet with { WriteSet = newWriteSet }, newOperations, rebased);
+    }
+
+    /// <summary>
+    /// Rewrites the concrete fingerprints a value/geometry payload carries: the scalar
+    /// <c>expectedFingerprint</c> and any values in the <c>expectedFingerprints</c> map (canvas.move)
+    /// whose value is a rebased stale fingerprint are replaced with the live one. Only
+    /// <see cref="PreparedOperation.Arguments"/> is rewritten — the frozen idempotency payload is
+    /// never touched. Returns null when nothing changed.
+    /// </summary>
+    private static JsonElement? RewritePayloadFingerprints(
+        JsonElement arguments,
+        IReadOnlyDictionary<string, string> staleToLive)
+    {
+        if (JsonNode.Parse(arguments.GetRawText()) is not JsonObject node)
+        {
+            return null;
+        }
+        var changed = false;
+        if (node["expectedFingerprint"] is JsonValue scalar &&
+            scalar.TryGetValue<string>(out var scalarValue) &&
+            staleToLive.TryGetValue(scalarValue, out var scalarLive))
+        {
+            node["expectedFingerprint"] = scalarLive;
+            changed = true;
+        }
+        if (node["expectedFingerprints"] is JsonObject map)
+        {
+            foreach (var entryKey in map.Select(pair => pair.Key).ToArray())
+            {
+                if (map[entryKey] is JsonValue value &&
+                    value.TryGetValue<string>(out var mapValue) &&
+                    staleToLive.TryGetValue(mapValue, out var mapLive))
+                {
+                    map[entryKey] = mapLive;
+                    changed = true;
+                }
+            }
+        }
+        if (!changed)
+        {
+            return null;
+        }
+        using var document = JsonDocument.Parse(node.ToJsonString());
+        return document.RootElement.Clone();
+    }
+
     // The parent component/object of a Python/Rhino sub-domain, or null when the resource is already a
     // top-level domain. A freshly created component has no source/io/value snapshot rows yet, but its parent
     // exists; the parent's own fingerprint moves if anyone (foreign session or manual edit) touches the
@@ -4065,11 +4385,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         return null;
     }
 
+    internal readonly record struct PredicateOutcome(
+        string Name, PredicateKind Kind, ResourceAddress? Resource, string? ExpectedValue, bool Passed);
+
     private static IReadOnlyList<string> Verify(
         ChangeSet changeSet,
         SnapshotEnvelope snapshot,
         IReadOnlyList<JobDiagnostic> diagnostics,
-        IReadOnlyList<ResourceObservation> operationObservations)
+        IReadOnlyList<ResourceObservation> operationObservations,
+        IReadOnlyList<JobComponentOutputs>? componentOutputs,
+        ICollection<PredicateOutcome>? outcomes = null)
     {
         var problems = diagnostics
             .Where(item => item.Severity == BridgeDiagnosticSeverity.Error)
@@ -4100,8 +4425,40 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 PredicateKind.WireAbsent => !exists,
                 PredicateKind.ObjectExists => exists,
                 PredicateKind.ObjectAbsent => !exists,
+                PredicateKind.OutputCountInRange =>
+                    predicate.Resource is not null &&
+                    Guid.TryParse(predicate.Resource.Id, out var countComponentId) &&
+                    TryParseOutputCountRange(predicate.ExpectedValue, out var countRange) &&
+                    EvaluateOutputCountInRange(componentOutputs, countComponentId, countRange),
+                PredicateKind.AreaInRange =>
+                    predicate.Resource is not null &&
+                    Guid.TryParse(predicate.Resource.Id, out var areaComponentId) &&
+                    TryParseNumericOutputRange(predicate.ExpectedValue, out var areaName, out var areaMin, out var areaMax) &&
+                    EvaluateNumericOutputInRange(componentOutputs, areaComponentId, areaName, "area", areaMin, areaMax),
+                PredicateKind.DataTreeBranchCountInRange =>
+                    predicate.Resource is not null &&
+                    Guid.TryParse(predicate.Resource.Id, out var branchComponentId) &&
+                    TryParseNumericOutputRange(predicate.ExpectedValue, out var branchName, out var branchMin, out var branchMax) &&
+                    EvaluateNumericOutputInRange(componentOutputs, branchComponentId, branchName, "branchCount", branchMin, branchMax),
+                PredicateKind.GeometryClosed =>
+                    predicate.Resource is not null &&
+                    Guid.TryParse(predicate.Resource.Id, out var closedComponentId) &&
+                    !string.IsNullOrWhiteSpace(predicate.ExpectedValue) &&
+                    EvaluateGeometryClosed(componentOutputs, closedComponentId, predicate.ExpectedValue!.Trim()),
+                PredicateKind.VolumeInRange =>
+                    predicate.Resource is not null &&
+                    Guid.TryParse(predicate.Resource.Id, out var volumeComponentId) &&
+                    TryParseNumericOutputRange(predicate.ExpectedValue, out var volumeName, out var volumeMin, out var volumeMax) &&
+                    EvaluateNumericOutputInRange(componentOutputs, volumeComponentId, volumeName, "volume", volumeMin, volumeMax),
+                PredicateKind.BoundingBoxInRange =>
+                    predicate.Resource is not null &&
+                    Guid.TryParse(predicate.Resource.Id, out var bboxComponentId) &&
+                    TryParseBoundingBoxRange(predicate.ExpectedValue, out var bboxName, out var bboxAxis, out var bboxMin, out var bboxMax) &&
+                    EvaluateBoundingBoxInRange(componentOutputs, bboxComponentId, bboxName, bboxAxis, bboxMin, bboxMax),
                 _ => false
             };
+            outcomes?.Add(new PredicateOutcome(
+                predicate.Name, predicate.Kind, predicate.Resource, predicate.ExpectedValue, passed));
             if (!passed)
             {
                 problems.Add(
@@ -4120,6 +4477,244 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     /// appends it to the commit message and MUST NOT let it change the job state (an intentionally
     /// empty output is legal; this only makes the canvas-visible state survive in records).
     /// </summary>
+    internal readonly record struct OutputCountRange(string OutputName, int Min, int Max);
+
+    /// <summary>Parses an OutputCountInRange ExpectedValue of the form "outputName:min:max" (max may be "*").</summary>
+    internal static bool TryParseOutputCountRange(string? expectedValue, out OutputCountRange range)
+    {
+        range = default;
+        if (string.IsNullOrWhiteSpace(expectedValue))
+        {
+            return false;
+        }
+        var parts = expectedValue.Split(':');
+        if (parts.Length != 3)
+        {
+            return false;
+        }
+        var name = parts[0].Trim();
+        if (name.Length == 0 ||
+            !int.TryParse(parts[1].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var min) ||
+            min < 0)
+        {
+            return false;
+        }
+        int max;
+        if (string.Equals(parts[2].Trim(), "*", StringComparison.Ordinal))
+        {
+            max = int.MaxValue;
+        }
+        else if (!int.TryParse(parts[2].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out max))
+        {
+            return false;
+        }
+        if (max < min)
+        {
+            return false;
+        }
+        range = new OutputCountRange(name, min, max);
+        return true;
+    }
+
+    /// <summary>
+    /// True when the named output of the component solved to an item count within [Min,Max]. Reads
+    /// the post-solve inspection GPTino already collects (name + dataCount per output). Fails closed:
+    /// a missing component, missing output, or absent inspection returns false so an unverifiable
+    /// claim never passes.
+    /// </summary>
+    internal static bool EvaluateOutputCountInRange(
+        IReadOnlyList<JobComponentOutputs>? componentOutputs,
+        Guid componentId,
+        OutputCountRange range)
+    {
+        var component = componentOutputs?.FirstOrDefault(item => item.ComponentId == componentId);
+        if (component is null ||
+            component.Inspection.ValueKind != JsonValueKind.Object ||
+            !component.Inspection.TryGetProperty("outputs", out var inspected) ||
+            inspected.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+        foreach (var output in inspected.EnumerateArray())
+        {
+            if (output.ValueKind == JsonValueKind.Object &&
+                output.TryGetProperty("name", out var nameElement) &&
+                nameElement.ValueKind == JsonValueKind.String &&
+                string.Equals(nameElement.GetString(), range.OutputName, StringComparison.Ordinal) &&
+                output.TryGetProperty("dataCount", out var countElement) &&
+                countElement.ValueKind == JsonValueKind.Number)
+            {
+                var count = countElement.GetInt32();
+                return count >= range.Min && count <= range.Max;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Parses "outputName:min:max" (max may be "*") into a name and a double range.</summary>
+    internal static bool TryParseNumericOutputRange(string? expectedValue, out string outputName, out double min, out double max)
+    {
+        outputName = string.Empty;
+        min = 0;
+        max = 0;
+        if (string.IsNullOrWhiteSpace(expectedValue))
+        {
+            return false;
+        }
+        var parts = expectedValue.Split(':');
+        if (parts.Length != 3)
+        {
+            return false;
+        }
+        outputName = parts[0].Trim();
+        if (outputName.Length == 0 ||
+            !double.TryParse(parts[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out min) ||
+            min < 0)
+        {
+            return false;
+        }
+        max = string.Equals(parts[2].Trim(), "*", StringComparison.Ordinal)
+            ? double.PositiveInfinity
+            : double.TryParse(parts[2].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedMax)
+                ? parsedMax
+                : double.NaN;
+        return !double.IsNaN(max) && max >= min;
+    }
+
+    /// <summary>
+    /// True when the named output's numeric <paramref name="field"/> ("area", "branchCount", ...) is
+    /// within [min,max]. Reads the post-solve inspection; fails closed on any missing data.
+    /// </summary>
+    internal static bool EvaluateNumericOutputInRange(
+        IReadOnlyList<JobComponentOutputs>? componentOutputs,
+        Guid componentId,
+        string outputName,
+        string field,
+        double min,
+        double max)
+    {
+        var output = FindInspectedOutput(componentOutputs, componentId, outputName);
+        if (output is not { } value ||
+            !value.TryGetProperty(field, out var fieldElement) ||
+            fieldElement.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+        var measured = fieldElement.GetDouble();
+        return measured >= min && measured <= max;
+    }
+
+    /// <summary>True when every geometry in the named output is closed (inspection "closed" == true).</summary>
+    internal static bool EvaluateGeometryClosed(
+        IReadOnlyList<JobComponentOutputs>? componentOutputs,
+        Guid componentId,
+        string outputName)
+    {
+        var output = FindInspectedOutput(componentOutputs, componentId, outputName);
+        return output is { } value &&
+            value.TryGetProperty("closed", out var closedElement) &&
+            closedElement.ValueKind == JsonValueKind.True;
+    }
+
+    /// <summary>Parses "outputName:axis:min:max" (axis = x|y|z|diagonal, max may be "*").</summary>
+    internal static bool TryParseBoundingBoxRange(string? expectedValue, out string outputName, out string axis, out double min, out double max)
+    {
+        outputName = string.Empty;
+        axis = string.Empty;
+        min = 0;
+        max = 0;
+        if (string.IsNullOrWhiteSpace(expectedValue))
+        {
+            return false;
+        }
+        var parts = expectedValue.Split(':');
+        if (parts.Length != 4)
+        {
+            return false;
+        }
+        outputName = parts[0].Trim();
+        axis = parts[1].Trim().ToLowerInvariant();
+        if (outputName.Length == 0 ||
+            axis is not ("x" or "y" or "z" or "diagonal") ||
+            !double.TryParse(parts[2].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out min) ||
+            min < 0)
+        {
+            return false;
+        }
+        max = string.Equals(parts[3].Trim(), "*", StringComparison.Ordinal)
+            ? double.PositiveInfinity
+            : double.TryParse(parts[3].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedMax)
+                ? parsedMax
+                : double.NaN;
+        return !double.IsNaN(max) && max >= min;
+    }
+
+    /// <summary>True when the named output's bounding-box extent on the axis (or diagonal) is within [min,max].</summary>
+    internal static bool EvaluateBoundingBoxInRange(
+        IReadOnlyList<JobComponentOutputs>? componentOutputs,
+        Guid componentId,
+        string outputName,
+        string axis,
+        double min,
+        double max)
+    {
+        if (FindInspectedOutput(componentOutputs, componentId, outputName) is not { } output ||
+            !output.TryGetProperty("geometryBounds", out var boundsElement) ||
+            boundsElement.ValueKind != JsonValueKind.Object ||
+            !boundsElement.TryGetProperty("size", out var size) ||
+            size.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+        double extent;
+        if (string.Equals(axis, "diagonal", StringComparison.Ordinal))
+        {
+            if (!size.TryGetProperty("x", out var sx) || sx.ValueKind != JsonValueKind.Number ||
+                !size.TryGetProperty("y", out var sy) || sy.ValueKind != JsonValueKind.Number ||
+                !size.TryGetProperty("z", out var sz) || sz.ValueKind != JsonValueKind.Number)
+            {
+                return false;
+            }
+            double x = sx.GetDouble(), y = sy.GetDouble(), z = sz.GetDouble();
+            extent = Math.Sqrt((x * x) + (y * y) + (z * z));
+        }
+        else if (size.TryGetProperty(axis, out var axisElement) && axisElement.ValueKind == JsonValueKind.Number)
+        {
+            extent = axisElement.GetDouble();
+        }
+        else
+        {
+            return false;
+        }
+        return extent >= min && extent <= max;
+    }
+
+    private static JsonElement? FindInspectedOutput(
+        IReadOnlyList<JobComponentOutputs>? componentOutputs,
+        Guid componentId,
+        string outputName)
+    {
+        var component = componentOutputs?.FirstOrDefault(item => item.ComponentId == componentId);
+        if (component is null ||
+            component.Inspection.ValueKind != JsonValueKind.Object ||
+            !component.Inspection.TryGetProperty("outputs", out var inspected) ||
+            inspected.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        foreach (var output in inspected.EnumerateArray())
+        {
+            if (output.ValueKind == JsonValueKind.Object &&
+                output.TryGetProperty("name", out var nameElement) &&
+                nameElement.ValueKind == JsonValueKind.String &&
+                string.Equals(nameElement.GetString(), outputName, StringComparison.Ordinal))
+            {
+                return output;
+            }
+        }
+        return null;
+    }
+
     internal static string? DescribeCommitQuality(
         IReadOnlyList<JobDiagnostic> diagnostics,
         IReadOnlyList<JobComponentOutputs>? outputs)
@@ -4614,6 +5209,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             return Array.Empty<JobComponentOutputs>();
         }
 
+        // The expensive AreaMassProperties/VolumeMassProperties integration is computed by the adapter
+        // only when this job actually declares an area/volume predicate to check — every other job
+        // inspects outputs without paying that per-geometry cost.
+        var includeMassProperties = changeSet.AcceptancePredicates.Any(predicate =>
+            predicate.Kind is PredicateKind.AreaInRange or PredicateKind.VolumeInRange);
+
         var outputs = new List<JobComponentOutputs>(components.Length);
         foreach (var componentId in components)
         {
@@ -4630,7 +5231,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     ExpectedFingerprint: null,
                     WriterLeaseToken: null,
                     JsonSerializer.SerializeToElement(
-                        new { objectId = componentId },
+                        new { objectId = componentId, includeMassProperties },
                         BridgeProtocol.JsonOptions));
                 var response = await SendOperationAsync(target, request, cancellationToken)
                     .ConfigureAwait(false);
@@ -4728,6 +5329,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             var added = operation.Kind switch
             {
                 OperationKind.CreateComponent or
+                OperationKind.ReferenceRhinoObjects or
                 OperationKind.CreateRhinoPrimitive or
                 OperationKind.CreateRhinoObject or
                 OperationKind.BakeGeometry =>
@@ -4836,6 +5438,43 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                         $"{predicate.Kind} requires a supported object resource and no expectedValue.");
                 }
                 return;
+            case PredicateKind.OutputCountInRange:
+                if (predicate.Resource?.Kind != ResourceKind.GrasshopperComponent ||
+                    !TryParseOutputCountRange(predicate.ExpectedValue, out _))
+                {
+                    throw new InvalidOperationException(
+                        "OutputCountInRange requires a grasshopperComponent resource and expectedValue " +
+                        "\"outputName:min:max\" (max may be \"*\").");
+                }
+                return;
+            case PredicateKind.AreaInRange:
+            case PredicateKind.DataTreeBranchCountInRange:
+            case PredicateKind.VolumeInRange:
+                if (predicate.Resource?.Kind != ResourceKind.GrasshopperComponent ||
+                    !TryParseNumericOutputRange(predicate.ExpectedValue, out _, out _, out _))
+                {
+                    throw new InvalidOperationException(
+                        $"{predicate.Kind} requires a grasshopperComponent resource and expectedValue " +
+                        "\"outputName:min:max\" (max may be \"*\").");
+                }
+                return;
+            case PredicateKind.BoundingBoxInRange:
+                if (predicate.Resource?.Kind != ResourceKind.GrasshopperComponent ||
+                    !TryParseBoundingBoxRange(predicate.ExpectedValue, out _, out _, out _, out _))
+                {
+                    throw new InvalidOperationException(
+                        "BoundingBoxInRange requires a grasshopperComponent resource and expectedValue " +
+                        "\"outputName:axis:min:max\" (axis = x|y|z|diagonal, max may be \"*\").");
+                }
+                return;
+            case PredicateKind.GeometryClosed:
+                if (predicate.Resource?.Kind != ResourceKind.GrasshopperComponent ||
+                    string.IsNullOrWhiteSpace(predicate.ExpectedValue))
+                {
+                    throw new InvalidOperationException(
+                        "GeometryClosed requires a grasshopperComponent resource and expectedValue = the output name.");
+                }
+                return;
             default:
                 throw new InvalidOperationException(
                     $"Acceptance predicate kind '{predicate.Kind}' is reserved and unsupported.");
@@ -4941,7 +5580,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
 
         foreach (var preparedOperation in prepared.Where(item => item.Operation.Kind is
-                     OperationKind.CreateComponent or OperationKind.CreateRhinoPrimitive or
+                     OperationKind.CreateComponent or OperationKind.ReferenceRhinoObjects or
+                     OperationKind.CreateRhinoPrimitive or
                      OperationKind.CreateRhinoObject or OperationKind.BakeGeometry or
                      OperationKind.ConnectWire))
         {
@@ -5318,6 +5958,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         switch (prepared.Operation.Kind)
         {
             case OperationKind.CreateComponent:
+            case OperationKind.ReferenceRhinoObjects:
                 resource = new ResourceAddress(
                     ResourceKind.GrasshopperComponent,
                     RequireArgumentGuid(arguments, "objectId", prepared.Operation.OperationId).ToString("D"));

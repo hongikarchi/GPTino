@@ -34,6 +34,7 @@ public enum OperationKind
     ReadRuntimeMessages,
     CreateRhinoPrimitive,
     TransformRhinoObject,
+    ReferenceRhinoObjects,
 }
 
 public sealed record ResourceExpectation(
@@ -87,6 +88,22 @@ public enum PredicateKind
     ObjectExists,
     ObjectAbsent,
     BoundingBoxEquals,
+    /// <summary>
+    /// A named output of a component solves to an item count within [min,max]. ExpectedValue is
+    /// "outputName:min:max" (max may be "*" for no upper bound). Verified against the post-solve
+    /// output inspection — a real semantic check beyond mere existence.
+    /// </summary>
+    OutputCountInRange,
+    /// <summary>A named output's geometry is all closed (curve IsClosed / Brep solid / mesh closed). ExpectedValue = "outputName".</summary>
+    GeometryClosed,
+    /// <summary>A named output's summed surface area is within [min,max]. ExpectedValue = "outputName:min:max" (max may be "*").</summary>
+    AreaInRange,
+    /// <summary>A named output's data-tree branch count is within [min,max]. ExpectedValue = "outputName:min:max" (max may be "*").</summary>
+    DataTreeBranchCountInRange,
+    /// <summary>A named output's summed closed volume is within [min,max]. ExpectedValue = "outputName:min:max" (max may be "*").</summary>
+    VolumeInRange,
+    /// <summary>A named output's bounding-box extent on an axis is within [min,max]. ExpectedValue = "outputName:axis:min:max" where axis = x|y|z|diagonal.</summary>
+    BoundingBoxInRange,
     Custom,
 }
 

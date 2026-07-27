@@ -56,6 +56,17 @@ public interface ICordycepsCanvasAdapter
         DocumentTarget target,
         SetGroupRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a typed Grasshopper parameter (Curve/Brep/Mesh/Surface/Geometry/Point) whose
+    /// persistent data PERSISTENTLY REFERENCES existing Rhino document objects by GUID, so the
+    /// user's selected geometry flows into an editable definition as a live reference rather than
+    /// being re-authored.
+    /// </summary>
+    Task<CanvasMutationResult> ReferenceRhinoObjectsAsync(
+        DocumentTarget target,
+        ReferenceRhinoObjectsRequest request,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record CanvasSnapshot(
@@ -117,7 +128,14 @@ public sealed record CanvasParameterState(
     bool Optional,
     IReadOnlyList<CanvasParameterEndpoint> CurrentSources);
 
-public sealed record InspectCanvasOutputsRequest(Guid ObjectId);
+/// <summary>
+/// <paramref name="IncludeMassProperties"/> opts into the expensive per-geometry
+/// AreaMassProperties/VolumeMassProperties computation (Area/Volume on the result). It defaults to
+/// false so the common Verify path — which runs on every committed job — never pays that cost; the
+/// broker sets it true only when the job declares an area/volume predicate, or for an explicit
+/// inspect_outputs read where the caller deliberately wants the full semantics.
+/// </summary>
+public sealed record InspectCanvasOutputsRequest(Guid ObjectId, bool IncludeMassProperties = false);
 
 public sealed record CanvasOutputInspection(
     Guid GrasshopperDocumentId,
@@ -132,7 +150,14 @@ public sealed record CanvasOutputParameterInspection(
     int DataCount,
     IReadOnlyList<string> TypeNames,
     CanvasBoundingBox3d? GeometryBounds,
-    IReadOnlyList<string> SampleValues);
+    IReadOnlyList<string> SampleValues,
+    // Semantic measures for acceptance predicates. BranchCount = data-tree branch count; Closed = all
+    // geometry in this output is closed (curve IsClosed / Brep IsSolid / mesh IsClosed), null if the
+    // output carries no geometry; Area = summed surface area where computable, null otherwise.
+    int BranchCount = 0,
+    bool? Closed = null,
+    double? Area = null,
+    double? Volume = null);
 
 public sealed record CanvasBoundingBox3d(
     CanvasPoint3d Minimum,
@@ -206,6 +231,18 @@ public sealed record DeleteCanvasObjectRequest(
     string OperationId,
     Guid ObjectId,
     string ExpectedFingerprint);
+
+/// <summary>
+/// Create a typed GH parameter that persistently references Rhino objects by GUID.
+/// <paramref name="ParamType"/> is one of curve|brep|mesh|surface|geometry|point.
+/// </summary>
+public sealed record ReferenceRhinoObjectsRequest(
+    string OperationId,
+    Guid ObjectId,
+    IReadOnlyList<Guid> RhinoObjectIds,
+    string ParamType,
+    CanvasPoint Pivot,
+    string? NickName);
 
 public sealed record MoveCanvasObjectsRequest(
     string OperationId,

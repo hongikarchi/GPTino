@@ -165,12 +165,31 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         string message,
         string? model,
         string? effort,
+        IReadOnlyList<string>? imagePaths = null,
         CancellationToken cancellationToken = default)
     {
+        // Attach images as `localImage` input items rather than embedding their path in the text.
+        // codex's own `view_image` tool routes the read through a Windows fs-sandbox setup helper
+        // (codex-windows-sandbox-setup.exe) that is absent from this install, so a text path the
+        // agent tries to open fails with "program not found" and the image is never seen. A
+        // localImage item hands the bytes straight to the model — no helper, works under the
+        // read-only sandbox. Images lead so they are in view before the user's text is read.
+        var input = new List<object>();
+        if (imagePaths is { Count: > 0 })
+        {
+            foreach (var path in imagePaths)
+            {
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    input.Add(new { type = "localImage", path = Path.GetFullPath(path) });
+                }
+            }
+        }
+        input.Add(new { type = "text", text = message });
         var parameters = new Dictionary<string, object?>
         {
             ["threadId"] = threadId,
-            ["input"] = new[] { new { type = "text", text = message } },
+            ["input"] = input,
             ["approvalPolicy"] = "never"
         };
         if (!string.IsNullOrWhiteSpace(model))
@@ -257,58 +276,52 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
             }
             await StopProcessAsync().ConfigureAwait(false);
 
-            var executable = ResolveCodexExecutable();
-            // The codex child processes must NOT use the user's project folder as their OS
-            // working directory: a Windows process holds a current-directory handle on its
-            // cwd, which blocks Rhino from renaming its temp save file over a .3dm sitting in
-            // that folder ("The temporary file could not be renamed"). The project folder is
-            // still passed to codex as the per-thread cwd parameter (SessionOrchestrator), which
-            // is orthogonal to the process cwd and does not take a directory handle.
-            var mcpListStartInfo = CreateMcpListProcessStartInfo(executable, _options.ResolveDataDirectory());
-            var effectiveMcpNames = await EnumerateEffectiveMcpNamesAsync(
-                    mcpListStartInfo,
-                    McpDiscoveryTimeout,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-            var startInfo = CreateProcessStartInfo(mcpListStartInfo, effectiveMcpNames);
-            _process = Process.Start(startInfo)
-                ?? throw new InvalidOperationException("Codex App Server process could not be started.");
-            var input = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false))
+            // Try the resolver's candidates in priority order and keep the FIRST that both launches
+            // and completes the App Server handshake. With no explicit config this walks
+            // PATH → global npm → bundled .sandbox-bin, so a candidate that broke the app-server
+            // protocol is skipped in favor of a compatible one rather than dead-ending startup. When
+            // an explicit executable IS configured the resolver returns exactly one candidate, so this
+            // loop does NOT silently fall back off the user's authoritative choice.
+            var candidates = CodexExecutableResolver.EnumerateCandidates(_options);
+            if (candidates.Count == 0)
             {
-                AutoFlush = true,
-                NewLine = "\n"
-            };
-            var processGeneration = new ProcessGeneration(
-                Interlocked.Increment(ref _nextProcessGeneration),
-                input,
-                RaiseNotificationAsync,
-                _logger);
-            _processGeneration = processGeneration;
-            _readLoop = ReadLoopAsync(_process, _process.StandardOutput, processGeneration);
-            _ = ReadErrorLoopAsync(_process.StandardError, processGeneration.Token);
-
-            _ = await CallCoreAsync(
-                "initialize",
-                new
-                {
-                    clientInfo = new { name = "gptino-agent-host", title = "GPTino", version = "0.1.0" },
-                    capabilities = new { experimentalApi = true }
-                },
-                cancellationToken,
-                processGeneration).ConfigureAwait(false);
-            using (var initializedLifetime = CancellationTokenSource.CreateLinkedTokenSource(
-                       cancellationToken,
-                       processGeneration.Token))
-            {
-                await WriteAsync(
-                    new { method = "initialized", @params = new { } },
-                    initializedLifetime.Token,
-                    processGeneration).ConfigureAwait(false);
+                throw new FileNotFoundException(
+                    "Codex CLI was not found. Install it with npm, complete 'codex login', or set CODEX_EXECUTABLE to the native codex.exe (an npm codex.cmd shim is also accepted).");
             }
-            Volatile.Write(ref _initialized, true);
-            _startupRetryNotBeforeUtc = default;
-            return processGeneration;
+            Exception? lastFailure = null;
+            for (var index = 0; index < candidates.Count; index++)
+            {
+                var candidate = candidates[index];
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var generation = await StartCandidateAsync(candidate.Path, cancellationToken).ConfigureAwait(false);
+                    var version = CodexExecutableResolver.ProbeVersion(candidate.Path);
+                    _logger.LogInformation(
+                        "Using Codex executable {Path} (source: {Source}, version: {Version}).",
+                        candidate.Path,
+                        candidate.Source,
+                        version ?? "unknown");
+                    _startupRetryNotBeforeUtc = default;
+                    return generation;
+                }
+                catch (Exception failure) when (
+                    !(failure is OperationCanceledException && cancellationToken.IsCancellationRequested))
+                {
+                    lastFailure = failure;
+                    await StopProcessAsync().ConfigureAwait(false);
+                    var more = index + 1 < candidates.Count ? " — trying the next candidate" : string.Empty;
+                    _logger.LogWarning(
+                        failure,
+                        "Codex candidate {Path} (source: {Source}) failed to start or handshake{More}.",
+                        candidate.Path,
+                        candidate.Source,
+                        more);
+                }
+            }
+            // Every candidate failed — surface the last error through the outer handler, which trips
+            // the startup cooldown so we do not hot-loop launches.
+            throw lastFailure ?? new CodexProtocolException("Codex App Server failed to start.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1125,60 +1138,63 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         }
     }
 
-    private string ResolveCodexExecutable()
+    /// <summary>
+    /// Launches one Codex executable and completes the App Server handshake (initialize +
+    /// initialized). Throws if the process cannot start or the handshake fails — the caller stops the
+    /// process and moves on to the next candidate. On success the live process/generation are set and
+    /// the generation is returned.
+    /// </summary>
+    private async Task<ProcessGeneration> StartCandidateAsync(string executable, CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(_options.CodexExecutable))
+        // The codex child processes must NOT use the user's project folder as their OS working
+        // directory: a Windows process holds a current-directory handle on its cwd, which blocks
+        // Rhino from renaming its temp save file over a .3dm sitting in that folder ("The temporary
+        // file could not be renamed"). The project folder is still passed to codex as the per-thread
+        // cwd parameter (SessionOrchestrator), which is orthogonal to the process cwd.
+        var mcpListStartInfo = CreateMcpListProcessStartInfo(executable, _options.ResolveDataDirectory());
+        var effectiveMcpNames = await EnumerateEffectiveMcpNamesAsync(
+                mcpListStartInfo,
+                McpDiscoveryTimeout,
+                cancellationToken)
+            .ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var startInfo = CreateProcessStartInfo(mcpListStartInfo, effectiveMcpNames);
+        _process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Codex App Server process could not be started.");
+        var input = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false))
         {
-            return ResolveConfiguredCodex(_options.CodexExecutable);
-        }
-        var configured = Environment.GetEnvironmentVariable("CODEX_EXECUTABLE");
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            return ResolveConfiguredCodex(configured);
-        }
-        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var bundled = Path.Combine(userProfile, ".codex", ".sandbox-bin", "codex.exe");
-        if (File.Exists(bundled))
-        {
-            return bundled;
-        }
+            AutoFlush = true,
+            NewLine = "\n"
+        };
+        var processGeneration = new ProcessGeneration(
+            Interlocked.Increment(ref _nextProcessGeneration),
+            input,
+            RaiseNotificationAsync,
+            _logger);
+        _processGeneration = processGeneration;
+        _readLoop = ReadLoopAsync(_process, _process.StandardOutput, processGeneration);
+        _ = ReadErrorLoopAsync(_process.StandardError, processGeneration.Token);
 
-        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var npmDirectory = Path.Combine(roaming, "npm");
-        var npmNative = ResolveNpmNativeExecutable(npmDirectory);
-        if (npmNative is not null)
+        _ = await CallCoreAsync(
+            "initialize",
+            new
+            {
+                clientInfo = new { name = "gptino-agent-host", title = "GPTino", version = "0.1.0" },
+                capabilities = new { experimentalApi = true }
+            },
+            cancellationToken,
+            processGeneration).ConfigureAwait(false);
+        using (var initializedLifetime = CancellationTokenSource.CreateLinkedTokenSource(
+                   cancellationToken,
+                   processGeneration.Token))
         {
-            return npmNative;
+            await WriteAsync(
+                new { method = "initialized", @params = new { } },
+                initializedLifetime.Token,
+                processGeneration).ConfigureAwait(false);
         }
-
-        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-                     .Select(value => value.Trim().Trim('"'))
-                     .Where(value => !string.IsNullOrWhiteSpace(value)))
-        {
-            string fullDirectory;
-            try
-            {
-                fullDirectory = Path.GetFullPath(directory);
-            }
-            catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
-            {
-                continue;
-            }
-            var executable = Path.Combine(fullDirectory, "codex.exe");
-            if (File.Exists(executable))
-            {
-                return executable;
-            }
-            npmNative = ResolveNpmNativeExecutable(fullDirectory);
-            if (npmNative is not null)
-            {
-                return npmNative;
-            }
-        }
-
-        throw new FileNotFoundException(
-            "Codex CLI was not found. Install it with npm, complete 'codex login', or set CODEX_EXECUTABLE to the native codex.exe (an npm codex.cmd shim is also accepted).");
+        Volatile.Write(ref _initialized, true);
+        return processGeneration;
     }
 
     private static void RemoveGptinoEnvironment(ProcessStartInfo startInfo)
@@ -1194,58 +1210,6 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
     private static bool IsGptinoEnvironmentKey(string key) =>
         key.StartsWith("GPTINO_", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("GPTINO:", StringComparison.OrdinalIgnoreCase);
-
-    private static string ResolveConfiguredCodex(string configured)
-    {
-        var path = Path.GetFullPath(configured);
-        if (File.Exists(path) &&
-            string.Equals(Path.GetFileName(path), "codex.exe", StringComparison.OrdinalIgnoreCase))
-        {
-            return path;
-        }
-        if (File.Exists(path) && Path.GetFileName(path).StartsWith("codex.", StringComparison.OrdinalIgnoreCase))
-        {
-            return ResolveNpmNativeExecutable(Path.GetDirectoryName(path)!)
-                ?? throw new FileNotFoundException(
-                    "The Codex npm shim exists, but its platform-native codex.exe was not found.",
-                    path);
-        }
-        throw new FileNotFoundException("The configured Codex executable was not found or is not codex.exe.", path);
-    }
-
-    private static string? ResolveNpmNativeExecutable(string npmDirectory)
-    {
-        if (string.IsNullOrWhiteSpace(npmDirectory) || !Directory.Exists(npmDirectory))
-        {
-            return null;
-        }
-        var (packageSuffix, target) = RuntimeInformation.ProcessArchitecture switch
-        {
-            Architecture.X64 => ("x64", "x86_64-pc-windows-msvc"),
-            Architecture.Arm64 => ("arm64", "aarch64-pc-windows-msvc"),
-            _ => (string.Empty, string.Empty)
-        };
-        if (packageSuffix.Length == 0)
-        {
-            return null;
-        }
-        var packageRoot = Path.Combine(npmDirectory, "node_modules", "@openai", "codex");
-        var candidates = new[]
-        {
-            Path.Combine(
-                packageRoot,
-                "node_modules",
-                "@openai",
-                $"codex-win32-{packageSuffix}",
-                "vendor",
-                target,
-                "bin",
-                "codex.exe"),
-            Path.Combine(packageRoot, "vendor", target, "bin", "codex.exe"),
-            Path.Combine(packageRoot, "vendor", target, "codex.exe")
-        };
-        return candidates.FirstOrDefault(File.Exists);
-    }
 
     private async Task StopProcessAsync()
     {
@@ -1564,7 +1528,8 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         You may inspect immutable state in parallel with other sessions. Never mutate Rhino or Grasshopper through shell,
         files, or an active-document fallback. Use only gptino_v1 tools for document state and change submission.
         Start modeling work with snapshot_read; its sessionId and target.projectId are the exact IDs required by ChangeSet.
-        Use component_catalog before creating Grasshopper components and rhino_list before broad Rhino scene edits.
+        Use component_catalog to find a component's type GUID only when you do not already know it (skip it for the
+        well-known GUIDs in the gh-authoring skill); use rhino_list before broad Rhino scene edits.
         Draft and validate code before calling change_submit. The central broker owns ordering, conflict checks, the writer
         lease, live execution, verification, and history. A submitted change is not successful until job_status reports a
         verified terminal result. Preserve document units, tolerances, data trees, and existing wiring unless requested.

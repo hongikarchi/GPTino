@@ -22,7 +22,7 @@ public sealed class PreflightAndRecoveryManifestTests
     private static readonly Guid CSharpTypeId = Guid.Parse("b6ba1144-02d6-4a2d-b53c-ec62e290eeb7");
 
     [Fact]
-    public async Task AppendOnlySchemaRejectionNamesTheUndeclaredConsoleOutSocket()
+    public async Task AppendOnlySchemaRejectionNamesGenuinelyRemovedSockets()
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
@@ -41,7 +41,8 @@ public sealed class PreflightAndRecoveryManifestTests
                 ? BridgeOperationResponse.Create(
                     request.OperationId,
                     changed: false,
-                    CSharpScriptSnapshot(harness, inputs: ["x"], outputs: ["out", "Ceiling"]))
+                    // 'out' (console) is auto-preserved; 'Rail' is a real socket the declaration drops.
+                    CSharpScriptSnapshot(harness, inputs: ["x"], outputs: ["out", "Ceiling", "Rail"]))
                 : null;
         });
         var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Console out"));
@@ -98,16 +99,189 @@ public sealed class PreflightAndRecoveryManifestTests
 
         Assert.Equal("failed", state);
         Assert.Contains("append-only", message, StringComparison.Ordinal);
-        // The rejection lists the live sockets and names the socket the declaration missed.
-        Assert.Contains("Live outputs: 'out', 'Ceiling'", message, StringComparison.Ordinal);
-        Assert.Contains("Undeclared existing output(s): 'out'", message, StringComparison.Ordinal);
-        // The console-out special case teaches the rename escape from the declare/omit catch-22.
-        Assert.Contains("script console output", message, StringComparison.Ordinal);
-        Assert.Contains("console_log", message, StringComparison.Ordinal);
+        // The rejection lists the live sockets and names the genuinely removed socket...
+        Assert.Contains("Live outputs: 'out', 'Ceiling', 'Rail'", message, StringComparison.Ordinal);
+        Assert.Contains("Undeclared existing output(s): 'Rail'", message, StringComparison.Ordinal);
+        // ...but never nags about the console 'out': it is preserved automatically.
+        Assert.DoesNotContain("Undeclared existing output(s): 'out'", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("console_log", message, StringComparison.Ordinal);
+        Assert.Contains("preserved automatically", message, StringComparison.Ordinal);
         lock (writeOps)
         {
             Assert.Empty(writeOps);
         }
+    }
+
+    [Fact]
+    public async Task ConsoleOutOmissionIsAutoPreservedAndReachesTheWrite()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.CordycepsCanvas,
+                BridgeAdapterOwner.Wireify
+            ]);
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return request.Operation == "canvas.snapshot"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    // Live component carries the managed console 'out'; the declaration omits it.
+                    CSharpScriptSnapshot(harness, inputs: ["x"], outputs: ["out", "Ceiling"]))
+                : null;
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Console preserve"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var ioResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentIo,
+            harness.CanvasObjectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "keep-out-schema.json",
+            new
+            {
+                bridgeOperation = "python.setSchema",
+                arguments = new
+                {
+                    operationId = "keep-out-schema",
+                    componentId = harness.CanvasObjectId,
+                    inputs = new[] { new { name = "x", access = "item", typeHint = "double" } },
+                    outputs = new[] { new { name = "Ceiling", access = "list", typeHint = "brep" } },
+                    preserveIncidentWires = true
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [new ResourceExpectation(ioResource, InitialFingerprint)],
+            [
+                new TypedOperation(
+                    "keep-out-schema",
+                    OperationKind.SetComponentIo,
+                    AdapterOwner.Wireify,
+                    [],
+                    [ioResource],
+                    Reversible: true,
+                    artifact)
+            ],
+            [],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "keep-out-schema"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        _ = await harness.WaitForJobStateAsync(jobId);
+        var jobView = await harness.ReadJobViewAsync(jobId);
+        var message = jobView.GetProperty("message").GetString() ?? string.Empty;
+
+        // Omitting the console 'out' is no longer an append-only rejection: preflight accepts it and
+        // the setSchema is dispatched to the adapter (which preserves the console socket on its
+        // side). The write reaching the bridge proves it cleared preflight; this mock cannot return
+        // a real fingerprint chain, so we assert on dispatch + absence of the append-only rejection
+        // rather than a full commit.
+        lock (writeOps)
+        {
+            Assert.Contains("python.setSchema", writeOps);
+        }
+        Assert.DoesNotContain("append-only", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReferenceRhinoObjectsDispatchesAsAGrasshopperCreateWrite()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.CordycepsCanvas,
+                BridgeAdapterOwner.Wireify
+            ]);
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return request.Operation == "canvas.snapshot"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    CSharpScriptSnapshot(harness, inputs: ["x"], outputs: ["out"]))
+                : null;
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Reference"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var newParamId = Guid.NewGuid();
+        var componentResource = new ResourceAddress(ResourceKind.GrasshopperComponent, newParamId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "reference-rhino.json",
+            new
+            {
+                bridgeOperation = "canvas.referenceRhinoObjects",
+                arguments = new
+                {
+                    operationId = "reference-rhino",
+                    objectId = newParamId,
+                    rhinoObjectIds = new[] { Guid.NewGuid() },
+                    paramType = "curve",
+                    pivot = new { x = 0.0, y = 0.0 }
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [new ResourceExpectation(componentResource, ResourceExpectation.AbsentFingerprint)],
+            [
+                new TypedOperation(
+                    "reference-rhino",
+                    OperationKind.ReferenceRhinoObjects,
+                    AdapterOwner.Cordyceps,
+                    [],
+                    [componentResource],
+                    Reversible: false,
+                    artifact)
+            ],
+            [],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "reference-rhino"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        _ = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString() ?? string.Empty;
+
+        // The new op maps, validates (gptino:absent create), and dispatches to the canvas adapter — the
+        // write reaching the bridge proves the whole AgentHost plumbing is wired. (The mock cannot run
+        // the real GH reference, so we assert dispatch + no pre-write rejection, not a full commit.)
+        lock (writeOps)
+        {
+            Assert.Contains("canvas.referenceRhinoObjects", writeOps);
+        }
+        Assert.DoesNotContain("Rejected before any write", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("no safe bridge mapping", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
