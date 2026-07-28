@@ -43,6 +43,29 @@ and total calls, so model inference rose and wall-clock got slightly worse. Less
 inference scales with the number of OPERATIONS (irreducible work), not the number of ChangeSets.**
 Reducing round-trips is not a lever. Rolled back (git revert).
 
+## Tier 2 — paneling cookbook skill — KEPT (modest net positive, mechanism validated)
+
+Added `gh-paneling-cookbook.md` (vetted isotrim / attractor / CreateOffsetBrep idioms) + a
+house-rules pointer to fetch it. The model fetched it (3 skill_reads) and built a clean 4-stage
+grouped chain (`01 Base+Attractor → 02 UV Grid → 03 Openings → 04 30mm Solids`, 21 objects, 0
+conflicts/fails).
+
+| metric | baseline | Tier 2 | verdict |
+|---|---|---|---|
+| wall-clock (turn) | 517 s | 463 s | ✔ −10% |
+| model-inference | 446 s | 389 s | ✔ −13% |
+| **per-call inference** | 6.9 s/call | **4.1 s/call** | ✔ **−40%** |
+| tool calls | 65 | 94 | ↑ +45% |
+| commits | 18 | 18 | = |
+| change_submit avg | 449 ms | 1500 ms | heavier solves |
+
+**The per-call-reasoning lever WORKS**: with ready idioms the model reasoned ~40% less per
+operation. But it reinvested most of that into MORE operations (94 vs 65 calls) and heavier solves
+(change_submit 449 ms→1.5 s — it actually built the CreateOffsetBrep solids, likely a *more
+complete* result), so net wall-clock only −10%. Quality equal-or-better (numbered stage groups,
+real 30 mm solids). Kept. Caveat: one run each; the −10% wall-clock is within noise range, but the
+−40% per-call inference is large and structural (skill demonstrably fetched + used).
+
 ## Implication for remaining tiers
 
 The only quality-preserving lever is **per-call inference time**, not call count:
