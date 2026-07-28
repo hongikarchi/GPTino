@@ -66,10 +66,40 @@ complete* result), so net wall-clock only −10%. Quality equal-or-better (numbe
 real 30 mm solids). Kept. Caveat: one run each; the −10% wall-clock is within noise range, but the
 −40% per-call inference is large and structural (skill demonstrably fetched + used).
 
-## Implication for remaining tiers
+## Tier 3 — condense house-rules prose (~5%) — NULL (kept as harmless cleanup)
 
-The only quality-preserving lever is **per-call inference time**, not call count:
-- Tier 2 (skills/templates): the model retrieves verified C# instead of composing each op from
-  scratch → less reasoning per operation.
-- Tier 3 (prompt slimming): fewer input tokens per call → faster inference per call.
-- Parallel authoring (real wall-clock win) needs the deferred coordinator.
+Removed the triple-stated "splitting doesn't reduce solve time / one UI thread" caveat + repeated
+timeout guidance; tightened predicate prose. Zero rule loss, parity held.
+
+| metric | Tier 2 (skill) | Tier 3 (+trim) | verdict |
+|---|---|---|---|
+| wall-clock | 463 s | 457 s | = (noise) |
+| tool span | 419.6 s | 425.4 s | = |
+| per-call inference | 4.1 s | 4.7 s | = |
+
+**No measurable effect.** Confirms the prediction: prompt caching makes the static instruction
+prompt cheap per call, and per-call cost is reasoning-bound (Tier 2's skill addressed that; prompt
+SIZE does not). A bigger cut would risk the reliability rules for no speed gain. The trim is kept
+only as a harmless prose cleanup, not a speed win.
+
+## Campaign conclusion
+
+Bottleneck = **model inference, 98%, reasoning-bound.** Results:
+
+| lever | mechanism | result |
+|---|---|---|
+| Tier 1a batch ChangeSets | fewer round-trips | ❌ negative (ops rose) — rolled back |
+| Tier 2 domain skill | less reasoning per op | ✔ **−10% wall-clock, −40% per-call inference** — kept |
+| Tier 3 prompt slim | fewer input tokens | ⭕ null (cached; reasoning-bound) |
+| Tier 1b effort/model | lower reasoning strength | dropped — quality tradeoff + not per-stage adjustable (effort is per-MESSAGE) |
+| Tier 1c polling / verify lightening | GPTino handling | dead — baseline proved GPTino work is only 2% |
+
+**The ceiling of GPTino-side prompt/skill tuning is ~10%,** all of it from domain skills that cut
+per-operation reasoning. Everything else is noise or a quality tradeoff.
+
+**The only transformative lever is parallel authoring** — decompose the task and author independent
+stages concurrently (commits still serialize on the writer lease). That is real wall-clock reduction
+at full quality, but it needs a host-side **coordinator** (pre-decompose → dispatch sub-tasks),
+which is deferred architecture. Recommendation: (1) keep + expand the domain-skill library (each
+domain likely repeats the ~10% per-call-reasoning win on its tasks); (2) treat the parallel
+coordinator as the next real investment when authoring latency must drop further.
