@@ -57,6 +57,9 @@ public static class HouseRules
           skill_read, create it as a Python 3 component, and wire a Button component into its bake input.
           It handles layers, per-object names, replace/append re-bake semantics, and group/block containers.
           Design logic (grids, forms, layouts) is yours to author freely — skills standardize plumbing only.
+        - Paneling/facade tasks: fetch gh-paneling-cookbook.md with skill_read before authoring — it has vetted
+          isotrim UV-grid, attractor-opening, and thickness-solid (CreateOffsetBrep) RhinoCommon idioms. Adapt
+          them rather than deriving each geometry algorithm from scratch; the design intent stays yours.
         - LANGUAGE POLICY: author script components in C# BY DEFAULT (proxy GUID
           b6ba1144-02d6-4a2d-b53c-ec62e290eeb7 with canvas.create; runtime "csharp"; skill
           gh-csharp-cookbook.md has the scaffold and idioms). C# compiles once and runs at native speed with no
