@@ -99,13 +99,11 @@ public static class HouseRules
         - Decompose non-trivial C# into a CHAIN OF STAGED COMPONENTS, not one monolith. Split the logic by
           stage (e.g. base geometry -> subdivide/panelize -> trim/detail); author each stage as its OWN C#
           component whose outputs feed the next stage's inputs, and build them one at a time: execute a
-          stage, verify its committed.outputs and check its op_duration, THEN author the next stage that
-          consumes it. Beyond the fresh-budget and checkpoint gains below, a staged chain lets Grasshopper
-          cache each component — when the user later tweaks a downstream slider only the affected stage
-          re-solves instead of the whole computation, so parameter iteration stops re-freezing Rhino. Use
-          this layout for anything beyond a few seconds of compute; keep a single monolithic component only
-          for trivial utilities. (Staging does NOT shrink a cold full-solve's total time — one UI thread —
-          it bounds each step, checkpoints progress, and makes re-solves cheap.)
+          stage, verify its committed.outputs and op_duration, THEN author the next stage that consumes it.
+          A staged chain gives each stage a fresh 45s budget, a history checkpoint, and per-component
+          Grasshopper caching (a downstream slider tweak re-solves only its stage). Use it for anything
+          beyond a few seconds of compute; keep one monolithic component only for trivial utilities. Staging
+          does NOT shrink a cold full-solve's total time (one UI thread) — it bounds and checkpoints it.
         - Target ~1 second per component. After executing a component, read its op_duration diagnostic; if it
           exceeds ~1s, split that component into smaller LOGICAL stages (by meaning — e.g. build vs subdivide
           vs trim/detail), re-execute, and re-check. Split by logic, NEVER arbitrarily: if one coherent
@@ -118,15 +116,10 @@ public static class HouseRules
           (list feeders in autoUpstream) for a clean left-to-right layout, and put each logical stage's
           components in their own named setGroup ("Base Surface", "Paneling", "Openings", "Bake", ...) so the
           canvas reads as the logic flow.
-        - One heavy execute per ChangeSet, nothing else in it — and isolate the expensive computation in
-          its OWN component, executed and verified (committed.outputs) BEFORE you wire anything downstream.
-          Splitting a co-solving graph does NOT reduce total solve time (the whole document solves on one
-          UI thread, sequentially — a split is equal-or-slightly-slower overall). Its only purposes are to
-          (a) give each stage its own fresh 45s bridge budget so no single solve exceeds the limit, and
-          (b) commit each stage as its own history checkpoint — so a later-stage timeout stays localized to
-          one component and never discards the committed upstream work. If a solve times out, do NOT
-          resubmit it — reduce the workload (sampling, counts, extent) or split the expensive step into its
-          own staged component first, then raise resolution only after a committed low-resolution pass.
+        - One heavy execute per ChangeSet, nothing else in it — isolate the expensive computation in its
+          OWN component, executed and verified (committed.outputs) BEFORE you wire anything downstream. On a
+          timeout, never resubmit as-is: reduce the workload (sampling, counts, extent) or split the
+          expensive step into its own staged component, then raise resolution after a committed low-res pass.
         - Iterate a heavy downstream stage on the default recomputeDocument=false so only expired objects
           re-solve; reserve recomputeDocument=true (expire-all) for a genuine full rebuild — it re-solves
           the whole document inside one 45s-bounded block.
@@ -194,12 +187,10 @@ public static class HouseRules
           outputCountInRange/areaInRange/volumeInRange/dataTreeBranchCountInRange use expectedValue
           "outputName:min:max" (max may be "*"); boundingBoxInRange uses "outputName:axis:min:max"
           (axis = x|y|z|diagonal); geometryClosed uses expectedValue = the output name. Declare a semantic predicate
-          SPARINGLY and only to catch an OBVIOUS, OBJECTIVE failure tied to what the USER asked for — e.g. the
-          user said the opening must be a real void (assert the panel count dropped) or each of the three
-          alternatives must produce panels (assert >= 1). Use GENEROUS bounds (">= 1", not "exactly 47"); a
-          predicate is a safety net, never a gate on normal work, and a wrong/tight one just makes you loop.
-          Subjective design quality (is it beautiful / architecturally good) is NOT a predicate — the human
-          judges that; leave it to them.
+          SPARINGLY — only for an OBVIOUS, OBJECTIVE failure tied to the user's ask (e.g. the opening must be a
+          real void → assert the panel count dropped), with GENEROUS bounds (">= 1", not "exactly 47"). It is a
+          safety net, never a gate on normal work; a tight/wrong one just makes you loop. Subjective design
+          quality is the human's call, never a predicate.
         - Goal-directed iteration (bounded): when a request has a clear objective, let the acceptance
           predicate(s) you declared define "done" — submit, read the result, and if a declared predicate
           fails, use its diagnostics to fix and resubmit, iterating until they pass. This loop is BOUNDED by
