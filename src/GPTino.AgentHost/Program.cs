@@ -93,7 +93,6 @@ builder.Services.AddHostedService(services => services.GetRequiredService<LiveDo
 builder.Services.AddSingleton<CodexAppServerClient>();
 builder.Services.AddSingleton<ICodexSessionClient>(services => services.GetRequiredService<CodexAppServerClient>());
 builder.Services.AddSingleton<IModelCatalog>(services => services.GetRequiredService<CodexAppServerClient>());
-builder.Services.AddSingleton<MessageRoutingPolicy>();
 builder.Services.AddSingleton<EffectiveModelState>();
 builder.Services.AddSingleton<SessionUsageState>();
 builder.Services.AddSingleton<ModelSelector>();

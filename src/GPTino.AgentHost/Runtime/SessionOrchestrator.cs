@@ -22,7 +22,6 @@ public sealed class SessionOrchestrator : IDisposable
     private readonly SessionStore _store;
     private readonly ICodexSessionClient _codex;
     private readonly ModelSelector _models;
-    private readonly MessageRoutingPolicy _routing;
     private readonly EffectiveModelState _effectiveModels;
     private readonly AgentHostOptions _options;
     private readonly RuntimeControl _runtime;
@@ -53,7 +52,6 @@ public sealed class SessionOrchestrator : IDisposable
         SessionStore store,
         ICodexSessionClient codex,
         ModelSelector models,
-        MessageRoutingPolicy routing,
         EffectiveModelState effectiveModels,
         AgentHostOptions options,
         RuntimeControl runtime,
@@ -74,7 +72,6 @@ public sealed class SessionOrchestrator : IDisposable
         _store = store;
         _codex = codex;
         _models = models;
-        _routing = routing;
         _effectiveModels = effectiveModels;
         _options = options;
         _runtime = runtime;

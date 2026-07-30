@@ -859,7 +859,6 @@ public sealed class SessionOrchestratorTests
             store,
             client,
             selector,
-            new MessageRoutingPolicy(),
             new EffectiveModelState(),
             options,
             new RuntimeControl(),
