@@ -36,9 +36,6 @@ const DRAG_THRESHOLD = 6;
    between this readable default and a fit-everything view. */
 const MIN_READABLE_SCALE = 1;
 
-const truncate = (value: string, max: number) =>
-  value.length > max ? `${value.slice(0, max - 1)}…` : value;
-
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 /* Character counts cannot bound pixel width once CJK text is involved (a Hangul
@@ -155,7 +152,8 @@ function SessionNode({
       <rect className="gnode-box" width={node.w} height={node.h} rx={8} />
       <text className="gnode-rank" x={8} y={20}>{node.rank}</text>
       <text className="gnode-title" x={27} y={20}>
-        {truncateColumns(session.title, session.terminalOpen ? 19 : node.warning ? 21 : 23)}
+        {/* Budgets assume worst-case wide Latin glyphs (caps/digits), not average text. */}
+        {truncateColumns(session.title, session.terminalOpen ? 16 : node.warning ? 18 : 20)}
       </text>
       {session.terminalOpen ? (
         <text className="gnode-terminal" x={node.w - 32} y={20}>{"❯_"}</text>
@@ -234,7 +232,8 @@ function DocNode({ node }: { node: GraphNode }) {
         {truncateColumns(node.sublabel ?? "", 21)}
       </text>
       {node.detail ? (
-        <text className="gnode-detail" x={50} y={51}>{truncate(node.detail, 22)}</text>
+        // Column-based truncation: CJK layer names count double, like every other node label.
+        <text className="gnode-detail" x={50} y={51}>{truncateColumns(node.detail, 22)}</text>
       ) : null}
     </g>
   );
@@ -475,6 +474,10 @@ export function SessionCanvas({
           <stop offset="0" stopColor="#0c0e0f" stopOpacity="0" />
           <stop offset="1" stopColor="#0c0e0f" stopOpacity="0.9" />
         </linearGradient>
+        <linearGradient id="gptino-edge-fade-v" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#0c0e0f" stopOpacity="0" />
+          <stop offset="1" stopColor="#0c0e0f" stopOpacity="0.9" />
+        </linearGradient>
       </defs>
       <rect
         className="canvas-backdrop"
@@ -506,9 +509,14 @@ export function SessionCanvas({
         />
       ))}
       {sessionNodes.length === 0 ? (
-        <text className="canvas-empty" x={100} y={model.height / 2}>
-          No sessions yet — create one with the + Session button.
-        </text>
+        // Two centered lines so the actionable half never sits off-screen on a
+        // narrow clamped view (the single line was wider than a 320px panel).
+        <g className="canvas-empty" textAnchor="middle">
+          <text x={view.x + view.w / 2} y={model.height / 2 - 8}>No sessions yet</text>
+          <text x={view.x + view.w / 2} y={model.height / 2 + 12}>
+            Create one with the + Session button
+          </text>
+        </g>
       ) : null}
       {orchestratorNode ? <OrchestratorNode node={orchestratorNode} nowMs={nowMs} /> : null}
       {docNodes.map((node) => (
@@ -523,6 +531,18 @@ export function SessionCanvas({
             width={34}
             height={view.h}
             fill="url(#gptino-edge-fade)"
+          />
+        </g>
+      ) : null}
+      {view.y + view.h < model.height - 1 ? (
+        <g pointerEvents="none">
+          <title>More below — drag to pan, double-click to fit everything.</title>
+          <rect
+            x={view.x}
+            y={view.y + view.h - 34}
+            width={view.w}
+            height={34}
+            fill="url(#gptino-edge-fade-v)"
           />
         </g>
       ) : null}

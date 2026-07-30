@@ -171,6 +171,14 @@ export function useSessionCompletion(
       }
       return changed ? next : current;
     });
+    // Same for toasts: an attention toast for a deleted session has no session to
+    // open and would otherwise sit in the stack forever.
+    setToasts((current) => {
+      const stale = current.filter((toast) => !presentIds.has(toast.sessionId));
+      if (stale.length === 0) return current;
+      stale.forEach((toast) => clearTimer(toast.id));
+      return current.filter((toast) => presentIds.has(toast.sessionId));
+    });
 
     if (events.length === 0) return;
 

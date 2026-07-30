@@ -509,7 +509,8 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
               title={`${item.activity.kind}${item.activity.durationMs > 0 ? ` · ${item.activity.durationMs}ms` : ""}`}
             >
               <span className="activity-dot" />
-              <span className="activity-text">{item.activity.summary}</span>
+              {/* Ellipsized summaries stay recoverable: the text carries its own tooltip. */}
+              <span className="activity-text" title={item.activity.summary}>{item.activity.summary}</span>
               <time dateTime={item.activity.at}>{formatTime(item.activity.at)}</time>
             </div>
           ),

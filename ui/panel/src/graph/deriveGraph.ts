@@ -81,7 +81,9 @@ export function wirePath(x1: number, y1: number, x2: number, y2: number): string
 }
 
 function conflictPath(x: number, y1: number, y2: number): string {
-  const bow = 56;
+  // Capped so the leftmost point of the curve (x - 3·bow/4 at t=0.5) stays at
+  // x ≥ 6 for x = SESSION_X: a 56px bow put the arc's midsection off-canvas.
+  const bow = 24;
   return `M ${x} ${y1} C ${x - bow} ${y1}, ${x - bow} ${y2}, ${x} ${y2}`;
 }
 
@@ -352,7 +354,7 @@ export function deriveGraph(state: RuntimeState): GraphModel {
       x2: SESSION_X,
       y2,
       path: conflictPath(SESSION_X, y1, y2),
-      midX: SESSION_X - 42,
+      midX: SESSION_X - 18,
       midY: cubicMid(y1, y1, y2, y2),
     });
   }

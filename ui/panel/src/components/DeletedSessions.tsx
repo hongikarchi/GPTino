@@ -74,7 +74,7 @@ export function DeletedSessions({ onClose, list, onRestore, onPurge }: DeletedSe
           Close
         </button>
       </header>
-      <div className="archive-body">
+      <div className="archive-body single-pane">
         <div className="archive-list" aria-label="Deleted sessions list">
           {sessions === null && !error ? <p className="archive-note">Loading…</p> : null}
           {error ? (
@@ -87,7 +87,9 @@ export function DeletedSessions({ onClose, list, onRestore, onPurge }: DeletedSe
           ) : null}
           {sessions?.map((session) => (
             <div key={session.id} className="deleted-session-row">
-              <span className="archive-project-name">{session.name}</span>
+              <span className="archive-project-name" title={session.name}>
+                <strong>{session.name}</strong>
+              </span>
               <span className="deleted-session-actions">
                 <button
                   type="button"
