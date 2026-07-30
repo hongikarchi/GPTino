@@ -190,7 +190,12 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         {
             ["threadId"] = threadId,
             ["input"] = input,
-            ["approvalPolicy"] = "never"
+            ["approvalPolicy"] = "never",
+            // Explicitly request the "fast" service tier every turn: faster serving at the SAME
+            // reasoning quality (orthogonal to effort). Set it here rather than relying on the
+            // operator's ~/.codex/config.toml service_tier, so GPTino authoring is fast on every
+            // install regardless of the local Codex config.
+            ["serviceTier"] = "fast"
         };
         if (!string.IsNullOrWhiteSpace(model))
         {
