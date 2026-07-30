@@ -284,19 +284,10 @@ api.MapPost("/sessions", async (
     ILiveDocumentQueueControl queue,
     CancellationToken cancellationToken) =>
 {
-    // Normalize the UI profile to the internal string the runtime/projector expect, so a created
-    // session persists the same canonical value SetModel would (e.g. "deep" -> "high-assurance",
-    // which projects back to "deep" in the panel). Accept internal spellings too for API callers.
-    var normalizedProfile = request.ModelProfile.Trim().ToLowerInvariant() switch
-    {
-        "auto" => "auto",
-        "fast" or "fast-safe" => "fast-safe",
-        "standard" => "standard",
-        "deep" or "high-assurance" => "high-assurance",
-        _ => throw new ArgumentException("Model profile must be auto, fast, standard, or deep.")
-    };
+    // ModelProfile now carries the reasoning-effort level directly (low..ultra) — manual effort, no
+    // adaptive routing. NormalizeEffort validates and maps any legacy profile value for back-compat.
     var session = await sessionStore.CreateSessionAsync(
-        request with { ModelProfile = normalizedProfile },
+        request with { ModelProfile = NormalizeEffort(request.ModelProfile) },
         cancellationToken);
     await queue.RefreshScheduleAsync(cancellationToken);
     events.Publish();
@@ -371,18 +362,10 @@ api.MapPut("/sessions/{id:guid}/model", async (
     SessionStore sessionStore,
     CancellationToken cancellationToken) =>
 {
-    var profile = request.ModelProfile.Trim().ToLowerInvariant() switch
-    {
-        "auto" => "auto",
-        "fast" => "fast-safe",
-        "standard" => "standard",
-        "deep" => "high-assurance",
-        _ => throw new ArgumentException("Model profile must be auto, fast, standard, or deep.")
-    };
     await sessionStore.UpdatePreferencesAsync(
         id,
         null,
-        profile,
+        NormalizeEffort(request.ModelProfile),
         request.Model,
         true,
         cancellationToken);
@@ -636,6 +619,20 @@ static bool HasValidApiToken(HttpContext context, string expected)
     var cookie = context.Request.Cookies["gptino_runtime"];
     return TokenEquals(header, expected) || TokenEquals(cookie, expected);
 }
+
+// The session's reasoning-effort level (low..ultra) — clamped to the chosen model's advertised set at
+// turn time. Legacy profile values (auto/fast/standard/deep) map to the nearest effort for back-compat.
+static string NormalizeEffort(string? value) => (value ?? string.Empty).Trim().ToLowerInvariant() switch
+{
+    "low" or "medium" or "high" or "xhigh" or "max" or "ultra" => (value ?? string.Empty).Trim().ToLowerInvariant(),
+    "fast" or "fast-safe" => "low",
+    "standard" => "medium",
+    "deep" or "high-assurance" or "recovery" or "auto" or "" => "xhigh",
+    "extra-high" => "xhigh",
+    "maximum" => "max",
+    "minimal" => "low",
+    _ => throw new ArgumentException("Reasoning effort must be one of low, medium, high, xhigh, max, ultra.")
+};
 
 static bool TokenEquals(string? supplied, string expected)
 {

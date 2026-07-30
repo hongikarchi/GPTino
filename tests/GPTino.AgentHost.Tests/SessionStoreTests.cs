@@ -159,7 +159,7 @@ public sealed class SessionStoreTests
         var store = new SessionStore(databasePath);
 
         await store.InitializeAsync();
-        var first = await store.CreateSessionAsync(new CreateSessionRequest("  Facade Study  ", " PLANNER ", " FAST "));
+        var first = await store.CreateSessionAsync(new CreateSessionRequest("  Facade Study  ", " PLANNER ", " HIGH "));
         var second = await store.CreateSessionAsync(new CreateSessionRequest("Detailing"));
 
         var (sessions, orderVersion) = await store.ReadStateAsync();
@@ -171,7 +171,7 @@ public sealed class SessionStoreTests
                 Assert.Equal(first.Id, session.Id);
                 Assert.Equal("Facade Study", session.Name);
                 Assert.Equal("planner", session.Role);
-                Assert.Equal("fast", session.ModelProfile);
+                Assert.Equal("high", session.ModelProfile);
                 Assert.Equal(0, session.Order);
                 Assert.Equal(SessionStates.Idle, session.State);
             },
@@ -179,7 +179,7 @@ public sealed class SessionStoreTests
             {
                 Assert.Equal(second.Id, session.Id);
                 Assert.Equal("modeler", session.Role);
-                Assert.Equal("auto", session.ModelProfile);
+                Assert.Equal("xhigh", session.ModelProfile);
                 Assert.Equal(1, session.Order);
             });
 

@@ -292,6 +292,29 @@ public sealed class EffectiveModelState
             exception.Message,
             DateTimeOffset.UtcNow);
 
+    // Route-free recording for the direct manual-effort path (no MessageRoutingPolicy classification).
+    public void RecordDirect(Guid sessionId, ModelSelection selection) =>
+        _states[sessionId] = new EffectiveModelSnapshot(
+            sessionId,
+            TaskClass.StandardWrite,
+            selection.EffectiveProfile,
+            selection.Model,
+            selection.Effort,
+            selection.Rationale,
+            null,
+            DateTimeOffset.UtcNow);
+
+    public void RecordDirectFailure(Guid sessionId, Exception exception) =>
+        _states[sessionId] = new EffectiveModelSnapshot(
+            sessionId,
+            TaskClass.StandardWrite,
+            ModelProfile.Standard,
+            null,
+            null,
+            exception.Message,
+            exception.Message,
+            DateTimeOffset.UtcNow);
+
     public bool TryGet(Guid sessionId, out EffectiveModelSnapshot snapshot) =>
         _states.TryGetValue(sessionId, out snapshot!);
 }

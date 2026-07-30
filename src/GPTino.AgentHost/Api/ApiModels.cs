@@ -34,7 +34,10 @@ public sealed record ChatMessage(
 public sealed record CreateSessionRequest(
     string Name,
     string Role = "modeler",
-    string ModelProfile = "auto",
+    // Reasoning-effort level (low|medium|high|xhigh|max|ultra); field name kept as ModelProfile for
+    // wire back-compat. Default xhigh. No adaptive routing — the value is used directly (clamped to
+    // the model's supported efforts at turn time).
+    string ModelProfile = "xhigh",
     string? Model = null,
     string? GrasshopperDoc = null);
 

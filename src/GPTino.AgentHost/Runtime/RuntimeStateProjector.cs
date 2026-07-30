@@ -290,13 +290,15 @@ public sealed class RuntimeStateProjector
     private static string ProjectMode(string role) =>
         string.Equals(role, "planner", StringComparison.OrdinalIgnoreCase) ? "plan" : "auto";
 
+    // The stored value is a reasoning-effort level (low..ultra); pass it through. Legacy profile
+    // values from pre-migration sessions map to the nearest effort so the slider still reads sanely.
     private static string ProjectModelProfile(string profile) => profile.ToLowerInvariant() switch
     {
-        "auto" => "auto",
-        "read-fast" or "fast-safe" => "fast",
-        "high-assurance" or "recovery" => "deep",
-        "standard" => "standard",
-        _ => "auto"
+        "low" or "medium" or "high" or "xhigh" or "max" or "ultra" => profile.ToLowerInvariant(),
+        "read-fast" or "fast-safe" or "fast" => "low",
+        "standard" => "medium",
+        "high-assurance" or "recovery" or "deep" or "auto" => "xhigh",
+        _ => "xhigh"
     };
 
     private static string ProjectQueueState(JobState state) => state switch

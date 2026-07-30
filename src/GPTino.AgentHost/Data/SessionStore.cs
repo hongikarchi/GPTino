@@ -85,6 +85,26 @@ public sealed class SessionStore
                     "ALTER TABLE sessions ADD COLUMN deleted_at TEXT NULL;",
                     cancellationToken).ConfigureAwait(false);
             }
+            // model_profile now stores a reasoning-effort level (low..ultra). Rewrite any legacy
+            // profile values from pre-refactor sessions to the nearest effort. Idempotent: effort
+            // values fall through the ELSE untouched.
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE sessions SET model_profile = CASE model_profile
+                    WHEN 'auto' THEN 'xhigh'
+                    WHEN 'high-assurance' THEN 'xhigh'
+                    WHEN 'recovery' THEN 'xhigh'
+                    WHEN 'deep' THEN 'xhigh'
+                    WHEN 'standard' THEN 'medium'
+                    WHEN 'fast-safe' THEN 'low'
+                    WHEN 'read-fast' THEN 'low'
+                    WHEN 'fast' THEN 'low'
+                    ELSE model_profile END
+                WHERE model_profile IN
+                    ('auto','high-assurance','recovery','deep','standard','fast-safe','read-fast','fast');
+                """,
+                cancellationToken).ConfigureAwait(false);
             await NormalizeInterruptedSessionsAsync(connection, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -151,7 +171,7 @@ public sealed class SessionStore
             command.Parameters.AddWithValue("$id", id.ToString("D"));
             command.Parameters.AddWithValue("$name", request.Name.Trim());
             command.Parameters.AddWithValue("$role", Normalize(request.Role, "modeler"));
-            command.Parameters.AddWithValue("$profile", Normalize(request.ModelProfile, "standard"));
+            command.Parameters.AddWithValue("$profile", Normalize(request.ModelProfile, "xhigh"));
             command.Parameters.AddWithValue("$model", (object?)request.Model ?? DBNull.Value);
             command.Parameters.AddWithValue("$state", SessionStates.Idle);
             command.Parameters.AddWithValue("$order", order);
@@ -164,7 +184,7 @@ public sealed class SessionStore
                 id,
                 request.Name.Trim(),
                 Normalize(request.Role, "modeler"),
-                Normalize(request.ModelProfile, "standard"),
+                Normalize(request.ModelProfile, "xhigh"),
                 request.Model,
                 SessionStates.Idle,
                 checked((int)order),

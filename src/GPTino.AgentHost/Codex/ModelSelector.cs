@@ -73,6 +73,70 @@ public sealed class ModelSelector
         return new ModelSelection(model.Model, effort, route.EffectiveProfile, rationale);
     }
 
+    // Reasoning-effort levels in ascending strength. Used to clamp a requested effort to what a model
+    // actually advertises (no adaptive routing, no capability floor — the operator's effort is authoritative).
+    private static readonly string[] EffortOrder = ["low", "medium", "high", "xhigh", "max", "ultra"];
+
+    /// <summary>
+    /// Direct effort selection: pick the pinned model (or the catalog default) and clamp the requested
+    /// reasoning effort to that model's advertised set. No profile capability floor and no recovery
+    /// escalation — this is the "manual effort slider" path that replaced adaptive routing.
+    /// </summary>
+    public async Task<ModelSelection> ResolveDirectAsync(
+        string? effort,
+        string? pinnedModel,
+        CancellationToken cancellationToken)
+    {
+        var requested = string.IsNullOrWhiteSpace(effort) ? "xhigh" : effort.Trim().ToLowerInvariant();
+        var models = await ReadModelsAsync(cancellationToken).ConfigureAwait(false);
+        ModelView? model = null;
+        if (!string.IsNullOrWhiteSpace(pinnedModel))
+        {
+            model = FindExplicit(models, pinnedModel);
+        }
+        model ??= models.FirstOrDefault(item => item.IsDefault) ?? models.FirstOrDefault();
+
+        var resolved = model is { ReasoningEfforts.Count: > 0 }
+            ? ClampEffort(requested, model.ReasoningEfforts)
+            : requested;
+        var chosenModel = model?.Model ?? pinnedModel;
+        var rationale = model is null
+            ? $"Model catalog unavailable; requested reasoning effort '{resolved}'."
+            : $"Model '{model.Model}' with reasoning effort '{resolved}'"
+              + (string.Equals(resolved, requested, StringComparison.OrdinalIgnoreCase)
+                  ? "."
+                  : $" (clamped from '{requested}' to the model's supported range).");
+        return new ModelSelection(chosenModel, resolved, ModelProfile.Standard, rationale);
+    }
+
+    private static string ClampEffort(string requested, IReadOnlyList<string> supported)
+    {
+        var exact = supported.FirstOrDefault(e => string.Equals(e, requested, StringComparison.OrdinalIgnoreCase));
+        if (exact is not null)
+        {
+            return exact;
+        }
+        var reqRank = EffortRank(requested);
+        var atOrBelow = supported
+            .Where(e => EffortRank(e) <= reqRank)
+            .OrderByDescending(EffortRank)
+            .FirstOrDefault();
+        return atOrBelow ?? supported.OrderBy(EffortRank).First();
+    }
+
+    private static int EffortRank(string effort)
+    {
+        var normalized = effort.Trim().ToLowerInvariant() switch
+        {
+            "minimal" or "none" => "low",
+            "extra-high" => "xhigh",
+            "maximum" => "max",
+            var other => other
+        };
+        var index = Array.IndexOf(EffortOrder, normalized);
+        return index < 0 ? EffortOrder.Length : index;
+    }
+
     public Task<IReadOnlyList<ModelView>> ReadModelsAsync(CancellationToken cancellationToken) =>
         ReadModelsCoreAsync(cancellationToken);
 

@@ -280,19 +280,19 @@ public sealed class SessionOrchestrator : IDisposable
                 }
                 _events.Publish();
 
-                var previousContextFloor = _effectiveModels.TryGet(sessionId, out var previousModel)
-                    ? previousModel.EffectiveProfile
-                    : (ModelProfile?)null;
-                var route = _routing.Route(content, latest.ModelProfile, previousContextFloor);
+                // Manual effort: the session's stored reasoning effort (low..ultra) is used directly and
+                // clamped to the chosen model's advertised set — no adaptive per-message routing, no
+                // capability floor, no recovery escalation. (latest.ModelProfile carries the effort level.)
                 ModelSelection selection;
                 try
                 {
-                    selection = await _models.SelectAsync(route, latest.Model, cancellationToken).ConfigureAwait(false);
-                    _effectiveModels.RecordSuccess(sessionId, route, selection);
+                    selection = await _models.ResolveDirectAsync(latest.ModelProfile, latest.Model, cancellationToken)
+                        .ConfigureAwait(false);
+                    _effectiveModels.RecordDirect(sessionId, selection);
                 }
                 catch (ModelRoutingException exception)
                 {
-                    _effectiveModels.RecordFailure(sessionId, route, exception);
+                    _effectiveModels.RecordDirectFailure(sessionId, exception);
                     throw;
                 }
                 _events.Publish();
