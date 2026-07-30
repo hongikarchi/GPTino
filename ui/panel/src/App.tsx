@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArchiveBrowser } from "./components/ArchiveBrowser";
 import { ChatPane } from "./components/ChatPane";
+import { CuratorActions } from "./components/CuratorActions";
 import { DataFlowDrawer } from "./components/DataFlowDrawer";
 import { DeletedSessions } from "./components/DeletedSessions";
 import { Icon } from "./components/Icons";
@@ -139,7 +140,12 @@ function NewSessionPopover({
 export default function App() {
   const { runtime, serverRuntime, models, loading, error, demo, busyActions, actions } = useRuntime();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const completion = useSessionCompletion(serverRuntime, selectedId, setSelectedId);
+  // Completion deep-links (toasts, OS notifications) must be tab-aware: a curator completion
+  // switches to the curator tab instead of selecting it on the Model rail. The handler needs
+  // per-render session data, so the hook gets a stable ref-dispatching callback.
+  const openSessionRef = useRef<(id: string) => void>(() => {});
+  const openSessionStable = useCallback((id: string) => openSessionRef.current(id), []);
+  const completion = useSessionCompletion(serverRuntime, selectedId, openSessionStable);
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
@@ -180,6 +186,23 @@ export default function App() {
     });
   // Drawer target: undefined = closed; null = the only/legacy doc; string = explicit docKey.
   const [dataFlowDocId, setDataFlowDocId] = useState<string | null | undefined>(undefined);
+  // [Model | Curator] view switch inside the one panel: the tab is presentation only — the
+  // curator underneath is an ordinary session flowing through the same broker.
+  const [tab, setTab] = useState<"model" | "curator">(() => {
+    try {
+      return localStorage.getItem("gptino.tab") === "curator" ? "curator" : "model";
+    } catch {
+      return "model";
+    }
+  });
+  const switchTab = (next: "model" | "curator") => {
+    setTab(next);
+    try {
+      localStorage.setItem("gptino.tab", next);
+    } catch {
+      // localStorage may be unavailable; the switch still works for this session.
+    }
+  };
   // A drawer must not outlive its document: when the doc unregisters (close, Save As re-key),
   // showing its stale detail — and letting Rescan surface a raw HTTP error — helps nobody.
   useEffect(() => {
@@ -216,9 +239,12 @@ export default function App() {
   }, [newSessionOpen]);
 
   useEffect(() => {
-    if (!runtime?.sessions.length) return;
-    if (!selectedId || !runtime.sessions.some(({ id }) => id === selectedId)) {
-      setSelectedId(runtime.sessions[0].id);
+    // Auto-select only among Model-tab sessions: the resident curator is never a default
+    // selection (it would hijack a fresh project's first view).
+    const modelSessions = runtime?.sessions.filter((session) => session.role !== "curator") ?? [];
+    if (!modelSessions.length) return;
+    if (!selectedId || !modelSessions.some(({ id }) => id === selectedId)) {
+      setSelectedId(modelSessions[0].id);
     }
   }, [runtime, selectedId]);
 
@@ -228,6 +254,13 @@ export default function App() {
   useEffect(() => {
     if (selectedId) markSeen(selectedId);
   }, [selectedId, serverRuntime, markSeen]);
+  // The curator tab is its own "viewing" surface: while it is active, the curator session's
+  // completions are seen even though selectedId stays Model-only.
+  useEffect(() => {
+    if (tab !== "curator") return;
+    const curator = runtime?.sessions.find((session) => session.role === "curator");
+    if (curator) markSeen(curator.id);
+  }, [tab, runtime, serverRuntime, markSeen]);
 
   if (loading) {
     return (
@@ -257,8 +290,22 @@ export default function App() {
     );
   }
 
-  const selected = runtime.sessions.find(({ id }) => id === selectedId);
+  const modelSessions = runtime.sessions.filter((session) => session.role !== "curator");
+  const curatorSession = runtime.sessions.find((session) => session.role === "curator");
+  const selected = modelSessions.find(({ id }) => id === selectedId);
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
+  const modelUnread = modelSessions.some((session) => completion.unseen.has(session.id));
+  const curatorUnread = curatorSession != null && completion.unseen.has(curatorSession.id);
+  const openSession = (id: string) => {
+    if (curatorSession && id === curatorSession.id) {
+      switchTab("curator");
+    } else {
+      switchTab("model");
+      setSelectedId(id);
+    }
+    completion.markSeen(id);
+  };
+  openSessionRef.current = openSession;
 
   return (
     <div className={`app-shell${dataFlowDocId !== undefined ? " data-drawer-open" : ""}`}>
@@ -298,7 +345,7 @@ export default function App() {
               aria-expanded={!canvasCollapsed}
               title={canvasCollapsed ? "Show the session graph" : "Collapse the session graph"}
             >
-              {canvasCollapsed ? `▸ Graph (${runtime.sessions.length})` : "▾ Graph"}
+              {canvasCollapsed ? `▸ Graph (${modelSessions.length})` : "▾ Graph"}
             </button>
             {!canvasCollapsed && (runtime.dataFlow?.length ?? 0) > 0 ? (
               <button
@@ -323,7 +370,7 @@ export default function App() {
               </button>
               {newSessionOpen ? (
                 <NewSessionPopover
-                  suggestedName={`Session ${runtime.sessions.length + 1}`}
+                  suggestedName={`Session ${modelSessions.length + 1}`}
                   docs={ghDocs ?? []}
                   defaultDocId={selected?.boundGrasshopperDocId ?? undefined}
                   busy={busyActions.has("create-session")}
@@ -417,7 +464,32 @@ export default function App() {
         </>
       ) : null}
 
-      {canvasCollapsed ? null : (
+      <nav className="tab-bar" aria-label="Panel view">
+        <div className="segmented view-tabs">
+          <button
+            type="button"
+            className={tab === "model" ? "active" : ""}
+            aria-pressed={tab === "model"}
+            onClick={() => switchTab("model")}
+          >
+            Model
+            {modelUnread && tab !== "model" ? <span className="tab-dot" aria-label="Unread activity" /> : null}
+          </button>
+          <button
+            type="button"
+            className={tab === "curator" ? "active" : ""}
+            aria-pressed={tab === "curator"}
+            onClick={() => switchTab("curator")}
+            disabled={!curatorSession}
+            title={curatorSession ? "Document care — audits, cleanup, one-shot batches" : "No curator session yet"}
+          >
+            Curator
+            {curatorUnread && tab !== "curator" ? <span className="tab-dot" aria-label="Unread activity" /> : null}
+          </button>
+        </div>
+      </nav>
+
+      {tab === "model" && !canvasCollapsed ? (
         <section className="canvas-row" aria-label="Session graph">
           <SessionCanvas
             runtime={runtime}
@@ -429,36 +501,80 @@ export default function App() {
             onOpenDataFlow={setDataFlowDocId}
           />
         </section>
-      )}
+      ) : null}
 
-      <main className="chat-region">
-        <ChatPane
-          session={selected}
-          conflicts={runtime.conflicts}
-          models={models}
-          limits={runtime.codexLimits ?? null}
-          grasshopperDocs={ghDocs}
-          busyActions={busyActions}
-          onMode={(mode) => selected && void actions.setMode(selected.id, mode)}
-          onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
-          onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
-          onGoal={(enabled) => selected && void actions.setGoal(selected.id, enabled)}
-          onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
-          onSend={(content, attachments) => {
-            if (!selected) return undefined;
-            requestNotifyPermissionOnce();
-            return actions.sendMessage(selected.id, content, attachments);
-          }}
-          onResume={() => selected && void actions.pauseSession(selected.id, false)}
-          onDelete={() => {
-            if (!selected) return;
-            const deletedId = selected.id;
-            void actions.deleteSession(deletedId);
-            if (selectedId === deletedId) setSelectedId(null);
-          }}
-          onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
-        />
-      </main>
+      {tab === "model" ? (
+        <main className="chat-region">
+          <ChatPane
+            key={selected?.id ?? "none"}
+            session={selected}
+            conflicts={runtime.conflicts}
+            models={models}
+            limits={runtime.codexLimits ?? null}
+            grasshopperDocs={ghDocs}
+            busyActions={busyActions}
+            onMode={(mode) => selected && void actions.setMode(selected.id, mode)}
+            onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
+            onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
+            onGoal={(enabled) => selected && void actions.setGoal(selected.id, enabled)}
+            onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
+            onSend={(content, attachments) => {
+              if (!selected) return undefined;
+              requestNotifyPermissionOnce();
+              return actions.sendMessage(selected.id, content, attachments);
+            }}
+            onResume={() => selected && void actions.pauseSession(selected.id, false)}
+            onDelete={() => {
+              if (!selected) return;
+              const deletedId = selected.id;
+              void actions.deleteSession(deletedId);
+              if (selectedId === deletedId) setSelectedId(null);
+            }}
+            onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
+          />
+        </main>
+      ) : (
+        <main className="chat-region curator-region">
+          <CuratorActions
+            busy={
+              curatorSession?.status === "working" ||
+              curatorSession?.status === "drafting" ||
+              curatorSession?.status === "verifying" ||
+              curatorSession?.status === "queued"
+            }
+            onRun={(prompt) => {
+              if (!curatorSession) return;
+              requestNotifyPermissionOnce();
+              void actions.sendMessage(curatorSession.id, prompt);
+            }}
+          />
+          <ChatPane
+            key={curatorSession?.id ?? "curator-none"}
+            session={curatorSession}
+            conflicts={runtime.conflicts}
+            models={models}
+            limits={runtime.codexLimits ?? null}
+            grasshopperDocs={null}
+            busyActions={busyActions}
+            onMode={(mode) => curatorSession && void actions.setMode(curatorSession.id, mode)}
+            onModel={(profile) =>
+              curatorSession && void actions.setModel(curatorSession.id, profile, curatorSession.pinnedModel ?? null)}
+            onPinModel={(model) =>
+              curatorSession && void actions.setModel(curatorSession.id, curatorSession.modelProfile, model)}
+            onGoal={(enabled) => curatorSession && void actions.setGoal(curatorSession.id, enabled)}
+            onTarget={() => undefined}
+            onSend={(content, attachments) => {
+              if (!curatorSession) return undefined;
+              requestNotifyPermissionOnce();
+              return actions.sendMessage(curatorSession.id, content, attachments);
+            }}
+            onResume={() => curatorSession && void actions.pauseSession(curatorSession.id, false)}
+            onDelete={() => undefined /* the resident curator is not deletable; the server 409s anyway */}
+            onStopEdit={() =>
+              curatorSession ? actions.retractLast(curatorSession.id) : Promise.resolve(null)}
+          />
+        </main>
+      )}
 
       {dataFlowDocId !== undefined ? (
         <DataFlowDrawer
@@ -494,10 +610,7 @@ export default function App() {
       <ToastStack
         toasts={completion.toasts}
         onDismiss={completion.dismissToast}
-        onOpen={(id) => {
-          setSelectedId(id);
-          completion.markSeen(id);
-        }}
+        onOpen={openSession}
       />
     </div>
   );

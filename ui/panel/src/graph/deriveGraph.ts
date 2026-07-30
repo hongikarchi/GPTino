@@ -119,7 +119,9 @@ export interface DeriveGraphOptions {
 }
 
 export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): GraphModel {
-  const sessions = state.sessions;
+  // The graph is the Model tab's rail: curator sessions live on their own tab and are pinned
+  // outside the draggable priority order, so they never render as draggable session nodes.
+  const sessions = state.sessions.filter((session) => session.role !== "curator");
   const sessionCount = sessions.length;
   const sessionStackH = sessionCount > 0 ? sessionCount * SESSION_H + (sessionCount - 1) * SESSION_GAP : 0;
   // Legacy servers omit grasshopperDocs (or send null) — render the single

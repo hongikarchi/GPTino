@@ -1537,6 +1537,37 @@ button.llm-auth:hover strong {
 
 .app-shell.data-drawer-open { padding-bottom: min(42vh, 340px); }
 
+/* [Model | Curator] view switch: presentation only — the curator underneath is an ordinary
+   session on the same broker. Sits below the header/banners, above the tab-scoped content. */
+.tab-bar {
+  display: flex;
+  padding: 6px 16px 0;
+}
+
+.view-tabs { width: 220px; }
+.view-tabs button { position: relative; }
+
+.tab-dot {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lime);
+}
+
+/* Curator tab: preset row above the chat. */
+.curator-region { display: flex; flex-direction: column; min-height: 0; }
+.curator-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 2px;
+}
+.curator-region > .chat-pane,
+.curator-region > * { min-height: 0; }
+
 .data-drawer .archive-header { flex: 0 0 auto; }
 .data-drawer-actions { display: flex; gap: 8px; }
 .data-drawer-stamp { color: var(--dim); font-size: var(--fs-meta); font-weight: 400; margin-left: 8px; }

@@ -238,6 +238,36 @@ const demoState: RuntimeState = {
         },
       ],
     },
+    {
+      // Resident curator: lives on its own tab, never draggable, never deletable.
+      id: "curator",
+      title: "Document care",
+      summary: "Rhino document hygiene",
+      status: "idle",
+      mode: "auto",
+      role: "curator",
+      modelProfile: "xhigh",
+      paused: false,
+      boundGrasshopperDocId: null,
+      messages: [
+        {
+          id: "m-c-1",
+          role: "user",
+          content: "Run a full document check-up.",
+          createdAt: minutesAgo(52),
+        },
+        {
+          id: "m-c-2",
+          role: "assistant",
+          content:
+            "Check-up complete (tolerance 0.001 mm). Endpoint gaps: 2 near-miss pairs (largest 0.42 mm) on Facade::Boundary. " +
+            "Near-duplicates: 1 candidate pair on Atrium::Boundary — which copy to keep is your call. " +
+            "Purge candidates: 3 unused block definitions, 1 empty leaf layer. Data ledger: 2 broken references in Atrium_Options.gh. " +
+            "Nothing was changed; tell me which findings to fix.",
+          createdAt: minutesAgo(50),
+        },
+      ],
+    },
   ],
   queue: [
     {
@@ -584,6 +614,11 @@ export function createMockApiClient(): GptinoApiClient {
     },
     async deleteSession(sessionId) {
       await delay();
+      const target = state.sessions.find((session) => session.id === sessionId);
+      if (target?.role === "curator") {
+        // Demo parity with the server's 409: the resident curator is not deletable.
+        throw new Error("The resident curator session cannot be deleted; it is the document-care surface.");
+      }
       const index = state.sessions.findIndex((session) => session.id === sessionId);
       if (index >= 0) {
         const [removed] = state.sessions.splice(index, 1);

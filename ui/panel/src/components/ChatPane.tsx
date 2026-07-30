@@ -694,7 +694,13 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleComposerKey}
             onPaste={handlePaste}
-            placeholder={session.paused ? "Session is paused — resume it to continue" : "Describe the next modeling change…"}
+            placeholder={
+              session.paused
+                ? "Session is paused — resume it to continue"
+                : session.role === "curator"
+                  ? "Describe a document-care task — audit, cleanup, one-shot batch…"
+                  : "Describe the next modeling change…"
+            }
             aria-label="Message GPTino"
             rows={3}
             disabled={session.paused}
