@@ -117,6 +117,12 @@
 
 ## 세션 4 (M4): 데이터 라이브러리 Phase 1 + data_read
 
+**착수 전 필수 (curator 트랙 병행 대응, 2026-07-31 검토)**: 아래 표의 line 앵커는
+curator Phase 0·1a(`05104af`, `abf1bfc`)가 같은 파일(Specs/Dispatcher/Program.cs)에 이미
+추가분을 랜딩해 **stale** — 착수 직전 재검증 필수. 배관 테이블 추가는 curator-plan의
+상호 규칙대로 **항상 목록 끝에 append**. curator 트랙이 같은 파일을 활발히 만지는 중이면
+git worktree로 분리 후 작은 단위로 랜딩.
+
 **산출물** (조사 확정 최소 변경 세트):
 
 | 파일 | 변경 |
