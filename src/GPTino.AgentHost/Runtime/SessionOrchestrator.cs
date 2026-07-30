@@ -306,7 +306,7 @@ public sealed class SessionOrchestrator : IDisposable
                         selection.Model,
                         cancellationToken).ConfigureAwait(false);
                     await _store.SetThreadIdAsync(sessionId, threadId, cancellationToken).ConfigureAwait(false);
-                    await TrySetThreadGoalAsync(threadId, content, cancellationToken).ConfigureAwait(false);
+                    await TrySetThreadGoalAsync(threadId, content, latest.GoalEnabled, cancellationToken).ConfigureAwait(false);
                     content = await PrependImportedContextAsync(sessionId, content, cancellationToken).ConfigureAwait(false);
                 }
                 else
@@ -1275,13 +1275,15 @@ public sealed class SessionOrchestrator : IDisposable
         }
     }
 
-    // C-1: give a new thread Codex's native goal (objective + token budget) so it tracks progress.
-    // OPT-IN: fires only when GoalTokenBudget is configured — Codex's goal-driving behavior is not yet
-    // live-verified, so the default install does not set goals on real sessions. Best-effort either way
-    // (a failure never blocks the turn); done-verification stays with GPTino's acceptance predicates.
-    private async Task TrySetThreadGoalAsync(string threadId, string objective, CancellationToken cancellationToken)
+    // C-1: give a new thread Codex's native goal (objective + optional token budget) so it tracks
+    // progress. OPT-IN per session (the panel's Goal toggle -> SessionRecord.GoalEnabled). Verified in
+    // the codex probe: thread/goal/set is accepted and Codex emits thread/goal/updated while it works;
+    // it does not auto-drive extra turns. Best-effort (a failure never blocks the turn); done-
+    // verification stays with GPTino's acceptance predicates. GoalTokenBudget (config, default null)
+    // is an optional cap passed through when set.
+    private async Task TrySetThreadGoalAsync(string threadId, string objective, bool enabled, CancellationToken cancellationToken)
     {
-        if (_options.GoalTokenBudget is null)
+        if (!enabled)
         {
             return;
         }

@@ -11,7 +11,6 @@ interface SessionCanvasProps {
   unseenIds: ReadonlySet<string>;
   onSelect(id: string): void;
   onReorder(sourceId: string, targetId: string): void;
-  onPauseToggle(id: string, paused: boolean): void;
 }
 
 interface ViewBox {
@@ -36,9 +35,6 @@ const DRAG_THRESHOLD = 6;
    pans (with a right-edge fade cue) instead of shrinking. Double-click toggles
    between this readable default and a fit-everything view. */
 const MIN_READABLE_SCALE = 1;
-/* Extra canvas units above the content in the clamped view so the absolutely
-   positioned toolbar does not cover the first node's title row. */
-const CLAMPED_TOP_HEADROOM = 16;
 
 const truncate = (value: string, max: number) =>
   value.length > max ? `${value.slice(0, max - 1)}…` : value;
@@ -123,7 +119,6 @@ function SessionNode({
   boundDocName,
   onSelect,
   onNodePointerDown,
-  onPauseToggle,
 }: {
   node: GraphNode;
   selected: boolean;
@@ -134,7 +129,6 @@ function SessionNode({
   boundDocName?: string;
   onSelect(id: string): void;
   onNodePointerDown(event: ReactPointerEvent<SVGGElement>, sessionId: string): void;
-  onPauseToggle(id: string, paused: boolean): void;
 }) {
   const session = node.session;
   if (!session) return null;
@@ -159,9 +153,9 @@ function SessionNode({
     >
       <title>{sessionTooltip(node, boundDocName)}</title>
       <rect className="gnode-box" width={node.w} height={node.h} rx={8} />
-      <text className="gnode-rank" x={10} y={20}>{node.rank}</text>
-      <text className="gnode-title" x={30} y={20}>
-        {truncateColumns(session.title, session.terminalOpen ? 20 : node.warning ? 23 : 25)}
+      <text className="gnode-rank" x={8} y={20}>{node.rank}</text>
+      <text className="gnode-title" x={27} y={20}>
+        {truncateColumns(session.title, session.terminalOpen ? 19 : node.warning ? 21 : 23)}
       </text>
       {session.terminalOpen ? (
         <text className="gnode-terminal" x={node.w - 32} y={20}>{"❯_"}</text>
@@ -169,41 +163,15 @@ function SessionNode({
       {node.warning ? (
         <text className="gnode-warning" x={node.w - 13} y={20}>!</text>
       ) : null}
-      <circle className="gnode-status-dot" cx={14} cy={39} r={3.5} />
-      <text className="gnode-status" x={24} y={43}>{session.status}</text>
-      {showUnread ? <circle className="gnode-unread" cx={node.w - 13} cy={39} r={4} /> : null}
-      <text className="gnode-chips" x={10} y={61}>
+      <circle className="gnode-status-dot" cx={13} cy={36} r={4} />
+      <text className="gnode-status" x={23} y={40}>{session.status}</text>
+      {showUnread ? <circle className="gnode-unread" cx={node.w - 13} cy={36} r={4} /> : null}
+      <text className="gnode-chips" x={8} y={57}>
         {truncateColumns(
-          `${session.pinnedModel ?? session.modelProfile} · ${session.mode}${boundDocName ? ` · ${boundDocName}` : ""}`,
-          28,
+          `${session.pinnedModel ?? session.effectiveModel ?? "auto"} · ${session.modelProfile}${boundDocName ? ` · ${boundDocName}` : ""}`,
+          25,
         )}
       </text>
-      {node.sublabel ? (
-        <text className="gnode-sub" x={10} y={77}>{truncateColumns(node.sublabel, 33)}</text>
-      ) : null}
-      {selected ? (
-        <g
-          className="gnode-action"
-          role="button"
-          aria-label={session.paused ? "Resume session" : "Pause session"}
-          onClick={(event) => {
-            event.stopPropagation();
-            onPauseToggle(session.id, !session.paused);
-          }}
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          <title>{session.paused ? "Resume" : "Pause"}</title>
-          <circle cx={node.w - 18} cy={node.h - 13} r={9} />
-          {session.paused ? (
-            <path className="gnode-action-glyph" d={`M ${node.w - 21} ${node.h - 17.5} l 7 4.5 l -7 4.5 Z`} />
-          ) : (
-            <>
-              <line className="gnode-action-glyph" x1={node.w - 20.5} y1={node.h - 17} x2={node.w - 20.5} y2={node.h - 9} />
-              <line className="gnode-action-glyph" x1={node.w - 15.5} y1={node.h - 17} x2={node.w - 15.5} y2={node.h - 9} />
-            </>
-          )}
-        </g>
-      ) : null}
     </g>
   );
 }
@@ -263,7 +231,7 @@ function DocNode({ node }: { node: GraphNode }) {
       </text>
       <text className="gnode-title" x={50} y={node.detail ? 22 : 30}>{node.label}</text>
       <text className="gnode-sub" x={50} y={node.detail ? 36 : 46}>
-        {truncateColumns(node.sublabel ?? "", 24)}
+        {truncateColumns(node.sublabel ?? "", 21)}
       </text>
       {node.detail ? (
         <text className="gnode-detail" x={50} y={51}>{truncate(node.detail, 22)}</text>
@@ -278,7 +246,6 @@ export function SessionCanvas({
   unseenIds,
   onSelect,
   onReorder,
-  onPauseToggle,
 }: SessionCanvasProps) {
   const model = useMemo(() => deriveGraph(runtime), [runtime]);
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
@@ -333,11 +300,11 @@ export function SessionCanvas({
     if (containerSize) {
       const fitScale = Math.min(containerSize.w / model.width, containerSize.h / model.height);
       if (fitScale < MIN_READABLE_SCALE) {
-        // Anchor top-left (with toolbar headroom) so the session column and the
-        // first node's title stay visible; pan right/down for the rest.
+        // Anchor top-left so the session column and the first node's title stay
+        // visible; pan right/down for the rest.
         const w = containerSize.w / MIN_READABLE_SCALE;
         const h = containerSize.h / MIN_READABLE_SCALE;
-        return { x: 0, y: -CLAMPED_TOP_HEADROOM, w, h };
+        return { x: 0, y: 0, w, h };
       }
     }
     return fullFit;
@@ -536,7 +503,6 @@ export function SessionCanvas({
           }
           onSelect={onSelect}
           onNodePointerDown={handleNodePointerDown}
-          onPauseToggle={onPauseToggle}
         />
       ))}
       {sessionNodes.length === 0 ? (

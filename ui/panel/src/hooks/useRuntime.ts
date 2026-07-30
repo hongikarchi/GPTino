@@ -205,6 +205,13 @@ export function useRuntime() {
           (activeClient) => activeClient.setSessionModel(sessionId, modelProfile, model),
         );
       },
+      setGoal(sessionId: string, enabled: boolean) {
+        return runAction(
+          `goal:${sessionId}`,
+          updateSession(sessionId, (session) => ({ ...session, goalEnabled: enabled })),
+          (activeClient) => activeClient.setSessionGoal(sessionId, enabled),
+        );
+      },
       async sendMessage(sessionId: string, content: string, attachments?: MessageAttachment[]) {
         const clientMessageId = crypto.randomUUID();
         const createdAt = new Date().toISOString();
@@ -272,9 +279,6 @@ export function useRuntime() {
       },
       openLoginTerminal() {
         return runAction("login-terminal", undefined, (activeClient) => activeClient.openLoginTerminal());
-      },
-      stopCurrent() {
-        return runAction("stop-current", undefined, (activeClient) => activeClient.stopCurrent());
       },
       listArchive,
       readArchiveMessages,

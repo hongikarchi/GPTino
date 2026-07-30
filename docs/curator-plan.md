@@ -6,10 +6,13 @@
 
 ## 확정 결정
 
-- **curator 비서 = UI는 별도 탭, 실체는 세션.** 탭은 표현 계층(스킨)이고, 실제 동작은
-  다른 세션 카드와 똑같이 curator role 세션이 단일 작성자 브로커를 통과한다.
-  브로커 게이트·fingerprint CAS·acceptance predicate·undo record·managed history를
-  전부 그대로 상속한다.
+- **curator 비서 = UI는 별도 탭, 실체는 세션.** 여기서 "탭"은 **기존 GPTino 패널(Rhino
+  도킹 WebView) 안의 뷰 전환**이다 — Rhino 패널이 하나 더 생기는 것이 아니라, 지금
+  패널 헤더 바로 아래에 [Model | 비서] 전환 바가 붙고 같은 화면 안에서 뷰가 바뀐다.
+  전환해도 연결·세션·상태는 그대로다(하나의 RuntimeState 스냅샷을 두 뷰가 다르게
+  투영할 뿐). 탭은 표현 계층(스킨)이고, 실제 동작은 다른 세션 카드와 똑같이 curator
+  role 세션이 단일 작성자 브로커를 통과한다. 브로커 게이트·fingerprint CAS·acceptance
+  predicate·undo record·managed history를 전부 그대로 상속한다.
 - **기본 제공 세션**: Rhino 문서(파일 페어)당 curator 세션 1개. 삭제 불가, 역할 고정,
   GH doc 바인딩 없음(`target:"rhino"`), 우선순위는 드래그 목록 밖(기본 최하위 +
   작업별 "run next" 부스트). UI에는 항상 존재하는 것처럼 보이되 세션 레코드/codex
@@ -52,6 +55,8 @@
    내는 침묵 실패.
 5. **사람 지오메트리 보호**: GPTino가 만들지 않은 객체(provenance 유저스트링 없음)에
    대한 파괴적 op는 승인 grant 없이는 브로커가 거부 — "human wins"의 첫 집행 코드.
+6. **원터치 버튼**: 자주 쓰는 정리 작업(검진·purge·스키마 적용…)이 비서 탭 상단에
+   스트림덱처럼 버튼으로 놓이고, 자주 쓰는 요청을 직접 버튼으로 저장할 수 있다.
 
 ---
 
@@ -94,8 +99,11 @@
   파라메트릭 모델링 요청은 GH 세션으로 리다이렉트. plan 모드가 계획한 지시문 주입
   패턴 그대로(리빌드 없이 실험 가능).
 - 상주 세션: 확정 결정대로(삭제 불가·역할 고정·최하위 우선순위·lazy 생성).
-  role=curator는 high-assurance 라우팅 floor를 결정론적으로 적용(현재 delete/bake
-  키워드 스니핑보다 강한 신호).
+  ~~role=curator에 high-assurance 라우팅 floor 적용~~ → **(2026-07-30 갱신)** 어댑티브
+  라우팅이 제거되고(#48, c75c340·ba9fed1) 세션 reasoning effort를 직접 쓰는 체제로
+  바뀌었다. curator는 **세션 생성 시 기본 effort/모델을 상향 고정**하는 것으로 같은
+  목적을 달성한다 — 파괴적 작업 전담 세션이므로 세션 수준 고정이 키워드 스니핑보다
+  애초에 정확하다.
 - `rhino.audit` (읽기 전용, 공유 read 게이트 — rhino_list와 같은 클래스):
   `{kind, tolerance?, bandFactor?, layerScope?, typeScope?, cursor?, limit≤100}` →
   `{findings[{findingId, objectIds, fingerprints, measure, proposedFixes}], docTolerance,
@@ -111,6 +119,26 @@
   - 모든 finding은 fingerprint를 동봉 — 이후 수선 ChangeSet이 "감사한 그 상태"에 CAS로
     고정된다. tolerance·units를 항상 결과에 명시(같은 값이 predicate에도 쓰여야 함).
   - UI 스레드 인질 방지: 커서 페이징 + 청크당 시간 예산(45초 브리지 포기 모드 회피).
+- **기능 버튼 줄 (스트림덱, 사용자 확정)**: 비서 탭 상단에 프리셋 버튼 줄 —
+  검진 · gap 수선 · 중복 정리 · Purge · 레이어 스키마 · 배치…. 버튼 클릭은 채팅 타이핑이
+  아니라 해당 작업 카드를 파라미터 프리필 상태로 여는 것(→ 승인 카드와 같은 카드
+  시스템). 채팅은 자유형 요청용으로 병존. 기능 발견성 문제("role 드롭다운으로는 아무도
+  중복 탐지 기능을 못 배운다")의 해법.
+  - **사용자 정의 버튼**: 자주 쓰는 요청을 "버튼으로 저장" — 프로젝트 컨텍스트 폴더
+    (LocalAppData)에 저장, 프로젝트→개인 스코프는 roadmap #4 템플릿 스코프 모델과 정렬.
+    사용 빈도 기반 자동 제안은 roadmap #5 사용 데이터 파이프라인과의 후속 접점.
+  - 버튼의 실체는 curator 세션에 보내는 사전 구성된 턴(작업 kind + 파라미터)이다 —
+    브로커 우회 실행 버튼이 아니다. 파괴적 작업은 버튼으로 시작해도 동일하게
+    audit→카드→grant 경로를 지난다.
+- **Named scope 세트 (사용자 요청의 변형, 2026-07-30 추가)**: Rhino 네이티브 Named
+  Selection은 RhinoCommon 공개 API가 없다(Rhino 7에서 도입됐지만 2024-08 기준 미공개,
+  McNeel "v9 예정" 답변 상태, RH-57938; 저장은 객체 UserData의 비공개 포맷). 비공개
+  포맷 파싱은 포맷 변경에 취약해 직접 통합은 보류하고, **기존 유저스트링 인프라로 자체
+  세트를 구현**한다: `GPTino.NamedSet:<name>` 스탬프 — 멤버십 부여는 기존
+  UpdateRhinoAttributes(→rhino.upsert) 재사용이라 신규 mutation 불필요, rhino_list에
+  유저스트링 필터만 확장. 용도: audit/수선 **범위 지정**("'facade' 세트만 검진"),
+  GH 참조 입력("'facade' 세트를 GH로 참조해줘"), 데이터 뷰에서 삭제된 멤버 표시
+  (끊어진 참조와 동일 패턴). 네이티브 API가 공개되면 그때 동기화를 후속으로.
 - 탭 셸(UI 스킨 체크리스트):
   - 헤더·에러/pause 배너·conflict drawer는 탭 바 **위**에서 공유. 헤더에 writer 칩
     ("writer: curator → purge (r124)") 추가.
@@ -185,6 +213,14 @@
 - 스키마 적용 플로: `audit(kind=layerSchema)` → 카드 승인 → ensureLayer(부족한 레이어
   생성) + moveObjectsToLayer 배치. 스키마 정의는 프로젝트 컨텍스트 폴더(LocalAppData)의
   파일로 — rules.md와 같은 위치.
+- **Layer State (사용자 요청, 2026-07-30 추가)**: `RhinoDoc.NamedLayerStates` 공식
+  API(Save/Restore/Delete/FindName/Rename/Import + LayerStateSettings로 복원할 속성
+  선택)를 typed op으로 노출 — `rhino.listLayerStates / saveLayerState / restoreLayerState`.
+  두 용도: (a) **안전장치** — 레이어 재편·스키마 적용 전 자동 스냅샷
+  ("GPTino: before-schema") 저장, 실패·불만 시 원클릭 복원 카드; (b) **기능** —
+  "작업용 상태 / 발표용 상태" 같은 프리셋 버튼과 결합. 복원 검증은 listLayers 재열람으로
+  저장분과 대조(결정론적). 복원 = 레이어 속성 대량 변경이므로 레이어 fingerprint 재작성
+  이벤트로 취급(객체 fingerprint는 무관 — 객체 속성은 건드리지 않음).
 
 ### Phase 6 — 블록 인스턴스 + 일회성 배치 (중)
 
@@ -217,12 +253,48 @@
 | mutation | `rhino.purgeTableEntries` | 4 | 실행 시점 미사용 재검증 |
 | mutation | `rhino.updateLayer` / `rhino.deleteLayer` | 5 | v1 rename/re-parent 제외 |
 | mutation | `rhino.createInstance` | 6 | AddInstanceObject |
+| read | `rhino.listLayerStates` | 5 | NamedLayerStates 공식 API |
+| mutation | `rhino.saveLayerState` / `rhino.restoreLayerState` | 5 | 복원 검증 = listLayers 대조 |
+| 재사용 | named scope 세트 (`GPTino.NamedSet:<name>` 유저스트링) | 2 | 기존 upsert/list 재사용, 신규 op 없음 |
 | 정책 | provenance default-deny + approvalGrant | 3 | 첫 파괴적 op 전 필수 |
 
 규모 추정(기술 검증 기준): 브로커/어댑터 ~2.5–4k LOC(테스트 포함, wireify 마이그레이션
 1개 웨이브급) + 패널 UI(탭 셸·카드·데이터 레이어) 별도. op 1개당 7개 레이어 관통
 (BridgeMessages → adapter interface → handler → RhinoSceneFoundationAdapter →
 LiveDocumentBackend 검증/predicate 테이블 → DynamicToolSpecs → operation-contract.md → 테스트).
+
+## 병행 개발 충돌 관리 (2026-07-30 추가)
+
+이 계획을 작성하는 동안에도 다른 세션이 세션 경로·패널 파일을 변경했다(effort 슬라이더
+e4f2b34, 어댑티브 라우팅 제거 c75c340·ba9fed1) — 위 라우팅 참조 1건이 실제로 stale이
+되어 갱신했다. 병행 세션 환경에서 지킬 것:
+
+**충돌 표면 (핫파일 — 다른 트랙도 상시 건드리는 공유 파일)**:
+- 백엔드 세션 경로: `Program.cs`, `Runtime/SessionOrchestrator.cs`,
+  `Runtime/RuntimeStateProjector.cs`, `Data/SessionStore.cs`, `Api/ApiModels.cs`
+  → **Phase 0의 대상 파일들과 정확히 일치.**
+- op 배관 테이블: `Codex/DynamicToolSpecs.cs`, `Runtime/LiveDocumentBackend.cs`(검증/
+  predicate 테이블), 브리지 핸들러 스위치 — op을 추가하는 모든 트랙이 여기서 만난다.
+- 패널: `App.tsx`, `ChatPane.tsx`, `types.ts`, `client.ts`, `mock.ts`, `styles.css`
+  → Phase 2 탭 셸의 대상이자 최근 커밋이 건드린 파일들.
+
+**전용 영역 (위험 낮음)**: `GPTino.Rhino` 어댑터(audit 분석기 포함 신규 파일),
+`assets/instructions/curator.md`, 신규 UI 컴포넌트 파일, `GPTino.Grasshopper`의
+listReferencedRhinoIds 추가분.
+
+**수칙**:
+1. **한 트리 한 세션** — 여러 dev 세션이 같은 체크아웃에서 코드를 만지면 git 충돌
+   이전에 미커밋 변경을 서로 덮어쓴다(git은 경고조차 못 한다). 동시 진행 시 git
+   worktree로 분리.
+2. 착수 직전 `git pull` + `git log` 최신화, **계획 문서의 파일:라인·클래스 참조 재검증**
+   (이 문서의 라우팅 건이 선례).
+3. phase보다 작은 단위(op 하나, 계약 변경 하나)로 자주 랜딩 — 오래 사는 diff 금지.
+4. 배관 테이블 추가는 항상 목록 끝에 append(텍스트 충돌 최소화).
+5. Phase 0은 세션 경로가 조용한 시점에 신속 랜딩. Phase 2 탭 셸은 "뷰 전환만" 최소
+   diff로 먼저 랜딩한 뒤 내용을 채운다.
+6. 계획·문서 변경도 바로 커밋 — 미커밋 문서가 공유 트리에 머무는 것 자체가 충돌 표면.
+7. structural-analysis(Karamba) 트랙과는 도메인이 분리(GH vs Rhino 어댑터)되어 위험이
+   낮지만, 그 트랙이 op을 추가하면 같은 배관 테이블에서 만난다 — 상호 append 규칙 준수.
 
 ## 검증 방법
 
@@ -270,4 +342,6 @@ LiveDocumentBackend 검증/predicate 테이블 → DynamicToolSpecs → operatio
 - 레이어 rename/re-parent(하위 FullPath 재작성 파급 — 영향 분석과 함께 v2).
 - 자동 victim 선택(중복 병합은 항상 사람 triage).
 - 잡 단위 단일 undo(undo 계약 리팩터링과 함께 후속).
+- Rhino 네이티브 Named Selection 패널과의 상호운용(RhinoCommon 공개 API 부재, RH-57938 —
+  공개 시 자체 named set과 동기화 검토).
 - GH 캔버스 janitor(roadmap #6)는 이 플랜의 카드/승인 인프라를 재사용하되 별도 트랙.

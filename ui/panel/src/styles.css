@@ -94,7 +94,7 @@ textarea:disabled {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 9px 14px;
   border-bottom: 1px solid var(--border);
   background: rgb(15 18 19 / 0.94);
@@ -133,7 +133,7 @@ textarea:disabled {
 }
 
 .project-name-row h1 {
-  margin: 0 0 3px;
+  margin: 0;
   overflow: hidden;
   color: #f2f3f2;
   font-size: var(--fs-title);
@@ -156,73 +156,34 @@ textarea:disabled {
   letter-spacing: 0.07em;
 }
 
-.file-pair {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 6px;
-  color: var(--dim);
-  font-family: var(--mono);
-  font-size: var(--fs-meta);
-}
-
-.file-pair span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-pair b {
-  color: var(--muted);
-  font-weight: 400;
-}
-
-.file-pair svg {
-  width: 12px;
-  flex: 0 0 auto;
-}
-
-.context-chip {
-  flex: 0 0 auto;
-  padding: 1px 7px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--dim);
-  background: var(--surface-2);
-  font-family: var(--mono);
-  font-size: var(--fs-micro);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  cursor: copy;
-}
-
-.context-chip:hover { color: var(--lime); border-color: #526334; }
-
 .runtime-summary {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px 14px;
+  gap: 14px;
 }
 
-.revision-block {
-  padding-right: 12px;
-  border-right: 1px solid var(--border);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: var(--fs-sec);
-  white-space: nowrap;
+/* Second header row: session-level controls. Graph toggle and + Session on the
+   left, the archive-ish overlays (Deleted trash, Past sessions) on the right. */
+.session-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
 }
 
-.revision-block b {
-  color: var(--dim);
-  font-size: var(--fs-micro);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-toolbar .secondary-button {
+  min-height: 26px;
+  padding: 0 10px;
 }
 
 .connection-state {
@@ -496,6 +457,22 @@ button.llm-auth:hover strong {
 }
 .chat-delete:hover:not(:disabled) { background: rgba(200, 80, 80, 0.16); }
 .chat-delete:disabled { opacity: 0.5; cursor: default; }
+
+/* Escape hatch for sessions persisted in the paused state — the composer is
+   disabled while paused, so this is the one control that wakes them. */
+.chat-resume {
+  flex: none;
+  align-self: center;
+  padding: 4px 10px;
+  font-size: var(--fs-micro, 10px);
+  color: var(--lime);
+  background: rgb(183 225 102 / 0.08);
+  border: 1px solid rgb(183 225 102 / 0.35);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.chat-resume:hover:not(:disabled) { background: rgb(183 225 102 / 0.16); }
+.chat-resume:disabled { opacity: 0.5; cursor: default; }
 
 .deleted-session-row {
   display: flex;
@@ -881,6 +858,24 @@ button.llm-auth:hover strong {
   font-weight: 600;
 }
 
+.goal-toggle {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--dim);
+  background: var(--surface-2);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.goal-toggle.on {
+  color: #17200d;
+  border-color: #5f7935;
+  background: var(--lime);
+}
+
 .effective-model {
   min-width: 0;
   margin-left: auto;
@@ -1064,7 +1059,6 @@ button.llm-auth:hover strong {
   height: 13px;
 }
 
-.secondary-button.resume { color: var(--lime); }
 .danger-button { color: #eaa39b; border-color: rgb(225 111 98 / 0.28); background: rgb(225 111 98 / 0.07); }
 .danger-button:hover { color: #ffc4bd; border-color: rgb(225 111 98 / 0.5); }
 
@@ -1106,46 +1100,8 @@ button.llm-auth:hover strong {
   background: #0c0e0f;
 }
 
-/* Collapsed: the node graph is hidden and the row shrinks to just the toolbar, reclaiming
-   vertical space for the chat. The toolbar stays reachable (the ▸ Graph toggle re-expands). */
-.canvas-row.collapsed {
-  height: auto;
-  min-height: 44px;
-}
-
-.canvas-toolbar {
-  position: absolute;
-  top: 10px;
-  left: 12px;
-  right: 12px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 6px;
-  pointer-events: none;
-}
-
-.canvas-toolbar > * {
-  pointer-events: auto;
-}
-
-.canvas-global-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.canvas-global-actions .secondary-button,
-.canvas-global-actions .danger-button {
-  min-height: 28px;
-  padding: 0 9px;
-  background: rgb(18 21 22 / 0.82);
-  backdrop-filter: blur(6px);
-}
-
 .new-session-button {
-  height: 28px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1153,11 +1109,10 @@ button.llm-auth:hover strong {
   border: 1px solid #526334;
   border-radius: 6px;
   color: var(--lime);
-  background: rgb(18 21 22 / 0.82);
+  background: var(--surface-2);
   font-size: var(--fs-meta);
   font-weight: 600;
   cursor: pointer;
-  backdrop-filter: blur(6px);
 }
 
 .new-session-button span {
@@ -1166,21 +1121,20 @@ button.llm-auth:hover strong {
   line-height: 1;
 }
 
-/* New-session popover — anchored under the + Session button. */
-
-.new-session-anchor {
-  position: relative;
-}
+/* New-session popover. The anchor div is deliberately NOT positioned: the
+   popover resolves against the header (position: relative), opening just below
+   it at the toolbar's left edge — so it can never clip past a narrow docked
+   panel's viewport the way a 236px box anchored to the ~80px button could. */
 
 .new-session-popover {
   position: absolute;
   top: calc(100% + 6px);
-  left: 0;
+  left: 12px;
   z-index: 20;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 236px;
+  width: min(236px, calc(100vw - 24px));
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1360,18 +1314,12 @@ button.llm-auth:hover strong {
 .gnode-session.dragging { opacity: 0.85; }
 .gnode-session.dragging .gnode-box { stroke: var(--cyan); stroke-dasharray: 4 4; }
 
-.gnode-action { cursor: pointer; pointer-events: all; }
-.gnode-action circle { fill: var(--surface-3); stroke: var(--border); stroke-width: 1; }
-.gnode-action:hover circle { stroke: var(--lime); }
-.gnode-action-glyph { fill: var(--muted); stroke: var(--muted); stroke-width: 1.4; stroke-linecap: round; }
-.gnode-action:hover .gnode-action-glyph { fill: var(--lime); stroke: var(--lime); }
-
 .gnode text { user-select: none; pointer-events: none; }
-.gnode-rank { fill: var(--dim); font-family: var(--mono); font-size: 10.5px; }
-.gnode-title { fill: #f2f3f2; font-size: 13px; font-weight: 600; }
-.gnode-terminal { fill: var(--lime); font-family: var(--mono); font-size: 10px; }
-.gnode-warning { fill: var(--red); font-size: 13px; font-weight: 800; }
-.gnode-status { fill: var(--muted); font-family: var(--mono); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
+.gnode-rank { fill: var(--dim); font-family: var(--mono); font-size: 11px; }
+.gnode-title { fill: #f2f3f2; font-size: 14px; font-weight: 600; }
+.gnode-terminal { fill: var(--lime); font-family: var(--mono); font-size: 11px; }
+.gnode-warning { fill: var(--red); font-size: 14px; font-weight: 800; }
+.gnode-status { fill: var(--muted); font-family: var(--mono); font-size: 11.5px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
 .gnode-status-dot { fill: var(--dim); }
 .gnode-session.status-working .gnode-status-dot,
 .gnode-session.status-drafting .gnode-status-dot,
@@ -1379,8 +1327,8 @@ button.llm-auth:hover strong {
 .gnode-session.status-queued .gnode-status-dot { fill: var(--cyan); }
 .gnode-session.status-paused .gnode-status-dot { fill: var(--amber); }
 .gnode-session.status-blocked .gnode-status-dot { fill: var(--red); }
-.gnode-chips { fill: var(--muted); font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
-.gnode-sub { fill: var(--dim); font-size: 10.5px; }
+.gnode-chips { fill: var(--muted); font-family: var(--mono); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.gnode-sub { fill: var(--dim); font-size: 11.5px; }
 
 .gnode-orchestrator .gnode-box {
   fill: #14181a;
@@ -1900,15 +1848,8 @@ button.llm-auth:hover strong {
 @media (max-width: 760px) {
   .canvas-row { height: 190px; }
   .document-header {
-    grid-template-columns: auto 1fr;
-    gap: 10px;
+    gap: 7px 10px;
     padding: 8px 12px;
-  }
-  .runtime-summary {
-    grid-column: 1 / -1;
-    justify-content: space-between;
-    padding-top: 7px;
-    border-top: 1px solid var(--border-soft);
   }
   .chat-stream { padding: 14px 12px; }
   .message { width: 94%; }

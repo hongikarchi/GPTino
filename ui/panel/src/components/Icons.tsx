@@ -10,9 +10,7 @@ export type IconName =
   | "history"
   | "paperclip"
   | "pause"
-  | "play"
   | "send"
-  | "stop"
   | "terminal"
   | "warning";
 
@@ -48,9 +46,7 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M16 5v14" />
     </>
   ),
-  play: <path d="m8 5 11 7-11 7Z" />,
   send: <path d="m4 4 16 8-16 8 3-8Zm3 8h13" />,
-  stop: <rect x="6" y="6" width="12" height="12" rx="1" />,
   terminal: (
     <>
       <path d="m5 7 4 4-4 4" />

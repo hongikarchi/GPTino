@@ -28,6 +28,8 @@ export interface GptinoApiClient {
   setSessionTarget(sessionId: string, grasshopperDoc: string | null): Promise<void>;
   setSessionMode(sessionId: string, mode: SessionMode): Promise<void>;
   setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
+  /** Toggle the session's native Codex thread goal (objective + budget) on/off. */
+  setSessionGoal(sessionId: string, enabled: boolean): Promise<void>;
   sendMessage(sessionId: string, request: MessageRequest): Promise<void>;
   /** Soft-delete: hide from the active list, recoverable from the trash. */
   deleteSession(sessionId: string): Promise<void>;
@@ -38,7 +40,6 @@ export interface GptinoApiClient {
   openTerminal(sessionId: string): Promise<void>;
   openLoginTerminal(): Promise<void>;
   setRuntimePaused(paused: boolean): Promise<void>;
-  stopCurrent(): Promise<void>;
   listArchive(): Promise<ArchiveProject[]>;
   readArchiveMessages(fingerprint: string, sessionId: string, limit?: number): Promise<ArchiveMessage[]>;
   /** Fork an archived session into the current project as a new live session (new thread, seeded context). */
@@ -202,6 +203,13 @@ class HttpApiClient implements GptinoApiClient {
     });
   }
 
+  setSessionGoal(sessionId: string, enabled: boolean): Promise<void> {
+    return this.request(`/sessions/${encodeURIComponent(sessionId)}/goal`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
   sendMessage(sessionId: string, request: MessageRequest): Promise<void> {
     return this.request(`/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: "POST",
@@ -240,10 +248,6 @@ class HttpApiClient implements GptinoApiClient {
       method: "PUT",
       body: JSON.stringify({ paused }),
     });
-  }
-
-  stopCurrent(): Promise<void> {
-    return this.request("/runtime/stop-current", { method: "POST" });
   }
 
   listArchive(): Promise<ArchiveProject[]> {

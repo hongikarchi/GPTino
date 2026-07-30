@@ -60,7 +60,7 @@ export interface GraphModel {
 }
 
 const SESSION_W = 208;
-const SESSION_H = 86;
+const SESSION_H = 66;
 const SESSION_X = 24;
 const SESSION_GAP = 14;
 const ORCH_W = 210;

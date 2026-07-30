@@ -71,6 +71,7 @@ export interface GptinoSession {
   mode: SessionMode;
   modelProfile: ModelProfile;
   pinnedModel?: string | null;
+  goalEnabled?: boolean;
   backend?: string;
   effectiveModel?: string;
   reasoning?: string;

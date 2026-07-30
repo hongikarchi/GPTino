@@ -21,7 +21,10 @@ public sealed record SessionRecord(
     string? CurrentTask,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    string? GrasshopperDoc = null);
+    string? GrasshopperDoc = null,
+    // Opt-in: when true, the session's Codex thread gets a native goal (objective + optional budget)
+    // via thread/goal/set. Off by default.
+    bool GoalEnabled = false);
 
 public sealed record ChatMessage(
     long Id,
@@ -39,7 +42,8 @@ public sealed record CreateSessionRequest(
     // the model's supported efforts at turn time).
     string ModelProfile = "xhigh",
     string? Model = null,
-    string? GrasshopperDoc = null);
+    string? GrasshopperDoc = null,
+    bool GoalEnabled = false);
 
 /// <summary>
 /// Rebinds a session to one Grasshopper document (a durable docKey) or clears the binding (null =
@@ -64,6 +68,8 @@ public sealed record SetPausedRequest(bool Paused);
 public sealed record SetModeRequest(string Mode);
 
 public sealed record SetModelRequest(string ModelProfile, string? Model = null);
+
+public sealed record SetGoalRequest(bool Enabled);
 
 public sealed record RuntimeStatus(
     string State,

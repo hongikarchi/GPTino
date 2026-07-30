@@ -372,6 +372,17 @@ api.MapPut("/sessions/{id:guid}/model", async (
     return Results.NoContent();
 });
 
+api.MapPut("/sessions/{id:guid}/goal", async (
+    Guid id,
+    SetGoalRequest request,
+    SessionStore sessionStore,
+    CancellationToken cancellationToken) =>
+{
+    await sessionStore.SetGoalEnabledAsync(id, request.Enabled, cancellationToken);
+    events.Publish();
+    return Results.NoContent();
+});
+
 // Soft-delete: hide from the active list but keep everything, so it can be restored.
 api.MapDelete("/sessions/{id:guid}", async (
     Guid id,

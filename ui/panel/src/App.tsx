@@ -162,7 +162,9 @@ export default function App() {
     });
   const newSessionAnchorRef = useRef<HTMLDivElement | null>(null);
 
-  // Esc or a press outside the + Session button / popover closes it.
+  // Esc or a press outside the + Session button / popover closes it. Capture
+  // phase, because canvas nodes call stopPropagation() on pointerdown — a
+  // bubble listener would never see those presses.
   useEffect(() => {
     if (!newSessionOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
@@ -174,10 +176,10 @@ export default function App() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setNewSessionOpen(false);
     };
-    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("pointerdown", handlePointerDown, true);
     document.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [newSessionOpen]);
@@ -226,7 +228,6 @@ export default function App() {
 
   const selected = runtime.sessions.find(({ id }) => id === selectedId);
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
-  const multiGh = ghDocs != null && ghDocs.length > 1;
 
   return (
     <div className="app-shell">
@@ -235,42 +236,12 @@ export default function App() {
 
         <div className="project-lockup">
           <div className="project-name-row">
-            <h1>{runtime.projectName}</h1>
+            <h1 title={runtime.rhinoFile}>{runtime.projectName}</h1>
             {demo ? <span className="demo-chip">Demo</span> : null}
-          </div>
-          <div className="file-pair">
-            <span title={runtime.rhinoFile}>R <b>{shortFile(runtime.rhinoFile)}</b></span>
-            <Icon name="chevron" />
-            {multiGh ? (
-              <span title={ghDocs.map(({ file }) => file).join("\n")}>GH <b>×{ghDocs.length}</b></span>
-            ) : (
-              <span title={runtime.grasshopperFile}>GH <b>{shortFile(runtime.grasshopperFile)}</b></span>
-            )}
-            {runtime.contextFolder ? (
-              <button
-                type="button"
-                className="context-chip"
-                title={`Project context folder (rules.md, MEMORY.md) — click to copy path\n${runtime.contextFolder}`}
-                onClick={() => {
-                  void navigator.clipboard?.writeText(runtime.contextFolder!).catch(() => undefined);
-                }}
-              >
-                context
-              </button>
-            ) : null}
           </div>
         </div>
 
         <div className="runtime-summary">
-          <div
-            className="revision-block"
-            title={
-              "Live: document revision — increments each time a committed change is applied to the live Rhino/Grasshopper document.\n" +
-              "Git: managed history commit — a git-backed provenance trail of every verified change, reviewable and rollbackable."
-            }
-          >
-            <b>live</b> r{runtime.revision} · <b>git</b> {runtime.gitRevision == null ? "—" : `#${runtime.gitRevision}`}
-          </div>
           <div
             className={`connection-state health-${runtime.health}`}
             title={runtime.healthDetail ?? "Document runtime"}
@@ -285,15 +256,62 @@ export default function App() {
               onLogin={() => void actions.openLoginTerminal()}
             />
           ) : null}
-          <button
-            type="button"
-            className="history-button"
-            onClick={() => setArchiveOpen(true)}
-            title="Browse what earlier GPTino sessions did — every project data root on this machine, read-only"
-          >
-            <Icon name="history" />
-            Past sessions
-          </button>
+        </div>
+
+        <div className="session-toolbar">
+          <div className="toolbar-group">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={toggleCanvas}
+              aria-expanded={!canvasCollapsed}
+              title={canvasCollapsed ? "Show the session graph" : "Collapse the session graph"}
+            >
+              {canvasCollapsed ? `▸ Graph (${runtime.sessions.length})` : "▾ Graph"}
+            </button>
+            <div className="new-session-anchor" ref={newSessionAnchorRef}>
+              <button
+                type="button"
+                className="new-session-button"
+                onClick={() => setNewSessionOpen((open) => !open)}
+                disabled={busyActions.has("create-session")}
+                aria-expanded={newSessionOpen}
+              >
+                <span>+</span> Session
+              </button>
+              {newSessionOpen ? (
+                <NewSessionPopover
+                  suggestedName={`Session ${runtime.sessions.length + 1}`}
+                  docs={ghDocs ?? []}
+                  defaultDocId={selected?.boundGrasshopperDocId ?? undefined}
+                  busy={busyActions.has("create-session")}
+                  onCreate={(name, grasshopperDoc) => {
+                    setNewSessionOpen(false);
+                    void actions.createSession(name, grasshopperDoc);
+                  }}
+                />
+              ) : null}
+            </div>
+          </div>
+          <div className="toolbar-group">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setTrashOpen(true)}
+              title="Restore or permanently remove deleted sessions"
+            >
+              Deleted
+            </button>
+            <button
+              type="button"
+              className="history-button"
+              onClick={() => setArchiveOpen(true)}
+              title="Browse what earlier GPTino sessions did — every project data root on this machine, read-only"
+            >
+              <Icon name="history" />
+              Past sessions
+            </button>
+          </div>
         </div>
       </header>
 
@@ -357,82 +375,17 @@ export default function App() {
         </>
       ) : null}
 
-      <section className={`canvas-row${canvasCollapsed ? " collapsed" : ""}`} aria-label="Session graph">
-        {canvasCollapsed ? null : (
+      {canvasCollapsed ? null : (
+        <section className="canvas-row" aria-label="Session graph">
           <SessionCanvas
             runtime={runtime}
             selectedId={selectedId}
             unseenIds={completion.unseen}
             onSelect={setSelectedId}
             onReorder={actions.reorder}
-            onPauseToggle={(id, paused) => void actions.pauseSession(id, paused)}
           />
-        )}
-        <div className="canvas-toolbar">
-          <div className="new-session-anchor" ref={newSessionAnchorRef}>
-            <button
-              type="button"
-              className="new-session-button"
-              onClick={() => setNewSessionOpen((open) => !open)}
-              disabled={busyActions.has("create-session")}
-              aria-expanded={newSessionOpen}
-            >
-              <span>+</span> Session
-            </button>
-            {newSessionOpen ? (
-              <NewSessionPopover
-                suggestedName={`Session ${runtime.sessions.length + 1}`}
-                docs={ghDocs ?? []}
-                defaultDocId={selected?.boundGrasshopperDocId ?? undefined}
-                busy={busyActions.has("create-session")}
-                onCreate={(name, grasshopperDoc) => {
-                  setNewSessionOpen(false);
-                  void actions.createSession(name, grasshopperDoc);
-                }}
-              />
-            ) : null}
-          </div>
-          <div className="canvas-global-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={toggleCanvas}
-              aria-expanded={!canvasCollapsed}
-              title={canvasCollapsed ? "Show the session graph" : "Collapse the session graph"}
-            >
-              {canvasCollapsed ? `▸ Graph (${runtime.sessions.length})` : "▾ Graph"}
-            </button>
-            <button
-              type="button"
-              className={`secondary-button ${runtime.paused ? "resume" : ""}`}
-              onClick={() => void actions.pauseRuntime(!runtime.paused)}
-              disabled={busyActions.has("pause-runtime")}
-              title={runtime.paused ? "Resume every session" : "Pause every session at its next safe boundary"}
-            >
-              <Icon name={runtime.paused ? "play" : "pause"} />
-              {runtime.paused ? "Resume all" : "Pause all"}
-            </button>
-            <button
-              type="button"
-              className="danger-button"
-              onClick={() => void actions.stopCurrent()}
-              disabled={!runtime.writer || busyActions.has("stop-current")}
-              title="Stop the live single-writer transaction at its next safe boundary"
-            >
-              <Icon name="stop" />
-              Stop current
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setTrashOpen(true)}
-              title="Restore or permanently remove deleted sessions"
-            >
-              Deleted
-            </button>
-          </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       <main className="chat-region">
         <ChatPane
@@ -444,12 +397,14 @@ export default function App() {
           onMode={(mode) => selected && void actions.setMode(selected.id, mode)}
           onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
           onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
+          onGoal={(enabled) => selected && void actions.setGoal(selected.id, enabled)}
           onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
           onSend={(content, attachments) => {
             if (!selected) return undefined;
             requestNotifyPermissionOnce();
             return actions.sendMessage(selected.id, content, attachments);
           }}
+          onResume={() => selected && void actions.pauseSession(selected.id, false)}
           onDelete={() => {
             if (!selected) return;
             const deletedId = selected.id;

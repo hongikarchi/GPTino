@@ -523,6 +523,12 @@ export function createMockApiClient(): GptinoApiClient {
         if (model) state.sessions[index].effectiveModel = model;
       });
     },
+    async setSessionGoal(sessionId, enabled: boolean) {
+      await delay();
+      mutateSession(sessionId, (index) => {
+        state.sessions[index].goalEnabled = enabled;
+      });
+    },
     async sendMessage(sessionId, request: MessageRequest) {
       await delay(220);
       mutateSession(sessionId, (index) => {
@@ -626,19 +632,6 @@ export function createMockApiClient(): GptinoApiClient {
         ],
       });
       state.orderVersion += 1;
-      emit();
-    },
-    async stopCurrent() {
-      await delay(250);
-      if (state.writer) {
-        const index = state.sessions.findIndex((session) => session.id === state.writer?.sessionId);
-        if (index >= 0) {
-          state.sessions[index].status = "paused";
-          state.sessions[index].paused = true;
-        }
-        state.queue = state.queue.filter((item) => item.id !== state.writer?.jobId);
-        state.writer = undefined;
-      }
       emit();
     },
   };

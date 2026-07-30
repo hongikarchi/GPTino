@@ -33,10 +33,14 @@ interface ChatPaneProps {
   onMode(mode: SessionMode): void;
   onModel(profile: ModelProfile): void;
   onPinModel(model: string | null): void;
+  /** Toggle the session's native Codex goal (objective + budget tracking) on/off. */
+  onGoal(enabled: boolean): void;
   /** Bind the session's writes to a GH doc (docKey) or unbind with null. */
   onTarget(grasshopperDoc: string | null): void;
   /** Resolves false when the send failed (the composer restores its draft). */
   onSend(content: string, attachments?: MessageAttachment[]): Promise<boolean | void> | void;
+  /** Resume a paused session (the composer is disabled while paused). */
+  onResume(): void;
   /** Soft-delete this session (hidden from the list, recoverable from the trash). */
   onDelete(): void;
   /** Stop the current turn and retract the last user message; resolves its text (or null) to edit. */
@@ -185,7 +189,7 @@ function UsageChip({ usage }: { usage: SessionUsage }) {
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onTarget, onSend, onDelete, onStopEdit }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onGoal, onTarget, onSend, onResume, onDelete, onStopEdit }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -204,6 +208,7 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
     .filter((level): level is ModelProfile => EFFORT_ORDER.includes(level as ModelProfile))
     .sort((a, b) => effortRank(a) - effortRank(b));
   const streamRef = useRef<HTMLDivElement>(null);
+  const effortRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pasteCounter = useRef(0);
   const submitGate = useRef(false);
@@ -226,9 +231,48 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
     return items.sort((a, b) => a.at - b.at);
   }, [session]);
 
+  // Switching sessions jumps straight to the newest message (an animated scroll
+  // through the whole backlog is disorienting); new items in the same session
+  // still glide down smoothly. The ref bookkeeping runs before the element
+  // guard so empty-state renders (no stream div) still record the id — without
+  // that, deleting and restoring the same session would smooth-scroll.
+  const prevSessionId = useRef<string | undefined>(undefined);
   useEffect(() => {
-    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
+    const switched = prevSessionId.current !== session?.id;
+    prevSessionId.current = session?.id;
+    const el = streamRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: switched ? "auto" : "smooth" });
   }, [session?.id, stream.length]);
+
+  // Like a native <select>, the effort popover cannot outlive its session: it
+  // closes whenever the selected session changes or disappears.
+  useEffect(() => {
+    setEffortOpen(false);
+  }, [session?.id]);
+
+  // The effort popover closes like the model dropdown: Esc or a press anywhere
+  // outside the control dismisses it. Capture phase, because canvas nodes call
+  // stopPropagation() on pointerdown — a bubble listener would never see those.
+  useEffect(() => {
+    if (!effortOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const anchor = effortRef.current;
+      // An unmounted anchor (empty state) can never contain the press — close.
+      if (!anchor || (event.target instanceof Node && !anchor.contains(event.target))) {
+        setEffortOpen(false);
+      }
+    };
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setEffortOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [effortOpen]);
 
   if (!session) {
     return (
@@ -365,6 +409,17 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
           <p>{session.summary}</p>
         </div>
         {session.usage ? <UsageChip usage={session.usage} /> : null}
+        {session.paused ? (
+          <button
+            type="button"
+            className="chat-resume"
+            title="Resume this paused session"
+            disabled={busyActions.has(`pause:${session.id}`)}
+            onClick={onResume}
+          >
+            Resume
+          </button>
+        ) : null}
         <button
           type="button"
           className="chat-delete"
@@ -463,7 +518,7 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
               </button>
             ))}
           </div>
-          <div className="quality-control effort-control">
+          <div className="quality-control effort-control" ref={effortRef}>
             <button
               type="button"
               className="effort-toggle"
@@ -516,6 +571,21 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
               </select>
             </div>
           ) : null}
+          <div className="quality-control goal-control">
+            <label htmlFor="goal-toggle">Goal</label>
+            <button
+              type="button"
+              id="goal-toggle"
+              className={`goal-toggle${session.goalEnabled ? " on" : ""}`}
+              role="switch"
+              aria-checked={session.goalEnabled ?? false}
+              onClick={() => onGoal(!(session.goalEnabled ?? false))}
+              disabled={busyActions.has(`goal:${session.id}`)}
+              title="Give this session's Codex thread a native goal (objective + progress/budget tracking). GPTino acceptance predicates still decide 'done'."
+            >
+              {session.goalEnabled ? "On" : "Off"}
+            </button>
+          </div>
           {(grasshopperDocs && grasshopperDocs.length > 1) || session.boundGrasshopperDocId != null ? (
             // Also rendered when the bound doc is no longer registered (even with 0-1 docs
             // left): the selector is the panel's only unbind path, so hiding it would strand
