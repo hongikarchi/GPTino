@@ -144,6 +144,11 @@ export function useRuntime() {
   // every time a runtime event re-memoizes `actions`.
   const listArchive = useCallback(() => clientRef.current!.listArchive(), []);
   const listDeleted = useCallback(() => clientRef.current!.listDeletedSessions(), []);
+  // Read-only like the archive callbacks: the data-flow drawer keys its fetch effect on this.
+  const getDataFlowDetail = useCallback(
+    (docId?: string | null) => clientRef.current!.getDataFlowDetail(docId),
+    [],
+  );
   const readArchiveMessages = useCallback(
     (fingerprint: string, sessionId: string, limit?: number) =>
       clientRef.current!.readArchiveMessages(fingerprint, sessionId, limit),
@@ -282,6 +287,7 @@ export function useRuntime() {
       },
       listArchive,
       readArchiveMessages,
+      getDataFlowDetail,
       // Import mutates runtime state (a new session appears), so — unlike the read-only archive
       // callbacks — it goes through runAction whose post-action getRuntime() pulls the new session in.
       importArchiveSession(fingerprint: string, sessionId: string) {
@@ -292,7 +298,7 @@ export function useRuntime() {
         );
       },
     }),
-    [listArchive, listDeleted, readArchiveMessages, reorder, runAction, shift, updateSession],
+    [getDataFlowDetail, listArchive, listDeleted, readArchiveMessages, reorder, runAction, shift, updateSession],
   );
 
   return {

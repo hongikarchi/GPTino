@@ -71,6 +71,46 @@ describe("deriveGraph", () => {
     }
   });
 
+  it("adds reference/bake arcs and resting chips from dataFlow summaries", () => {
+    const state = createDemoRuntimeState();
+
+    // Layer off: no data edges, but the resting chips still summarize each doc.
+    const resting = deriveGraph(state);
+    expect(resting.edges.some((candidate) => candidate.kind === "reference" || candidate.kind === "bake")).toBe(false);
+    expect(node(resting, `doc:gh:${DOC_FACADE}`).dataChip).toBe("⇢12 ⇠38");
+    expect(node(resting, `doc:gh:${DOC_FACADE}`).dataChipWarning).toBe(false);
+    expect(node(resting, `doc:gh:${DOC_ATRIUM}`).dataChip).toBe("⇢5 ⇠0 · 2!");
+    expect(node(resting, `doc:gh:${DOC_ATRIUM}`).dataChipWarning).toBe(true);
+
+    // Layer on: arcs along the doc column's right edge with count chips; broken
+    // references carry the warning flag; the canvas widens for the bows.
+    const model = deriveGraph(state, { dataLayer: true });
+    const facadeRef = edge(model, `ref:gh:${DOC_FACADE}`);
+    expect(facadeRef.kind).toBe("reference");
+    expect(facadeRef.label).toBe("⇢12");
+    expect(facadeRef.warning).toBe(false);
+    expect(edge(model, `bake:gh:${DOC_FACADE}`).label).toBe("⇠38");
+    const atriumRef = edge(model, `ref:gh:${DOC_ATRIUM}`);
+    expect(atriumRef.warning).toBe(true);
+    expect(atriumRef.label).toBe("⇢5·2!");
+    // The atrium has no stamped bakes, so no bake arc is drawn for it.
+    expect(model.edges.some((candidate) => candidate.id === `bake:gh:${DOC_ATRIUM}`)).toBe(false);
+    expect(model.width).toBeGreaterThan(resting.width);
+    // Chips stay inside the widened canvas.
+    for (const dataEdge of model.edges.filter((candidate) => candidate.kind === "reference" || candidate.kind === "bake")) {
+      expect(dataEdge.midX + 13).toBeLessThanOrEqual(model.width);
+    }
+
+    // Legacy single-doc fallback: the only summary lands on the doc:gh node when
+    // exactly one summary exists; ambiguous multi-summary data is shown nowhere.
+    const legacy = createDemoRuntimeState();
+    legacy.grasshopperDocs = null;
+    legacy.dataFlow = [legacy.dataFlow![0]];
+    const legacyModel = deriveGraph(legacy, { dataLayer: true });
+    expect(edge(legacyModel, "ref:grasshopper").label).toBe("⇢12");
+    expect(node(legacyModel, "doc:gh").dataChip).toBe("⇢12 ⇠38");
+  });
+
   it("distributes one orchestrator output port per document, mirroring the session input ports", () => {
     const model = deriveGraph(createDemoRuntimeState());
     const orchestrator = node(model, "orchestrator");

@@ -78,6 +78,61 @@ export interface GrasshopperDocInfo {
   file: string;
 }
 
+/**
+ * Eventually-consistent Rhino<->GH data-flow summary for one GH doc: what its parameters
+ * reference from the Rhino document (missing = broken references silently emitting empty data)
+ * and how many stamped bakes it produced. Counts are stamped with the per-doc revision they were
+ * observed at — a discovery hint, never a write precondition.
+ */
+export interface DocDataFlow {
+  /** docKey of the GH doc this summary describes. */
+  docId: string;
+  referenceCount: number;
+  missingReferenceCount: number;
+  bakeCount: number;
+  revision: number;
+  observedAt: string;
+}
+
+export interface DataFlowDetailObject {
+  rhinoObjectId: string;
+  exists: boolean;
+  layerFullPath?: string | null;
+}
+
+export interface DataFlowDetailParameter {
+  parameterId: string;
+  nickName: string;
+  parameterType: string;
+  objects: DataFlowDetailObject[];
+}
+
+export interface DataFlowBakeGroup {
+  sourceDocKey?: string | null;
+  bakeFamily?: string | null;
+  count: number;
+  objectIds: string[];
+}
+
+/** On-demand GET /data-flow payload; writerActive=true means retry after the queue drains. */
+export interface DataFlowDetail {
+  docId?: string;
+  revision?: number;
+  observedAt?: string;
+  writerActive?: boolean;
+  message?: string;
+  references?: {
+    grasshopperDocumentId: string;
+    referenceCount: number;
+    missingCount: number;
+    parameters: DataFlowDetailParameter[];
+  };
+  bakes?: {
+    totalStamped: number;
+    groups: DataFlowBakeGroup[];
+  };
+}
+
 export interface GptinoSession {
   id: string;
   title: string;
@@ -177,6 +232,10 @@ export interface RuntimeState {
   queue: QueueItem[];
   conflicts: RuntimeConflict[];
   currentSelection?: CurrentSelection | null;
+  /** Per-doc data-flow summaries; null/absent until the first backend refresh (or legacy server). */
+  dataFlow?: DocDataFlow[] | null;
+  /** Stamped bakes whose source doc predates provenance stamping — honest bucket, never guessed. */
+  unattributedBakeCount?: number;
   contextFolder?: string | null;
   codexAuth?: CodexAuth;
   codexLimits?: CodexLimits | null;

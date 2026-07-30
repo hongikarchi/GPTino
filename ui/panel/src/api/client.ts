@@ -1,6 +1,7 @@
 import type {
   ArchiveMessage,
   ArchiveProject,
+  DataFlowDetail,
   DeletedSession,
   MessageRequest,
   ModelInfo,
@@ -21,6 +22,8 @@ export interface GptinoApiClient {
   ): () => void;
   listModels(): Promise<ModelInfo[]>;
   createSession(name: string, grasshopperDoc?: string, role?: SessionRole): Promise<void>;
+  /** On-demand Rhino<->GH data-flow detail for one GH doc (omit docId when only one is open). */
+  getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail>;
   reorderSessions(request: SessionOrderRequest): Promise<void>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   /** Stop the current turn and pull the last user message back for editing; returns its text. */
@@ -166,6 +169,11 @@ class HttpApiClient implements GptinoApiClient {
         ...(grasshopperDoc ? { grasshopperDoc } : {}),
       }),
     });
+  }
+
+  getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail> {
+    const query = docId ? `?doc=${encodeURIComponent(docId)}` : "";
+    return this.request<DataFlowDetail>(`/data-flow${query}`);
   }
 
   setSessionPaused(sessionId: string, paused: boolean): Promise<void> {

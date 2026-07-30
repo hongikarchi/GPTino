@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArchiveBrowser } from "./components/ArchiveBrowser";
 import { ChatPane } from "./components/ChatPane";
+import { DataFlowDrawer } from "./components/DataFlowDrawer";
 import { DeletedSessions } from "./components/DeletedSessions";
 import { Icon } from "./components/Icons";
 import { SessionCanvas } from "./components/SessionCanvas";
@@ -160,6 +161,25 @@ export default function App() {
       }
       return next;
     });
+  const [dataLayerOn, setDataLayerOn] = useState(() => {
+    try {
+      return localStorage.getItem("gptino.dataLayer") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleDataLayer = () =>
+    setDataLayerOn((on) => {
+      const next = !on;
+      try {
+        localStorage.setItem("gptino.dataLayer", next ? "1" : "0");
+      } catch {
+        // localStorage may be unavailable; the toggle still works for this session.
+      }
+      return next;
+    });
+  // Drawer target: undefined = closed; null = the only/legacy doc; string = explicit docKey.
+  const [dataFlowDocId, setDataFlowDocId] = useState<string | null | undefined>(undefined);
   const newSessionAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // Esc or a press outside the + Session button / popover closes it. Capture
@@ -269,6 +289,17 @@ export default function App() {
             >
               {canvasCollapsed ? `▸ Graph (${runtime.sessions.length})` : "▾ Graph"}
             </button>
+            {!canvasCollapsed && (runtime.dataFlow?.length ?? 0) > 0 ? (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={toggleDataLayer}
+                aria-pressed={dataLayerOn}
+                title={dataLayerOn ? "Hide Rhino↔GH reference/bake arcs" : "Show Rhino↔GH reference/bake arcs"}
+              >
+                {dataLayerOn ? "▾ Data" : "▸ Data"}
+              </button>
+            ) : null}
             <div className="new-session-anchor" ref={newSessionAnchorRef}>
               <button
                 type="button"
@@ -383,6 +414,8 @@ export default function App() {
             unseenIds={completion.unseen}
             onSelect={setSelectedId}
             onReorder={actions.reorder}
+            dataLayerOn={dataLayerOn}
+            onOpenDataFlow={setDataFlowDocId}
           />
         </section>
       )}
@@ -415,6 +448,19 @@ export default function App() {
           onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
         />
       </main>
+
+      {dataFlowDocId !== undefined ? (
+        <DataFlowDrawer
+          docId={dataFlowDocId}
+          docName={
+            dataFlowDocId != null
+              ? runtime.grasshopperDocs?.find((doc) => doc.id === dataFlowDocId)?.file.split(/[\\/]/).pop()
+              : runtime.grasshopperFile
+          }
+          onClose={() => setDataFlowDocId(undefined)}
+          getDetail={actions.getDataFlowDetail}
+        />
+      ) : null}
 
       {archiveOpen ? (
         <ArchiveBrowser

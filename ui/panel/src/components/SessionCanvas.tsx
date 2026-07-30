@@ -11,6 +11,10 @@ interface SessionCanvasProps {
   unseenIds: ReadonlySet<string>;
   onSelect(id: string): void;
   onReorder(sourceId: string, targetId: string): void;
+  /** Canvas "Data" toggle: render Rhino<->GH reference/bake arcs between doc nodes. */
+  dataLayerOn?: boolean;
+  /** Opens the data-flow detail drawer for a GH doc (null = legacy single doc). */
+  onOpenDataFlow?(docId: string | null): void;
 }
 
 interface ViewBox {
@@ -91,7 +95,7 @@ function sessionTooltip(node: GraphNode, boundDocName?: string): string {
 
 function Wire({ edge, selected }: { edge: GraphEdge; selected?: boolean }) {
   return (
-    <g className={`wire wire-${edge.kind}${selected ? " selected" : ""}`}>
+    <g className={`wire wire-${edge.kind}${selected ? " selected" : ""}${edge.warning ? " warning" : ""}`}>
       {edge.title ? <title>{edge.title}</title> : null}
       <path className="wire-under" d={edge.path} />
       <path className="wire-color" d={edge.path} />
@@ -215,13 +219,25 @@ function OrchestratorNode({ node, nowMs }: { node: GraphNode; nowMs: number }) {
   );
 }
 
-function DocNode({ node }: { node: GraphNode }) {
+function DocNode({ node, onOpenDataFlow }: { node: GraphNode; onOpenDataFlow?(docId: string | null): void }) {
   const tooltip = [`${node.label} — ${node.sublabel ?? ""}`, node.tooltip ?? node.detail]
     .filter(Boolean)
     .join("\n");
+  // GH doc nodes with a data-flow summary open the detail drawer on click. The root g carries
+  // .gnode, so the background pan handler already ignores presses here — a plain click works.
+  const openable = node.docTarget === "grasshopper" && node.dataChip !== undefined && onOpenDataFlow !== undefined;
+  const open = openable ? () => onOpenDataFlow?.(node.docId ?? null) : undefined;
   return (
-    <g className={`gnode gnode-doc doc-${node.docTarget}`} transform={`translate(${node.x}, ${node.y})`}>
-      <title>{tooltip}</title>
+    <g
+      className={`gnode gnode-doc doc-${node.docTarget}${openable ? " openable" : ""}`}
+      transform={`translate(${node.x}, ${node.y})`}
+      onClick={open}
+      onKeyDown={open ? (event) => { if (event.key === "Enter") open(); } : undefined}
+      role={openable ? "button" : undefined}
+      tabIndex={openable ? 0 : undefined}
+      aria-label={openable ? `${node.sublabel ?? node.label} data flow` : undefined}
+    >
+      <title>{openable ? `${tooltip}\nClick for reference/bake detail` : tooltip}</title>
       <rect className="gnode-box" width={node.w} height={node.h} rx={8} />
       <rect className="gnode-doc-mark" x={10} y={node.h / 2 - 14} width={28} height={28} rx={6} />
       <text className="gnode-doc-glyph" x={24} y={node.h / 2 + 4}>
@@ -235,6 +251,11 @@ function DocNode({ node }: { node: GraphNode }) {
         // Column-based truncation: CJK layer names count double, like every other node label.
         <text className="gnode-detail" x={50} y={51}>{truncateColumns(node.detail, 22)}</text>
       ) : null}
+      {node.dataChip ? (
+        <text className={`gnode-datachip${node.dataChipWarning ? " warning" : ""}`} x={50} y={node.detail ? 63 : 58}>
+          {node.dataChip}
+        </text>
+      ) : null}
     </g>
   );
 }
@@ -245,8 +266,10 @@ export function SessionCanvas({
   unseenIds,
   onSelect,
   onReorder,
+  dataLayerOn = false,
+  onOpenDataFlow,
 }: SessionCanvasProps) {
-  const model = useMemo(() => deriveGraph(runtime), [runtime]);
+  const model = useMemo(() => deriveGraph(runtime, { dataLayer: dataLayerOn }), [runtime, dataLayerOn]);
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
   const multiGh = ghDocs != null && ghDocs.length > 1;
   const docNameById = useMemo(
@@ -520,7 +543,7 @@ export function SessionCanvas({
       ) : null}
       {orchestratorNode ? <OrchestratorNode node={orchestratorNode} nowMs={nowMs} /> : null}
       {docNodes.map((node) => (
-        <DocNode key={node.id} node={node} />
+        <DocNode key={node.id} node={node} onOpenDataFlow={onOpenDataFlow} />
       ))}
       {view.x + view.w < model.width - 1 ? (
         <g pointerEvents="none">

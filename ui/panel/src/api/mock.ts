@@ -3,6 +3,7 @@ import type {
   ArchiveMessage,
   ArchiveProject,
   ChatMessage,
+  DataFlowDetail,
   DeletedSession,
   MessageRequest,
   MessageRole,
@@ -307,7 +308,126 @@ const demoState: RuntimeState = {
     docId: DOC_FACADE,
     observedAt: minutesAgo(0),
   },
+  dataFlow: [
+    {
+      docId: DOC_FACADE,
+      referenceCount: 12,
+      missingReferenceCount: 0,
+      bakeCount: 38,
+      revision: 42,
+      observedAt: minutesAgo(1),
+    },
+    {
+      // Tied to the existing drift-conflict fixture: object 7F2A changed after snapshot r39,
+      // and two of the atrium references now point at deleted Rhino objects.
+      docId: DOC_ATRIUM,
+      referenceCount: 5,
+      missingReferenceCount: 2,
+      bakeCount: 0,
+      revision: 39,
+      observedAt: minutesAgo(4),
+    },
+  ],
+  unattributedBakeCount: 3,
   lastUpdatedAt: now.toISOString(),
+};
+
+const demoDataFlowDetails: Record<string, DataFlowDetail> = {
+  [DOC_FACADE]: {
+    docId: DOC_FACADE,
+    revision: 42,
+    observedAt: minutesAgo(1),
+    references: {
+      grasshopperDocumentId: "c1d2e3f4-0000-4a4a-b1b1-00000000d0c1",
+      referenceCount: 12,
+      missingCount: 0,
+      parameters: [
+        {
+          parameterId: "c1d2e3f4-0000-4a4a-b1b1-000000000010",
+          nickName: "Facade Srf",
+          parameterType: "Param_Surface",
+          objects: [
+            {
+              rhinoObjectId: "b2416cd8-55f7-4f39-a9d3-08a1c4e7d992",
+              exists: true,
+              layerFullPath: "Facade::Input",
+            },
+          ],
+        },
+        {
+          parameterId: "c1d2e3f4-0000-4a4a-b1b1-000000000011",
+          nickName: "Boundary Crvs",
+          parameterType: "Param_Curve",
+          objects: Array.from({ length: 11 }, (_, index) => ({
+            rhinoObjectId: `a0b1c2d3-00${index.toString().padStart(2, "0")}-4e4e-9f9f-0000000000${index
+              .toString(16)
+              .padStart(2, "0")}`,
+            exists: true,
+            layerFullPath: "Facade::Boundary",
+          })),
+        },
+      ],
+    },
+    bakes: {
+      totalStamped: 41,
+      groups: [
+        {
+          sourceDocKey: DOC_FACADE,
+          bakeFamily: "facade-panels",
+          count: 38,
+          objectIds: ["7f2a4c31-9a41-4c8e-b6a1-2f6d3a5e9c01"],
+        },
+        { sourceDocKey: null, bakeFamily: "legacy-massing", count: 3, objectIds: [] },
+      ],
+    },
+  },
+  [DOC_ATRIUM]: {
+    docId: DOC_ATRIUM,
+    revision: 39,
+    observedAt: minutesAgo(4),
+    references: {
+      grasshopperDocumentId: "c1d2e3f4-0000-4a4a-b1b1-00000000d0c2",
+      referenceCount: 5,
+      missingCount: 2,
+      parameters: [
+        {
+          parameterId: "c1d2e3f4-0000-4a4a-b1b1-000000000020",
+          nickName: "Atrium Boundary",
+          parameterType: "Param_Curve",
+          objects: [
+            {
+              rhinoObjectId: "7f2a4c31-9a41-4c8e-b6a1-2f6d3a5e9c01",
+              exists: true,
+              layerFullPath: "Atrium::Boundary",
+            },
+            { rhinoObjectId: "d4e5f6a7-1111-4b4b-8c8c-000000000001", exists: false, layerFullPath: null },
+            { rhinoObjectId: "d4e5f6a7-1111-4b4b-8c8c-000000000002", exists: false, layerFullPath: null },
+          ],
+        },
+        {
+          parameterId: "c1d2e3f4-0000-4a4a-b1b1-000000000021",
+          nickName: "Roof Pts",
+          parameterType: "Param_Point",
+          objects: [
+            {
+              rhinoObjectId: "e5f6a7b8-2222-4c4c-9d9d-000000000001",
+              exists: true,
+              layerFullPath: "Atrium::Points",
+            },
+            {
+              rhinoObjectId: "e5f6a7b8-2222-4c4c-9d9d-000000000002",
+              exists: true,
+              layerFullPath: "Atrium::Points",
+            },
+          ],
+        },
+      ],
+    },
+    bakes: {
+      totalStamped: 41,
+      groups: [{ sourceDocKey: null, bakeFamily: "legacy-massing", count: 3, objectIds: [] }],
+    },
+  },
 };
 
 const hoursAgo = (hours: number) => minutesAgo(hours * 60);
@@ -418,6 +538,14 @@ export function createMockApiClient(): GptinoApiClient {
     subscribe(onState) {
       listeners.add(onState);
       return () => listeners.delete(onState);
+    },
+    async getDataFlowDetail(docId?: string | null) {
+      await delay(160);
+      const detail = demoDataFlowDetails[docId ?? DOC_FACADE];
+      if (!detail) {
+        throw new Error(`Unknown Grasshopper document '${docId}'.`);
+      }
+      return clone(detail);
     },
     async createSession(name: string, grasshopperDoc?: string, role?: SessionRole) {
       await delay();
