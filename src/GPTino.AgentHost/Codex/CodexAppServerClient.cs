@@ -59,8 +59,15 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
 
     private readonly IThreadInstructionComposer? _instructionComposer;
 
-    private string ComposeBaseInstructions() =>
-        _instructionComposer?.Compose(ThreadInstructions) ?? ThreadInstructions;
+    private string ComposeBaseInstructions(string? roleInstructions = null)
+    {
+        var composed = _instructionComposer?.Compose(ThreadInstructions) ?? ThreadInstructions;
+        // Role text (e.g. the curator's) rides the same baseInstructions parameter, so it reaches
+        // both fresh threads and every resume — a role can never silently fall off mid-session.
+        return string.IsNullOrWhiteSpace(roleInstructions)
+            ? composed
+            : $"{composed}\n\n## Session role\n{roleInstructions}";
+    }
 
     public event Func<string, JsonElement, Task>? NotificationReceived;
 
@@ -127,10 +134,11 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
     public async Task<string> StartThreadAsync(
         string cwd,
         string? model,
+        string? roleInstructions = null,
         CancellationToken cancellationToken = default)
     {
         var parameters = CreateThreadStartParameters(cwd, model);
-        parameters["baseInstructions"] = ComposeBaseInstructions();
+        parameters["baseInstructions"] = ComposeBaseInstructions(roleInstructions);
 
         var result = await CallAsync("thread/start", parameters, cancellationToken).ConfigureAwait(false);
         return result.GetProperty("thread").GetProperty("id").GetString()
@@ -141,6 +149,7 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         string threadId,
         string cwd,
         string? model,
+        string? roleInstructions = null,
         CancellationToken cancellationToken = default)
     {
         var parameters = new Dictionary<string, object?>
@@ -150,7 +159,7 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
             ["approvalPolicy"] = "never",
             ["sandbox"] = "read-only",
             ["multiAgentMode"] = "proactive",
-            ["baseInstructions"] = ComposeBaseInstructions(),
+            ["baseInstructions"] = ComposeBaseInstructions(roleInstructions),
             ["excludeTurns"] = true
         };
         if (!string.IsNullOrWhiteSpace(model))

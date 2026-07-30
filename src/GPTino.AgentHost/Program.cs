@@ -130,6 +130,14 @@ var dispatcher = app.Services.GetRequiredService<DynamicToolDispatcher>();
 var queueControl = app.Services.GetRequiredService<ILiveDocumentQueueControl>();
 _ = app.Services.GetRequiredService<SessionOrchestrator>();
 codex.DynamicToolHandler = dispatcher.DispatchAsync;
+// Resident curator: every project gets exactly one document-hygiene session, provisioned before
+// the first schedule snapshot so the panel always sees it. Idempotent across restarts; the codex
+// thread itself stays lazy until the first message.
+var (liveSessions, _) = await store.ReadStateAsync();
+if (!liveSessions.Any(session => string.Equals(session.Role, "curator", StringComparison.OrdinalIgnoreCase)))
+{
+    await store.CreateSessionAsync(new CreateSessionRequest("Document care", "curator", ModelProfile: "xhigh"));
+}
 await queueControl.RefreshScheduleAsync();
 
 app.Use(async (context, next) =>
@@ -424,6 +432,8 @@ api.MapPut("/sessions/{id:guid}/goal", async (
 });
 
 // Soft-delete: hide from the active list but keep everything, so it can be restored.
+// The resident curator is not deletable — the store guard throws and the middleware maps it
+// to a 409 invalid_state.
 api.MapDelete("/sessions/{id:guid}", async (
     Guid id,
     SessionStore sessionStore,

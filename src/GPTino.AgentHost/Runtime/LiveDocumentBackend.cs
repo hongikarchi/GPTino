@@ -1225,7 +1225,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     {
         var (sessions, version) = await _store.ReadStateAsync(cancellationToken).ConfigureAwait(false);
         var projectId = CurrentTarget?.ProjectId ?? _options.ProjectId;
-        var order = new SessionOrderSnapshot(projectId, sessions.Select(item => item.Id).ToArray(), version);
+        // Curator sessions are deliberately absent from the priority order: the scheduler ranks
+        // absent ids int.MaxValue, so document hygiene always yields to modeling work — durably,
+        // regardless of when sessions are created or how the user reorders the rail.
+        var order = new SessionOrderSnapshot(
+            projectId,
+            sessions
+                .Where(item => !string.Equals(item.Role, "curator", StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.Id)
+                .ToArray(),
+            version);
         var states = sessions.ToDictionary(item => item.Id, item => item.State switch
         {
             SessionStates.Paused => SessionRunState.Paused,

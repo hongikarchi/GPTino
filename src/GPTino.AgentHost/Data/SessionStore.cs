@@ -188,6 +188,14 @@ public sealed class SessionStore
             var now = DateTimeOffset.UtcNow;
             var grasshopperDoc = NormalizeGrasshopperDoc(request.GrasshopperDoc);
             var (role, mode) = NormalizeRoleAndMode(request.Role);
+            if (string.Equals(role, "curator", StringComparison.Ordinal))
+            {
+                // Curators park in a high sort_order band, far above the panel's draggable 0..N-1
+                // range: reorder rewrites those low indexes and the exact-membership check excludes
+                // curators, so a curator sitting inside the band would collide with the UNIQUE
+                // sort_order constraint on the very first drag.
+                order += 1_000_000;
+            }
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
@@ -443,6 +451,10 @@ public sealed class SessionStore
     /// </summary>
     public async Task SetSessionDeletedAsync(Guid id, bool deleted, CancellationToken cancellationToken = default)
     {
+        if (deleted)
+        {
+            await RequireNotCuratorAsync(id, "deleted", cancellationToken).ConfigureAwait(false);
+        }
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -471,6 +483,20 @@ public sealed class SessionStore
         }
     }
 
+    /// <summary>
+    /// The resident curator session is the product's always-there document-hygiene surface;
+    /// deleting or purging it would silently remove a default the panel's curator tab depends on.
+    /// </summary>
+    private async Task RequireNotCuratorAsync(Guid id, string verb, CancellationToken cancellationToken)
+    {
+        var session = await FindSessionAsync(id, cancellationToken).ConfigureAwait(false);
+        if (session is not null && string.Equals(session.Role, "curator", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"The resident curator session cannot be {verb}; it is the document-care surface.");
+        }
+    }
+
     /// <summary>Lists soft-deleted sessions (most-recently-deleted first) for a restore/purge view.</summary>
     public async Task<IReadOnlyList<SessionRecord>> ReadDeletedSessionsAsync(CancellationToken cancellationToken = default)
     {
@@ -494,6 +520,7 @@ public sealed class SessionStore
     /// </summary>
     public async Task PurgeSessionAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        await RequireNotCuratorAsync(id, "purged", cancellationToken).ConfigureAwait(false);
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -1023,8 +1050,10 @@ public sealed class SessionStore
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         // Reorder operates on the live set only; deleted rows are parked out of band and the panel
-        // never includes them in an order request.
-        command.CommandText = "SELECT id FROM sessions WHERE deleted_at IS NULL;";
+        // never includes them in an order request. The resident curator is likewise outside the
+        // draggable order — it is pinned lowest-priority by the scheduler, and the panel's Model
+        // tab never sends it, so including it in the exact-membership check would 409 every reorder.
+        command.CommandText = "SELECT id FROM sessions WHERE deleted_at IS NULL AND lower(role) <> 'curator';";
         var ids = new HashSet<Guid>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
