@@ -338,6 +338,9 @@ public sealed class DynamicToolDispatcherTests
         public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
             Task.FromResult<object>(new { docId = "test", references = new { }, bakes = new { } });
 
+        public Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+            Task.FromResult<object>(new { kind = "purgeCandidates", findings = Array.Empty<object>() });
+
         public Task StopCurrentAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

@@ -435,6 +435,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     public int UnattributedBakeCount => Volatile.Read(ref _unattributedBakeCount);
 
+    /// <summary>
+    /// Document-hygiene audit (rhino_audit tool + GET /audit). Like rhino_list, Rhino-scene reads
+    /// are document-agnostic — default-target resolution.
+    /// </summary>
+    public Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        ReadBridgeQueryAsync(
+            RequireDefaultTargetState(),
+            BridgeAdapterOwner.CordycepsRhino,
+            "rhino.audit",
+            arguments,
+            cancellationToken);
+
     /// <summary>Session-scoped agent read (data_flow_read tool): honors the session's doc binding.</summary>
     public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
         ReadDataFlowCoreAsync(ResolveSessionTargetState(session), cancellationToken);

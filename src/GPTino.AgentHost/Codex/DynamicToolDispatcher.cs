@@ -43,6 +43,8 @@ public interface ILiveDocumentBackend
 
     Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken);
 
+    Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken);
+
     Task StopCurrentAsync(CancellationToken cancellationToken);
 }
 
@@ -87,6 +89,9 @@ public sealed class DisconnectedDocumentBackend : ILiveDocumentBackend
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
+        Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
+
+    public Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken) =>
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task StopCurrentAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -144,6 +149,8 @@ public sealed class DynamicToolDispatcher
                     await InspectOutputsAsync(call, cancellationToken).ConfigureAwait(false)),
                 "data_flow_read" => DynamicToolResult.Ok(
                     await ReadDataFlowAsync(call, cancellationToken).ConfigureAwait(false)),
+                "rhino_audit" => DynamicToolResult.Ok(
+                    await _backend.ReadRhinoAuditAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "artifact_read" => DynamicToolResult.Ok(await ReadArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "artifact_write" => DynamicToolResult.Ok(await WriteArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "change_submit" => DynamicToolResult.Ok(await SubmitChangeAsync(call, cancellationToken).ConfigureAwait(false)),
@@ -244,6 +251,7 @@ public sealed class DynamicToolDispatcher
         "component_catalog" => $"Searching components: {TryString(call.Arguments, "query")}",
         "rhino_list" => "Listing Rhino objects",
         "data_flow_read" => "Reading the Rhino-GH data-flow ledger",
+        "rhino_audit" => "Auditing the Rhino document",
         "inspect_outputs" => "Inspecting component outputs",
         "artifact_read" => $"Reading draft {TryString(call.Arguments, "path")}",
         "artifact_write" => $"Drafting {TryString(call.Arguments, "path")}",

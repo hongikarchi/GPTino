@@ -105,6 +105,34 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "rhino_audit",
+                    "Deterministic document-hygiene audit of the bound Rhino document. Detection is server " +
+                    "code — never eyeball geometry yourself; call this and TRIAGE the findings. Kinds: " +
+                    "nearMissEndpoints (open-curve endpoints almost meeting, gap in (tolerance, " +
+                    "tolerance*bandFactor]), nearDuplicates (position-coincident curves/points SelDup cannot " +
+                    "catch; which copy to keep is always the user's call — design-option stacks are " +
+                    "intentional), purgeCandidates (unused block definitions, empty leaf layers, invalid " +
+                    "objects — quarantine bad objects, never delete them). Every finding carries object " +
+                    "fingerprints for CAS-pinned follow-up fixes; results name the tolerance and units used. " +
+                    "Read-only and parallel-safe.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            kind = new
+                            {
+                                type = "string",
+                                @enum = new[] { "nearMissEndpoints", "nearDuplicates", "purgeCandidates" },
+                            },
+                            tolerance = new { type = "number", description = "Override; default = document absolute tolerance." },
+                            bandFactor = new { type = "number", description = "nearMissEndpoints band multiplier; default 10." },
+                            limit = new { type = "integer", minimum = 1, maximum = 100, description = "Max findings; default 50." }
+                        },
+                        required = new[] { "kind" },
+                        additionalProperties = false
+                    }),
+                Function(
                     "data_flow_read",
                     "Read the Rhino<->Grasshopper data-flow ledger for the session's bound GH document: every " +
                     "Rhino object its parameters reference (with per-object existence — a missing object means a " +

@@ -296,6 +296,26 @@ api.MapGet("/data-flow", async (
     CancellationToken cancellationToken) =>
     Results.Ok(await liveBackend.ReadDataFlowDetailAsync(doc, cancellationToken)));
 
+// Document-hygiene audit for the curator tab's preset buttons. Read-only; detection is server
+// code in the Rhino adapter, so the same findings render in the panel card and reach the agent.
+api.MapGet("/audit", async (
+    string kind,
+    double? tolerance,
+    double? bandFactor,
+    int? limit,
+    LiveDocumentBackend liveBackend,
+    CancellationToken cancellationToken) =>
+{
+    var arguments = JsonSerializer.SerializeToElement(new
+    {
+        kind,
+        tolerance,
+        bandFactor,
+        limit = limit ?? 50,
+    });
+    return Results.Ok(await liveBackend.ReadRhinoAuditAsync(arguments, cancellationToken));
+});
+
 api.MapPost("/sessions", async (
     CreateSessionRequest request,
     SessionStore sessionStore,

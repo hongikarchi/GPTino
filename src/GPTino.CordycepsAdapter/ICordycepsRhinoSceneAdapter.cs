@@ -25,6 +25,19 @@ public interface ICordycepsRhinoSceneAdapter
         DocumentTarget target,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Deterministic document-hygiene audit: near-miss curve endpoints, near-duplicate geometry
+    /// SelDup cannot catch, or purge candidates (unused block definitions, empty layers, bad
+    /// objects). Read-only — DETECTION is server code; the model only triages findings. Every
+    /// finding carries the fingerprints of its objects so a follow-up fix ChangeSet is CAS-pinned
+    /// to exactly what was audited, and every result names the tolerance and units it was
+    /// computed under.
+    /// </summary>
+    Task<RhinoAuditResult> AuditAsync(
+        DocumentTarget target,
+        RhinoAuditRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<RhinoSceneMutationResult> CreatePrimitiveAsync(
         DocumentTarget target,
         CreateRhinoPrimitiveRequest request,
@@ -178,6 +191,38 @@ public sealed record UpsertRhinoObjectRequest(
     // write. Model payloads must NOT set it (the submit validator rejects non-null values); the
     // executor stamps it after freezing, so bake attribution cannot be spoofed.
     string? SourceDocKey = null) : IRhinoSceneMutationRequest;
+
+/// <summary>
+/// Audit query. Kind: nearMissEndpoints | nearDuplicates | purgeCandidates. Tolerance defaults to
+/// the document's absolute tolerance; the near-miss band is (tolerance, tolerance * BandFactor].
+/// Limit bounds returned findings (1..100); analyzers also carry internal scan caps and report
+/// Truncated honestly instead of silently sampling.
+/// </summary>
+public sealed record RhinoAuditRequest(
+    string Kind,
+    double? Tolerance = null,
+    double? BandFactor = null,
+    int Limit = 50);
+
+public sealed record RhinoAuditFinding(
+    string FindingId,
+    string Kind,
+    IReadOnlyList<Guid> ObjectIds,
+    IReadOnlyList<string> Fingerprints,
+    double? Measure,
+    string Detail,
+    IReadOnlyList<string> ProposedFixes);
+
+public sealed record RhinoAuditResult(
+    string Kind,
+    double DocTolerance,
+    string DocUnits,
+    double ToleranceUsed,
+    double? BandUsed,
+    int ScannedObjects,
+    IReadOnlyList<RhinoAuditFinding> Findings,
+    bool Truncated,
+    string Fingerprint);
 
 public sealed record StampedObjectGroup(
     string? SourceDocKey,

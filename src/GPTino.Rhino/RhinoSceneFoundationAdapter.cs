@@ -177,6 +177,391 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         return Task.FromResult(new StampedObjectsResult(totalStamped, ordered, fingerprint));
     }
 
+    protected override Task<RhinoAuditResult> AuditCoreAsync(
+        global::Rhino.RhinoDoc document,
+        RhinoAuditRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var limit = Math.Clamp(request.Limit, 1, 100);
+        var docTolerance = document.ModelAbsoluteTolerance;
+        // The SAME tolerance value flows into every measure and any later fix predicate — a
+        // mm-doc heuristic silently becoming absurd in a meters doc is the audit's failure mode.
+        var tolerance = request.Tolerance is > 0 ? request.Tolerance.Value : docTolerance;
+        var units = document.ModelUnitSystem.ToString();
+        var kind = (request.Kind ?? string.Empty).Trim();
+        double? bandUsed = null;
+        (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) outcome;
+        switch (kind)
+        {
+            case "nearMissEndpoints":
+            {
+                var bandFactor = request.BandFactor is > 1 ? request.BandFactor.Value : 10.0;
+                bandUsed = tolerance * bandFactor;
+                outcome = AuditNearMissEndpoints(document, tolerance, bandUsed.Value, limit, cancellationToken);
+                break;
+            }
+            case "nearDuplicates":
+                outcome = AuditNearDuplicates(document, tolerance, limit, cancellationToken);
+                break;
+            case "purgeCandidates":
+                outcome = AuditPurgeCandidates(document, limit, cancellationToken);
+                break;
+            default:
+                throw new InvalidOperationException(
+                    $"Unknown audit kind '{request.Kind}'. Use nearMissEndpoints|nearDuplicates|purgeCandidates.");
+        }
+        var fingerprint = Hash(
+            $"audit|{kind}|{tolerance:R}|" +
+            string.Join("\n", outcome.Findings.Select(finding => $"{finding.FindingId}|{finding.Measure}")));
+        return Task.FromResult(new RhinoAuditResult(
+            kind,
+            docTolerance,
+            units,
+            tolerance,
+            bandUsed,
+            outcome.Scanned,
+            outcome.Findings,
+            outcome.Truncated,
+            fingerprint));
+    }
+
+    private static ObjectEnumeratorSettings AuditEnumerator(ObjectType? typeFilter = null) => new()
+    {
+        // Audits count what exists, not what is visible — hidden and locked included.
+        ActiveObjects = true,
+        HiddenObjects = true,
+        LockedObjects = true,
+        DeletedObjects = false,
+        ObjectTypeFilter = typeFilter ?? ObjectType.AnyObject,
+    };
+
+    // Open-curve endpoints that ALMOST meet: gap in (tolerance, band]. Detection is endpoint-to-
+    // endpoint via RTree; T-junctions (endpoint near a curve's interior) are a separate future
+    // kind. Same-object pairs are skipped — an almost-closed curve is a different defect class.
+    private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditNearMissEndpoints(
+        global::Rhino.RhinoDoc document,
+        double tolerance,
+        double band,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const int MaxCurves = 8000;
+        var endpoints = new List<(Guid Id, int End, Point3d Point)>();
+        var objectsById = new Dictionary<Guid, RhinoObject>();
+        var scanned = 0;
+        var truncated = false;
+        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator(ObjectType.Curve))
+                     .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rhinoObject.Geometry is not Curve curve || curve.IsClosed)
+            {
+                continue;
+            }
+            if (++scanned > MaxCurves)
+            {
+                truncated = true;
+                break;
+            }
+            objectsById[rhinoObject.Id] = rhinoObject;
+            endpoints.Add((rhinoObject.Id, 0, curve.PointAtStart));
+            endpoints.Add((rhinoObject.Id, 1, curve.PointAtEnd));
+        }
+
+        var tree = new RTree();
+        for (var index = 0; index < endpoints.Count; index++)
+        {
+            tree.Insert(endpoints[index].Point, index);
+        }
+        var pairs = new Dictionary<string, (Guid A, int EndA, Guid B, int EndB, double Gap)>(StringComparer.Ordinal);
+        for (var index = 0; index < endpoints.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (idA, endA, pointA) = endpoints[index];
+            var hits = new List<int>();
+            tree.Search(new Sphere(pointA, band), (_, args) => hits.Add(args.Id));
+            foreach (var hit in hits)
+            {
+                if (hit <= index)
+                {
+                    continue;
+                }
+                var (idB, endB, pointB) = endpoints[hit];
+                if (idA == idB)
+                {
+                    continue;
+                }
+                var gap = pointA.DistanceTo(pointB);
+                if (gap <= tolerance || gap > band)
+                {
+                    continue;
+                }
+                var key = string.CompareOrdinal(idA.ToString("D"), idB.ToString("D")) <= 0
+                    ? $"{idA:D}|{endA}|{idB:D}|{endB}"
+                    : $"{idB:D}|{endB}|{idA:D}|{endA}";
+                if (!pairs.ContainsKey(key))
+                {
+                    pairs[key] = (idA, endA, idB, endB, gap);
+                }
+            }
+        }
+
+        var findings = pairs.Values
+            .OrderBy(pair => pair.Gap)
+            .ThenBy(pair => pair.A)
+            .ThenBy(pair => pair.B)
+            .Take(limit + 1)
+            .Select(pair => new RhinoAuditFinding(
+                Hash($"nearMiss|{pair.A:D}|{pair.EndA}|{pair.B:D}|{pair.EndB}")[..16],
+                "nearMissEndpoints",
+                new[] { pair.A, pair.B },
+                new[] { ToState(objectsById[pair.A]).Fingerprint, ToState(objectsById[pair.B]).Fingerprint },
+                pair.Gap,
+                $"Curve endpoints {pair.Gap:G4} apart (doc tolerance {tolerance:G4}): " +
+                $"end {pair.EndA} of {pair.A:D} vs end {pair.EndB} of {pair.B:D}.",
+                new[] { "extendToIntersection", "setEndPoint", "averageMove" }))
+            .ToList();
+        if (findings.Count > limit)
+        {
+            findings.RemoveAt(findings.Count - 1);
+            truncated = true;
+        }
+        return (findings, scanned, truncated);
+    }
+
+    // Position-coincident near-duplicates SelDup cannot catch (SelDup requires exact matches).
+    // Scope: curves and points — deterministic deviation math exists for both. Transform-invariant
+    // (rotated/mirrored) duplicate detection is explicitly out of scope. Deletion is ALWAYS a
+    // human triage: bake_manager's append mode stacks design options on purpose.
+    private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditNearDuplicates(
+        global::Rhino.RhinoDoc document,
+        double tolerance,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const int MaxObjects = 6000;
+        const int MaxPairChecks = 4000;
+        var items = new List<(Guid Id, RhinoObject Obj, Point3d Center, double Diagonal)>();
+        var scanned = 0;
+        var truncated = false;
+        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator(ObjectType.Curve | ObjectType.Point))
+                     .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rhinoObject.Geometry is null)
+            {
+                continue;
+            }
+            if (++scanned > MaxObjects)
+            {
+                truncated = true;
+                break;
+            }
+            var box = rhinoObject.Geometry.GetBoundingBox(accurate: false);
+            items.Add((rhinoObject.Id, rhinoObject, box.Center, box.Diagonal.Length));
+        }
+
+        var tree = new RTree();
+        for (var index = 0; index < items.Count; index++)
+        {
+            tree.Insert(items[index].Center, index);
+        }
+        var pairChecks = 0;
+        var duplicates = new Dictionary<string, (Guid A, Guid B, double Measure)>(StringComparer.Ordinal);
+        for (var index = 0; index < items.Count && !truncated; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (idA, objectA, centerA, diagonalA) = items[index];
+            var hits = new List<int>();
+            tree.Search(new Sphere(centerA, Math.Max(tolerance * 2, 1e-9)), (_, args) => hits.Add(args.Id));
+            foreach (var hit in hits)
+            {
+                if (hit <= index)
+                {
+                    continue;
+                }
+                var (idB, objectB, _, diagonalB) = items[hit];
+                if (objectA.Geometry.ObjectType != objectB.Geometry.ObjectType ||
+                    Math.Abs(diagonalA - diagonalB) > tolerance * 4)
+                {
+                    continue;
+                }
+                if (++pairChecks > MaxPairChecks)
+                {
+                    truncated = true;
+                    break;
+                }
+                double? measure = null;
+                if (objectA.Geometry is global::Rhino.Geometry.Point pointA &&
+                    objectB.Geometry is global::Rhino.Geometry.Point pointB)
+                {
+                    var distance = pointA.Location.DistanceTo(pointB.Location);
+                    if (distance <= tolerance)
+                    {
+                        measure = distance;
+                    }
+                }
+                else if (objectA.Geometry is Curve curveA && objectB.Geometry is Curve curveB &&
+                    Curve.GetDistancesBetweenCurves(
+                        curveA, curveB, tolerance,
+                        out var maxDistance, out _, out _, out _, out _, out _) &&
+                    maxDistance <= tolerance)
+                {
+                    measure = maxDistance;
+                }
+                if (measure is null)
+                {
+                    continue;
+                }
+                var key = string.CompareOrdinal(idA.ToString("D"), idB.ToString("D")) <= 0
+                    ? $"{idA:D}|{idB:D}"
+                    : $"{idB:D}|{idA:D}";
+                if (!duplicates.ContainsKey(key))
+                {
+                    duplicates[key] = (idA, idB, measure.Value);
+                }
+            }
+        }
+
+        var objectsById = items.ToDictionary(item => item.Id, item => item.Obj);
+        var findings = duplicates.Values
+            .OrderBy(pair => pair.Measure)
+            .ThenBy(pair => pair.A)
+            .ThenBy(pair => pair.B)
+            .Take(limit + 1)
+            .Select(pair => new RhinoAuditFinding(
+                Hash($"nearDup|{pair.A:D}|{pair.B:D}")[..16],
+                "nearDuplicates",
+                new[] { pair.A, pair.B },
+                new[] { ToState(objectsById[pair.A]).Fingerprint, ToState(objectsById[pair.B]).Fingerprint },
+                pair.Measure,
+                $"Position-coincident duplicates (max deviation {pair.Measure:G4} ≤ tolerance {tolerance:G4}): " +
+                $"{pair.A:D} and {pair.B:D}. Which copy to keep is a human decision.",
+                new[] { "deleteOneDuplicate" }))
+            .ToList();
+        if (findings.Count > limit)
+        {
+            findings.RemoveAt(findings.Count - 1);
+            truncated = true;
+        }
+        return (findings, scanned, truncated);
+    }
+
+    // Junk census: unused block definitions (no top-level or nested references — a chain of
+    // unused nesting surfaces root-first, the child becomes flaggable after the root is purged),
+    // empty leaf layers (no objects incl. hidden, no children, not current), and invalid objects.
+    // Bad objects propose QUARANTINE, never deletion — they are often repairable.
+    private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditPurgeCandidates(
+        global::Rhino.RhinoDoc document,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var findings = new List<RhinoAuditFinding>();
+        var scanned = 0;
+        var truncated = false;
+
+        foreach (var definition in document.InstanceDefinitions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (definition is null || definition.IsDeleted)
+            {
+                continue;
+            }
+            scanned++;
+            if (definition.InUse(1))
+            {
+                continue;
+            }
+            findings.Add(new RhinoAuditFinding(
+                Hash($"unusedBlock|{definition.Id:D}")[..16],
+                "unusedBlockDefinition",
+                new[] { definition.Id },
+                Array.Empty<string>(),
+                null,
+                $"Block definition '{definition.Name}' has no references (top-level or nested); " +
+                $"{definition.ObjectCount} member object(s).",
+                new[] { "purgeBlockDefinition" }));
+        }
+
+        var layersWithObjects = new HashSet<int>();
+        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator()))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            layersWithObjects.Add(rhinoObject.Attributes.LayerIndex);
+        }
+        var parentIds = new HashSet<Guid>();
+        foreach (var layer in document.Layers)
+        {
+            if (layer is not null && !layer.IsDeleted && layer.ParentLayerId != Guid.Empty)
+            {
+                parentIds.Add(layer.ParentLayerId);
+            }
+        }
+        foreach (var layer in document.Layers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (layer is null || layer.IsDeleted)
+            {
+                continue;
+            }
+            scanned++;
+            if (layersWithObjects.Contains(layer.Index) ||
+                parentIds.Contains(layer.Id) ||
+                layer.Index == document.Layers.CurrentLayerIndex)
+            {
+                continue;
+            }
+            findings.Add(new RhinoAuditFinding(
+                Hash($"emptyLayer|{layer.Id:D}")[..16],
+                "emptyLayer",
+                new[] { layer.Id },
+                new[] { LayerFingerprint(layer) },
+                null,
+                $"Layer '{layer.FullPath}' is an empty leaf (no objects including hidden, no children).",
+                new[] { "deleteLayer" }));
+        }
+
+        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator())
+                     .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            scanned++;
+            if (rhinoObject.Geometry is null || rhinoObject.Geometry.IsValidWithLog(out var log))
+            {
+                continue;
+            }
+            var reason = (log ?? string.Empty).Split('\n').FirstOrDefault()?.Trim();
+            findings.Add(new RhinoAuditFinding(
+                Hash($"badObject|{rhinoObject.Id:D}")[..16],
+                "badObject",
+                new[] { rhinoObject.Id },
+                new[] { ToState(rhinoObject).Fingerprint },
+                null,
+                $"Invalid geometry ({rhinoObject.Geometry.ObjectType}): " +
+                $"{(string.IsNullOrEmpty(reason) ? "IsValidWithLog failed" : reason)} " +
+                "— quarantine, do not delete (often repairable).",
+                new[] { "quarantineToLayer" }));
+            if (findings.Count > limit * 2)
+            {
+                truncated = true;
+                break;
+            }
+        }
+
+        var ordered = findings
+            .OrderBy(finding => finding.Kind, StringComparer.Ordinal)
+            .ThenBy(finding => finding.FindingId, StringComparer.Ordinal)
+            .Take(limit + 1)
+            .ToList();
+        if (ordered.Count > limit)
+        {
+            ordered.RemoveAt(ordered.Count - 1);
+            truncated = true;
+        }
+        return (ordered, scanned, truncated);
+    }
+
     protected override Task<RhinoSceneObjectState> InspectObjectCoreAsync(
         global::Rhino.RhinoDoc document,
         Guid objectId,
