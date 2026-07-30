@@ -11,6 +11,7 @@ import type {
   RuntimeState,
   SessionMode,
   SessionOrderRequest,
+  SessionRole,
 } from "../types";
 
 const demoModels: ModelInfo[] = [
@@ -85,6 +86,7 @@ const demoState: RuntimeState = {
       summary: "Panel grid and boundary cleanup",
       status: "verifying",
       mode: "auto",
+      role: "modeler",
       modelProfile: "xhigh",
       pinnedModel: "gpt-5.6-sol",
       backend: "codex",
@@ -145,6 +147,7 @@ const demoState: RuntimeState = {
       summary: "Reconnect three staged sockets",
       status: "queued",
       mode: "auto",
+      role: "modeler",
       modelProfile: "low",
       effectiveModel: "gpt-5.6-terra",
       reasoning: "low",
@@ -186,6 +189,7 @@ const demoState: RuntimeState = {
       summary: "Normalize generated layer names",
       status: "paused",
       mode: "plan",
+      role: "modeler",
       modelProfile: "medium",
       effectiveModel: "gpt-5.6-sol",
       reasoning: "medium",
@@ -212,6 +216,7 @@ const demoState: RuntimeState = {
       summary: "Alternative atrium geometry",
       status: "blocked",
       mode: "auto",
+      role: "modeler",
       modelProfile: "xhigh",
       effectiveModel: "gpt-5.6-sol",
       reasoning: "xhigh",
@@ -414,7 +419,7 @@ export function createMockApiClient(): GptinoApiClient {
       listeners.add(onState);
       return () => listeners.delete(onState);
     },
-    async createSession(name: string, grasshopperDoc?: string) {
+    async createSession(name: string, grasshopperDoc?: string, role?: SessionRole) {
       await delay();
       const ordinal = state.sessions.length + 1;
       state.sessions.push({
@@ -423,6 +428,7 @@ export function createMockApiClient(): GptinoApiClient {
         summary: "Ready for a modeling request",
         status: "idle",
         mode: "auto",
+        role: role ?? "modeler",
         modelProfile: "xhigh",
         pinnedModel: "gpt-5.6-sol",
         paused: false,
@@ -464,6 +470,7 @@ export function createMockApiClient(): GptinoApiClient {
           summary: "Restored session",
           status: "idle",
           mode: "auto",
+          role: "modeler",
           modelProfile: "xhigh",
           paused: false,
           messages: [],
@@ -625,6 +632,7 @@ export function createMockApiClient(): GptinoApiClient {
         summary: "Imported from a past project",
         status: "idle",
         mode: "auto",
+        role: "modeler",
         modelProfile: "xhigh",
         paused: false,
         boundGrasshopperDocId: null,

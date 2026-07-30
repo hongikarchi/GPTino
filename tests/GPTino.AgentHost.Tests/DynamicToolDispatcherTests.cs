@@ -98,12 +98,15 @@ public sealed class DynamicToolDispatcherTests
             Assert.Contains("plan mode", result.Text, StringComparison.Ordinal);
             Assert.Contains("change_submit is disabled by design", result.Text, StringComparison.Ordinal);
             Assert.Contains("Present the plan to the user", result.Text, StringComparison.Ordinal);
+            Assert.Contains("switch this session to auto", result.Text, StringComparison.Ordinal);
         }
         else
         {
+            // A role denial must not promise that a mode flip would help — the role is permanent.
             Assert.Contains("cannot submit live changes", result.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("session that can write", result.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain("switch this session to auto", result.Text, StringComparison.Ordinal);
         }
-        Assert.Contains("switch this session to auto", result.Text, StringComparison.Ordinal);
         Assert.Equal(0, backend.SubmitCount);
 
         // Role denials create no job; the problem log is the only structured record of them.
@@ -115,9 +118,76 @@ public sealed class DynamicToolDispatcherTests
             .ToArray();
         var denial = Assert.Single(rows, row => row.GetProperty("kind").GetString() == "role-denial");
         Assert.Equal(session.Id, denial.GetProperty("sessionId").GetGuid());
-        Assert.Equal(role, denial.GetProperty("role").GetString());
+        // Plan mode gates the write (the 'planner' role is only a creation alias now), so the log
+        // names the mode, not a role — "modeler denied change_submit" would read as nonsense.
+        Assert.Equal(role == "planner" ? "plan-mode" : role, denial.GetProperty("role").GetString());
         Assert.Equal("change_submit", denial.GetProperty("tool").GetString());
         Assert.Equal(result.Text, denial.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task ReadOnlyRoleOutranksPlanModeInDenialMessageAndProblemLog()
+    {
+        using var directory = new TestDirectory();
+        var (dispatcher, store, backend) = await CreateDispatcherAsync(directory);
+        // The overlap state is reachable: nothing gates PUT /mode by role, so a read-only session
+        // can sit in plan mode. The denial must not claim that switching to auto would let the
+        // write through (it would not), and the problem log must name the permanent denier.
+        var session = await store.CreateSessionAsync(new CreateSessionRequest("Viewer", "read-only"));
+        await store.SetModeAsync(session.Id, "plan");
+        await store.SetThreadIdAsync(session.Id, "viewer-thread");
+
+        var result = await dispatcher.DispatchAsync(
+            Call("change_submit", "{}", threadId: "viewer-thread"),
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("read-only", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("switch this session to auto", result.Text, StringComparison.Ordinal);
+        Assert.Equal(0, backend.SubmitCount);
+
+        var logPath = Path.Combine(directory.GetPath("data"), "problem-log.jsonl");
+        var rows = (await File.ReadAllLinesAsync(logPath))
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => JsonDocument.Parse(line).RootElement.Clone())
+            .ToArray();
+        var denial = Assert.Single(rows, row => row.GetProperty("kind").GetString() == "role-denial");
+        Assert.Equal("read-only", denial.GetProperty("role").GetString());
+    }
+
+    [Fact]
+    public async Task CuratorSubmitsInAutoModeAndIsGatedOnlyWhileInPlanMode()
+    {
+        using var directory = new TestDirectory();
+        var (dispatcher, store, backend) = await CreateDispatcherAsync(directory);
+        var session = await store.CreateSessionAsync(new CreateSessionRequest("Doc care", "curator"));
+        await store.SetThreadIdAsync(session.Id, "curator-thread");
+
+        // Role and mode are orthogonal: a curator writes through the same broker as a modeler.
+        var allowed = await dispatcher.DispatchAsync(
+            Call("change_submit", """{"summary":"Purge unused"}""", threadId: "curator-thread"),
+            CancellationToken.None);
+        Assert.True(allowed.Success, allowed.Text);
+        Assert.Equal(1, backend.SubmitCount);
+        Assert.Equal("curator", backend.SubmittedSession?.Role);
+
+        // Flipping to plan mode gates the write without erasing the curatorship...
+        await store.SetModeAsync(session.Id, "plan");
+        var gated = await dispatcher.DispatchAsync(
+            Call("change_submit", """{"summary":"Purge unused"}""", threadId: "curator-thread"),
+            CancellationToken.None);
+        Assert.False(gated.Success);
+        Assert.Contains("plan mode", gated.Text, StringComparison.Ordinal);
+        Assert.Equal(1, backend.SubmitCount);
+
+        // ...and flipping back restores the write path with the role intact.
+        await store.SetModeAsync(session.Id, "auto");
+        var restored = await dispatcher.DispatchAsync(
+            Call("change_submit", """{"summary":"Purge unused"}""", threadId: "curator-thread"),
+            CancellationToken.None);
+        Assert.True(restored.Success, restored.Text);
+        Assert.Equal(2, backend.SubmitCount);
+        Assert.Equal("curator", backend.SubmittedSession?.Role);
     }
 
     [Fact]

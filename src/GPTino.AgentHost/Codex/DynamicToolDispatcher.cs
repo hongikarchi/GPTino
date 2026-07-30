@@ -251,18 +251,19 @@ public sealed class DynamicToolDispatcher
     {
         var session = await _store.FindSessionByThreadAsync(call.ThreadId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The calling Codex thread is not bound to a GPTino session.");
-        if (string.Equals(session.Role, "planner", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(session.Role, "read-only", StringComparison.OrdinalIgnoreCase))
+        if (IsPlanMode(session) || IsReadOnlyRole(session))
         {
             // The guard is by design; the denial must teach the way out and leave a durable
             // record — it creates no job, so without the problem-log row a full authoring turn
-            // dead-ending here would be invisible to structured records.
-            var message = string.Equals(session.Role, "planner", StringComparison.OrdinalIgnoreCase)
-                ? "This session is in plan mode: change_submit is disabled by design. Present the " +
-                  "plan to the user and ask them to switch this session to auto to apply it."
-                : $"Session role '{session.Role}' cannot submit live changes; present the intended " +
-                  "change to the user and ask them to switch this session to auto to apply it.";
-            _problems?.RecordRoleDenial(session.Id, session.Role, call.Tool, message);
+            // dead-ending here would be invisible to structured records. The read-only role wins
+            // the message: it is the permanent denial, and a read-only session flipped into plan
+            // mode must not be told that switching to auto would let the write through.
+            var message = IsReadOnlyRole(session)
+                ? $"Session role '{session.Role}' cannot submit live changes; present the intended " +
+                  "change to the user and ask them to run it from a session that can write."
+                : "This session is in plan mode: change_submit is disabled by design. Present the " +
+                  "plan to the user and ask them to switch this session to auto to apply it.";
+            _problems?.RecordRoleDenial(session.Id, DenialReason(session), call.Tool, message);
             throw new InvalidOperationException(message);
         }
         if (session.State == SessionStates.Paused)
@@ -274,16 +275,18 @@ public sealed class DynamicToolDispatcher
 
     private async Task<object> ArrangeLayoutAsync(DynamicToolCall call, CancellationToken cancellationToken)
     {
-        // arrange_layout is a write (it submits a canvas.move), so it carries the same role/pause gate as
-        // change_submit: planner/read-only sessions cannot mutate the live document.
+        // arrange_layout is a write (it submits a canvas.move), so it carries the same mode/role gate as
+        // change_submit: plan-mode and read-only sessions cannot mutate the live document.
         var session = await _store.FindSessionByThreadAsync(call.ThreadId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The calling Codex thread is not bound to a GPTino session.");
-        if (string.Equals(session.Role, "planner", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(session.Role, "read-only", StringComparison.OrdinalIgnoreCase))
+        if (IsPlanMode(session) || IsReadOnlyRole(session))
         {
-            var message = $"Session role '{session.Role}' cannot submit live changes; arrange_layout tidies " +
-                "the canvas by moving components, so switch this session to auto to use it.";
-            _problems?.RecordRoleDenial(session.Id, session.Role, call.Tool, message);
+            var message = IsReadOnlyRole(session)
+                ? $"Session role '{session.Role}' cannot submit live changes; arrange_layout tidies " +
+                  "the canvas by moving components, so run it from a session that can write."
+                : "This session is in plan mode and cannot submit live changes; arrange_layout tidies " +
+                  "the canvas by moving components, so switch this session to auto to use it.";
+            _problems?.RecordRoleDenial(session.Id, DenialReason(session), call.Tool, message);
             throw new InvalidOperationException(message);
         }
         if (session.State == SessionStates.Paused)
@@ -292,6 +295,24 @@ public sealed class DynamicToolDispatcher
         }
         return await _backend.ArrangeLayoutAsync(session, call.Arguments, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Mode is orthogonal to role since the curator split; the 'planner' role check survives only
+    /// as a defensive alias for rows written by a pre-migration server mid-flight.
+    /// </summary>
+    private static bool IsPlanMode(SessionRecord session) =>
+        string.Equals(session.Mode, "plan", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(session.Role, "planner", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsReadOnlyRole(SessionRecord session) =>
+        string.Equals(session.Role, "read-only", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>What the problem-log row names as the denier. The read-only role outranks plan
+    /// mode — a read-only session flipped into plan mode can never write in any mode, so logging
+    /// it as a plan-mode denial would skew the harvested denial data — and a plain modeler's
+    /// plan-mode denial names the mode, because "modeler denied change_submit" reads as nonsense.</summary>
+    private static string DenialReason(SessionRecord session) =>
+        IsReadOnlyRole(session) ? session.Role : "plan-mode";
 
     private async Task<object> ReadSnapshotAsync(
         DynamicToolCall call,

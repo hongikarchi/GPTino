@@ -344,13 +344,15 @@ api.MapPut("/sessions/{id:guid}/mode", async (
     SessionStore sessionStore,
     CancellationToken cancellationToken) =>
 {
-    var role = request.Mode.Trim().ToLowerInvariant() switch
+    // Mode is orthogonal to role: flipping plan/auto must never rewrite WHO the session is
+    // (the pre-split encoding turned every plan toggle into a role rewrite).
+    var mode = request.Mode.Trim().ToLowerInvariant() switch
     {
-        "plan" => "planner",
-        "auto" => "modeler",
+        "plan" => "plan",
+        "auto" => "auto",
         _ => throw new ArgumentException("Mode must be 'plan' or 'auto'.")
     };
-    await sessionStore.UpdatePreferencesAsync(id, role, null, null, false, cancellationToken);
+    await sessionStore.SetModeAsync(id, mode, cancellationToken);
     events.Publish();
     return Results.NoContent();
 });
@@ -363,7 +365,6 @@ api.MapPut("/sessions/{id:guid}/model", async (
 {
     await sessionStore.UpdatePreferencesAsync(
         id,
-        null,
         NormalizeEffort(request.ModelProfile),
         request.Model,
         true,

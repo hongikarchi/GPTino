@@ -94,6 +94,22 @@ public sealed class SessionStore
                     "ALTER TABLE sessions ADD COLUMN goal_enabled INTEGER NOT NULL DEFAULT 0;",
                     cancellationToken).ConfigureAwait(false);
             }
+            // Mode (auto|plan) is orthogonal to role as of the curator work: role says WHO the
+            // session is (modeler|curator|read-only), mode says HOW it currently runs. Legacy
+            // databases encoded plan mode by rewriting role to 'planner'; the idempotent UPDATE
+            // below migrates those rows once (afterwards no 'planner' rows exist).
+            if (!await HasColumnAsync(connection, "sessions", "mode", cancellationToken)
+                    .ConfigureAwait(false))
+            {
+                await ExecuteAsync(
+                    connection,
+                    "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'auto';",
+                    cancellationToken).ConfigureAwait(false);
+            }
+            await ExecuteAsync(
+                connection,
+                "UPDATE sessions SET mode='plan', role='modeler' WHERE lower(role)='planner';",
+                cancellationToken).ConfigureAwait(false);
             // model_profile now stores a reasoning-effort level (low..ultra). Rewrite any legacy
             // profile values from pre-refactor sessions to the nearest effort. Idempotent: effort
             // values fall through the ELSE untouched.
@@ -135,7 +151,7 @@ public sealed class SessionStore
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled FROM sessions WHERE id=$id;";
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,mode FROM sessions WHERE id=$id;";
         command.Parameters.AddWithValue("$id", id.ToString("D"));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? MapSession(reader) : null;
@@ -145,7 +161,7 @@ public sealed class SessionStore
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled FROM sessions WHERE codex_thread_id=$thread;";
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,mode FROM sessions WHERE codex_thread_id=$thread;";
         command.Parameters.AddWithValue("$thread", threadId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? MapSession(reader) : null;
@@ -171,15 +187,16 @@ public sealed class SessionStore
             var id = Guid.NewGuid();
             var now = DateTimeOffset.UtcNow;
             var grasshopperDoc = NormalizeGrasshopperDoc(request.GrasshopperDoc);
+            var (role, mode) = NormalizeRoleAndMode(request.Role);
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
-                INSERT INTO sessions(id,name,role,model_profile,model,state,sort_order,created_at,updated_at,gh_doc,goal_enabled)
-                VALUES($id,$name,$role,$profile,$model,$state,$order,$created,$updated,$ghDoc,$goal);
+                INSERT INTO sessions(id,name,role,model_profile,model,state,sort_order,created_at,updated_at,gh_doc,goal_enabled,mode)
+                VALUES($id,$name,$role,$profile,$model,$state,$order,$created,$updated,$ghDoc,$goal,$mode);
                 """;
             command.Parameters.AddWithValue("$id", id.ToString("D"));
             command.Parameters.AddWithValue("$name", request.Name.Trim());
-            command.Parameters.AddWithValue("$role", Normalize(request.Role, "modeler"));
+            command.Parameters.AddWithValue("$role", role);
             command.Parameters.AddWithValue("$profile", Normalize(request.ModelProfile, "xhigh"));
             command.Parameters.AddWithValue("$model", (object?)request.Model ?? DBNull.Value);
             command.Parameters.AddWithValue("$state", SessionStates.Idle);
@@ -188,12 +205,13 @@ public sealed class SessionStore
             command.Parameters.AddWithValue("$updated", now.ToString("O"));
             command.Parameters.AddWithValue("$ghDoc", (object?)grasshopperDoc ?? DBNull.Value);
             command.Parameters.AddWithValue("$goal", request.GoalEnabled ? 1 : 0);
+            command.Parameters.AddWithValue("$mode", mode);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             transaction.Commit();
             return new SessionRecord(
                 id,
                 request.Name.Trim(),
-                Normalize(request.Role, "modeler"),
+                role,
                 Normalize(request.ModelProfile, "xhigh"),
                 request.Model,
                 SessionStates.Idle,
@@ -203,7 +221,8 @@ public sealed class SessionStore
                 now,
                 now,
                 grasshopperDoc,
-                request.GoalEnabled);
+                request.GoalEnabled,
+                mode);
         }
         finally
         {
@@ -457,7 +476,7 @@ public sealed class SessionStore
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled FROM sessions WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC;";
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,mode FROM sessions WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC;";
         var sessions = new List<SessionRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -703,9 +722,36 @@ public sealed class SessionStore
     public Task SetThreadIdAsync(Guid id, string threadId, CancellationToken cancellationToken = default) =>
         UpdateSessionAsync(id, null, null, threadId, cancellationToken);
 
+    /// <summary>
+    /// Flips the session between auto and plan without touching anything else. Deliberately not
+    /// part of UpdatePreferencesAsync: before the role/mode split, the mode endpoint rewrote the
+    /// role column and silently erased what the session WAS (a curator toggled to plan would have
+    /// come back a modeler).
+    /// </summary>
+    public async Task SetModeAsync(Guid id, string mode, CancellationToken cancellationToken = default)
+    {
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE sessions SET mode=$mode, updated_at=$updated WHERE id=$id;";
+            command.Parameters.AddWithValue("$mode", mode);
+            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$id", id.ToString("D"));
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new KeyNotFoundException($"Session {id:D} was not found.");
+            }
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
     public async Task UpdatePreferencesAsync(
         Guid id,
-        string? role,
         string? modelProfile,
         string? model,
         bool setModel,
@@ -718,13 +764,11 @@ public sealed class SessionStore
             await using var command = connection.CreateCommand();
             command.CommandText = """
                 UPDATE sessions
-                SET role=COALESCE($role,role),
-                    model_profile=COALESCE($profile,model_profile),
+                SET model_profile=COALESCE($profile,model_profile),
                     model=CASE WHEN $set_model=1 THEN $model ELSE model END,
                     updated_at=$updated
                 WHERE id=$id;
                 """;
-            command.Parameters.AddWithValue("$role", (object?)role ?? DBNull.Value);
             command.Parameters.AddWithValue("$profile", (object?)modelProfile ?? DBNull.Value);
             command.Parameters.AddWithValue("$set_model", setModel ? 1 : 0);
             command.Parameters.AddWithValue("$model", (object?)model ?? DBNull.Value);
@@ -925,7 +969,7 @@ public sealed class SessionStore
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled FROM sessions WHERE deleted_at IS NULL ORDER BY sort_order;";
+        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,mode FROM sessions WHERE deleted_at IS NULL ORDER BY sort_order;";
         var sessions = new List<SessionRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -968,7 +1012,8 @@ public sealed class SessionStore
             DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture),
             DateTimeOffset.Parse(reader.GetString(10), System.Globalization.CultureInfo.InvariantCulture),
             reader.IsDBNull(11) ? null : reader.GetString(11),
-            !reader.IsDBNull(12) && reader.GetInt32(12) != 0);
+            !reader.IsDBNull(12) && reader.GetInt32(12) != 0,
+            reader.IsDBNull(13) ? "auto" : reader.GetString(13));
 
     private static async Task<HashSet<Guid>> ReadSessionIdsAsync(
         SqliteConnection connection,
@@ -1014,6 +1059,25 @@ public sealed class SessionStore
 
     private static string Normalize(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim().ToLowerInvariant();
+
+    /// <summary>
+    /// Role says WHO the session is and is fixed at creation; mode says HOW it starts. 'planner'
+    /// is accepted as a legacy alias for a modeler created in plan mode (the pre-curator encoding
+    /// where plan/auto rewrote the role), so older callers keep their meaning. Unknown roles fail
+    /// loudly instead of being coerced — a typo'd 'curator' must not silently create a modeler
+    /// with modeler-level write access.
+    /// </summary>
+    private static (string Role, string Mode) NormalizeRoleAndMode(string? role)
+    {
+        var normalized = string.IsNullOrWhiteSpace(role) ? "modeler" : role.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "modeler" or "curator" or "read-only" => (normalized, "auto"),
+            "planner" => ("modeler", "plan"),
+            _ => throw new ArgumentException(
+                $"Unknown session role '{role}'. Expected 'modeler', 'curator', or 'read-only'.")
+        };
+    }
 
     // Lowercased to match ComputeDocumentKey's canonical lowercase-hex form: the backend resolves
     // docKeys case-insensitively, but the panel compares boundGrasshopperDocId strictly, so a

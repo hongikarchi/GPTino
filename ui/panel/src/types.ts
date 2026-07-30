@@ -8,6 +8,8 @@ export type SessionStatus =
   | "blocked"
   | "idle";
 export type SessionMode = "plan" | "auto";
+/** WHO the session is, fixed at creation — orthogonal to mode, which says HOW it currently runs. */
+export type SessionRole = "modeler" | "curator" | "read-only";
 // Reasoning-effort level (ascending). The session field is still named modelProfile on the wire for
 // back-compat, but it carries the effort — set directly (no adaptive routing), clamped to the model.
 export type ModelProfile = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -82,6 +84,7 @@ export interface GptinoSession {
   summary?: string;
   status: SessionStatus;
   mode: SessionMode;
+  role: SessionRole;
   modelProfile: ModelProfile;
   pinnedModel?: string | null;
   goalEnabled?: boolean;

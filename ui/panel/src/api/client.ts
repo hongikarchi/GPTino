@@ -8,6 +8,7 @@ import type {
   RuntimeState,
   SessionMode,
   SessionOrderRequest,
+  SessionRole,
 } from "../types";
 import { createMockApiClient } from "./mock";
 
@@ -19,7 +20,7 @@ export interface GptinoApiClient {
     onError?: (error: Error) => void,
   ): () => void;
   listModels(): Promise<ModelInfo[]>;
-  createSession(name: string, grasshopperDoc?: string): Promise<void>;
+  createSession(name: string, grasshopperDoc?: string, role?: SessionRole): Promise<void>;
   reorderSessions(request: SessionOrderRequest): Promise<void>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   /** Stop the current turn and pull the last user message back for editing; returns its text. */
@@ -153,12 +154,12 @@ class HttpApiClient implements GptinoApiClient {
     });
   }
 
-  createSession(name: string, grasshopperDoc?: string): Promise<void> {
+  createSession(name: string, grasshopperDoc?: string, role?: SessionRole): Promise<void> {
     return this.request("/sessions", {
       method: "POST",
       body: JSON.stringify({
         name,
-        role: "modeler",
+        role: role ?? "modeler",
         // New sessions default to xhigh reasoning effort on the GPT-5.6-Sol model (see also mock.ts).
         modelProfile: "xhigh",
         model: "gpt-5.6-sol",

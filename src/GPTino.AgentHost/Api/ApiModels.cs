@@ -24,7 +24,12 @@ public sealed record SessionRecord(
     string? GrasshopperDoc = null,
     // Opt-in: when true, the session's Codex thread gets a native goal (objective + optional budget)
     // via thread/goal/set. Off by default.
-    bool GoalEnabled = false);
+    bool GoalEnabled = false,
+    // Orthogonal to Role: Role says WHO the session is (modeler|curator|read-only, fixed at
+    // creation), Mode says HOW it currently runs (auto|plan, user-toggleable). Before the curator
+    // work plan mode was encoded by rewriting Role to 'planner', which made a mode flip erase the
+    // session's identity.
+    string Mode = "auto");
 
 public sealed record ChatMessage(
     long Id,

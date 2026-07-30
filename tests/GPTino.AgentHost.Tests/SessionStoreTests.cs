@@ -43,6 +43,86 @@ public sealed class SessionStoreTests
     }
 
     [Fact]
+    public async Task InitializeMigratesPlannerRowsToModelerInPlanMode()
+    {
+        using var directory = new TestDirectory();
+        var databasePath = directory.GetPath("legacy/sessions.db");
+        var legacyId = Guid.NewGuid();
+        await CreateLegacySchemaDatabaseAsync(databasePath, legacyId);
+        // A pre-split row where plan mode was encoded by rewriting the role to 'planner'.
+        var plannerId = Guid.NewGuid();
+        await ExecuteRawAsync(
+            databasePath,
+            $"""
+            INSERT INTO sessions(id,name,role,model_profile,state,sort_order,created_at,updated_at)
+            VALUES ('{plannerId:D}','Planning','planner','xhigh','idle',1,'{DateTimeOffset.UtcNow:O}','{DateTimeOffset.UtcNow:O}');
+            """);
+
+        var store = new SessionStore(databasePath);
+        await store.InitializeAsync();
+
+        var migrated = await store.FindSessionAsync(plannerId);
+        Assert.NotNull(migrated);
+        Assert.Equal("modeler", migrated!.Role);
+        Assert.Equal("plan", migrated.Mode);
+        // Untouched legacy rows land in auto mode with their role preserved.
+        var legacy = await store.FindSessionAsync(legacyId);
+        Assert.Equal("modeler", legacy!.Role);
+        Assert.Equal("auto", legacy.Mode);
+
+        // Idempotent across restarts.
+        var reopened = new SessionStore(databasePath);
+        await reopened.InitializeAsync();
+        Assert.Equal("plan", (await reopened.FindSessionAsync(plannerId))!.Mode);
+    }
+
+    [Fact]
+    public async Task SetModeFlipsModeWithoutTouchingRole()
+    {
+        using var directory = new TestDirectory();
+        var store = new SessionStore(directory.GetPath("sessions.db"));
+        await store.InitializeAsync();
+        var curator = await store.CreateSessionAsync(new CreateSessionRequest("Doc care", "curator"));
+        Assert.Equal("curator", curator.Role);
+        Assert.Equal("auto", curator.Mode);
+
+        // The pre-split bug class this guards: a mode flip must never rewrite WHO the session is.
+        await store.SetModeAsync(curator.Id, "plan");
+        var flipped = await store.FindSessionAsync(curator.Id);
+        Assert.Equal("curator", flipped!.Role);
+        Assert.Equal("plan", flipped.Mode);
+
+        await store.SetModeAsync(curator.Id, "auto");
+        Assert.Equal("auto", (await store.FindSessionAsync(curator.Id))!.Mode);
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => store.SetModeAsync(Guid.NewGuid(), "plan"));
+    }
+
+    [Fact]
+    public async Task CreateRejectsUnknownRolesInsteadOfCoercing()
+    {
+        using var directory = new TestDirectory();
+        var store = new SessionStore(directory.GetPath("sessions.db"));
+        await store.InitializeAsync();
+        // A typo'd role must not silently create a modeler with modeler-level write access.
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => store.CreateSessionAsync(new CreateSessionRequest("Oops", "kurator")));
+    }
+
+    private static async Task ExecuteRawAsync(string databasePath, string sql)
+    {
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.GetFullPath(databasePath),
+            Mode = SqliteOpenMode.ReadWrite
+        }.ToString();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    [Fact]
     public async Task SoftDeleteHidesRestoreRecoversAndPurgeRemovesSessions()
     {
         using var directory = new TestDirectory();
@@ -159,6 +239,8 @@ public sealed class SessionStoreTests
         var store = new SessionStore(databasePath);
 
         await store.InitializeAsync();
+        // 'planner' is a legacy alias from the pre-split encoding: it creates a modeler in plan
+        // mode instead of a distinct role, so old callers keep their meaning.
         var first = await store.CreateSessionAsync(new CreateSessionRequest("  Facade Study  ", " PLANNER ", " HIGH "));
         var second = await store.CreateSessionAsync(new CreateSessionRequest("Detailing"));
 
@@ -170,7 +252,8 @@ public sealed class SessionStoreTests
             {
                 Assert.Equal(first.Id, session.Id);
                 Assert.Equal("Facade Study", session.Name);
-                Assert.Equal("planner", session.Role);
+                Assert.Equal("modeler", session.Role);
+                Assert.Equal("plan", session.Mode);
                 Assert.Equal("high", session.ModelProfile);
                 Assert.Equal(0, session.Order);
                 Assert.Equal(SessionStates.Idle, session.State);
@@ -179,6 +262,7 @@ public sealed class SessionStoreTests
             {
                 Assert.Equal(second.Id, session.Id);
                 Assert.Equal("modeler", session.Role);
+                Assert.Equal("auto", session.Mode);
                 Assert.Equal("xhigh", session.ModelProfile);
                 Assert.Equal(1, session.Order);
             });
