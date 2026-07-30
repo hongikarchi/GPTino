@@ -145,6 +145,14 @@ public sealed class SessionOrchestrator : IDisposable
                 var imagePaths = urlImages.Count == 0
                     ? (attachedImagePaths.Length > 0 ? attachedImagePaths : null)
                     : attachedImagePaths.Concat(urlImages.Select(a => a.AbsolutePath)).ToArray();
+                // If a turn is already running for this session, inject this message into it (turn/steer)
+                // — a live course-correction that keeps the in-flight work — instead of queuing a fresh
+                // turn behind the session gate. Steer fails if the turn already ended; then we fall back.
+                if (await TrySteerActiveTurnAsync(sessionId, messageContent, attachmentsBlock, imagePaths)
+                        .ConfigureAwait(false))
+                {
+                    return;
+                }
                 await RunTurnAsync(sessionId, messageContent, attachmentsBlock, imagePaths, _shutdown)
                     .ConfigureAwait(false);
             },
@@ -302,6 +310,7 @@ public sealed class SessionOrchestrator : IDisposable
                         selection.Model,
                         cancellationToken).ConfigureAwait(false);
                     await _store.SetThreadIdAsync(sessionId, threadId, cancellationToken).ConfigureAwait(false);
+                    await TrySetThreadGoalAsync(threadId, content, cancellationToken).ConfigureAwait(false);
                     content = await PrependImportedContextAsync(sessionId, content, cancellationToken).ConfigureAwait(false);
                 }
                 else
@@ -1267,6 +1276,62 @@ public sealed class SessionOrchestrator : IDisposable
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             _logger.LogWarning(exception, "Could not interrupt active turn for paused session {SessionId}.", sessionId);
+        }
+    }
+
+    // C-2: inject a message into the session's running turn (turn/steer) instead of queuing a new
+    // turn. Returns false when there is no active turn OR steer failed (turn ended) — the caller then
+    // starts a fresh turn. Steer bypasses the per-session turn gate on purpose: it is not a new turn.
+    private async Task<bool> TrySteerActiveTurnAsync(
+        Guid sessionId,
+        string message,
+        string? attachmentsBlock,
+        IReadOnlyList<string>? imagePaths)
+    {
+        if (!_activeTurns.TryGetValue(sessionId, out var active))
+        {
+            return false;
+        }
+        var steerText = attachmentsBlock is null ? message : $"{message}\n\n{attachmentsBlock}";
+        try
+        {
+            await _codex.SteerTurnAsync(active.ThreadId, active.TurnId, steerText, imagePaths, _shutdown)
+                .ConfigureAwait(false);
+            await _store.SetSessionStateAsync(sessionId, SessionStates.Running, message, _shutdown)
+                .ConfigureAwait(false);
+            _events.Publish();
+            return true;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogDebug(
+                exception,
+                "turn/steer for session {SessionId} failed (turn likely ended); starting a fresh turn.",
+                sessionId);
+            return false;
+        }
+    }
+
+    // C-1: give a new thread Codex's native goal (objective + optional token budget) so it tracks
+    // progress. Best-effort — a goal-set failure never blocks the turn. Done-verification still lives
+    // in GPTino's acceptance predicates; the goal only supplies objective + budget context to Codex.
+    private async Task TrySetThreadGoalAsync(string threadId, string objective, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var goal = objective +
+                "\n\nDone = every acceptance predicate you declare passes (verified against live " +
+                "Grasshopper output). Work in bounded, staged, verified steps; stop and report after " +
+                "two attempts with no progress toward passing.";
+            await _codex.SetThreadGoalAsync(threadId, goal, _options.GoalTokenBudget, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogDebug(
+                exception,
+                "thread/goal/set failed for thread {ThreadId}; continuing without a native goal.",
+                threadId);
         }
     }
 

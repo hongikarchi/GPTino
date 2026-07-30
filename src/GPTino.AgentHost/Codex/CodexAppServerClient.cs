@@ -216,6 +216,52 @@ public sealed class CodexAppServerClient : ICodexSessionClient, IModelCatalog, I
         _ = await CallAsync("turn/interrupt", new { threadId, turnId }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task SteerTurnAsync(
+        string threadId,
+        string turnId,
+        string message,
+        IReadOnlyList<string>? imagePaths = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Same input shape as turn/start (images lead as localImage items, then the user text), but
+        // routed into the running turn. expectedTurnId is the precondition: turn/steer fails if this
+        // is not the thread's active turn (e.g. it already finished), and the caller starts a fresh turn.
+        var input = new List<object>();
+        if (imagePaths is { Count: > 0 })
+        {
+            foreach (var path in imagePaths)
+            {
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    input.Add(new { type = "localImage", path = Path.GetFullPath(path) });
+                }
+            }
+        }
+        input.Add(new { type = "text", text = message });
+        _ = await CallAsync(
+            "turn/steer",
+            new { threadId, expectedTurnId = turnId, input },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task SetThreadGoalAsync(
+        string threadId,
+        string objective,
+        long? tokenBudget,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["threadId"] = threadId,
+            ["objective"] = objective
+        };
+        if (tokenBudget is { } budget)
+        {
+            parameters["tokenBudget"] = budget;
+        }
+        _ = await CallAsync("thread/goal/set", parameters, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<CodexTurnReadResult?> ReadTurnAsync(
         string threadId,
         string turnId,

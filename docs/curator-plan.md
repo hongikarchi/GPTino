@@ -1,0 +1,273 @@
+# Rhino Curator 비서 + 데이터 플로우 뷰 — 개발 계획 (2026-07-30)
+
+2026-07-29~30 사용자 논의로 확정된 방향. 근거: 코드베이스 검증(UI/백엔드/문서 리더 3),
+설계 패널(탭 옹호/세션-role 옹호/데이터뷰 설계/기술 회의론 4-agent), 기존 Rhino MCP 소스
+조사(mcneel/RhinoMCP, jingcheng-chen/rhinomcp, 4kk11/RhinoMCPServer, reer-ide/rhino_mcp).
+
+## 확정 결정
+
+- **curator 비서 = UI는 별도 탭, 실체는 세션.** 탭은 표현 계층(스킨)이고, 실제 동작은
+  다른 세션 카드와 똑같이 curator role 세션이 단일 작성자 브로커를 통과한다.
+  브로커 게이트·fingerprint CAS·acceptance predicate·undo record·managed history를
+  전부 그대로 상속한다.
+- **기본 제공 세션**: Rhino 문서(파일 페어)당 curator 세션 1개. 삭제 불가, 역할 고정,
+  GH doc 바인딩 없음(`target:"rhino"`), 우선순위는 드래그 목록 밖(기본 최하위 +
+  작업별 "run next" 부스트). UI에는 항상 존재하는 것처럼 보이되 세션 레코드/codex
+  스레드는 첫 메시지에 lazy 생성.
+- **데이터 플로우 뷰**(GH가 Rhino에서 뭘 참조하고 뭘 bake하는지)는 탭 구축과 동시 진행.
+  별도 탭이 아니라 SessionCanvas의 토글형 데이터 레이어.
+- **역할 분담 원칙** (하우스룰 편입 예정): *계속 만질 파라메트릭 작업 → GH 세션 /
+  한 번 실행하고 끝나는 배치·정리 → curator.* 축은 "모델링 vs 정리"가 아니라
+  "살아있는 definition vs 일회성 배치"다 — 블록 scatter는 모델링이지만 one-shot이라
+  curator 소관. (roadmap #1의 컴포넌트-vs-라이브러리 판단 기준과 대칭.)
+
+## 왜 이 모양인가
+
+- **쓰기는 분리될 수 없다.** curator의 purge가 GH 파라미터가 라이브 참조 중인 객체를
+  지우는 것은 실제 세션 간 충돌이고, 이를 시각화하는 것이 캔버스(충돌 아크·큐 칩·commit
+  와이어)다. 탭이 쓰기 경로까지 분리하면 큐/writer 상태를 두 번째 표면에 복제(=문서에서
+  거부한 "no second dashboard")하거나 숨기게 된다.
+- **탐지는 서버 결정론, 모델은 triage만.** near-miss/중복/junk의 *발견*은 서버 audit
+  op이 결정론적으로 계산하고, 모델은 발견 목록의 분류·설명·수선 전략 선택만 한다.
+  (roadmap #2 "모델 자기신고 금지", #6 "좌표는 서버가 계산"과 동일 원칙.)
+- **빈 자리가 확인됐다.** MCP 조사 결과 McNeel 공식조차 레이어 생성/삭제/이동·블록·
+  purge·정리·수선의 typed tool이 전무하고 전부 run_python/run_command에 위임한다
+  (공식 rhino-organizer 에이전트 프롬프트: "벌크 재구성은 run_python을 써라").
+  jingcheng-chen도 레이어 3종 외에는 동일하며, delete_layer가 `Delete()` 반환값을
+  무시하고 무조건 성공을 보고한다(거짓성공). **typed + 검증된 문서 정리가 신뢰성 계층의
+  자연 확장이자 경쟁 공백이다.**
+
+## 사용자 체감 기능 (완성 시)
+
+1. **문서 검진**: "이 문서 검진해줘" → 서버가 계산한 보고 카드 — 안 만나는 커브 끝점
+   N쌍(간격 실측치), SelDup이 못 잡는 근사 중복 후보 M쌍, 미사용 블록 정의/빈 레이어/
+   bad object 목록, 레이어 스키마 위반. 각 항목 [Rhino에서 하이라이트] 가능.
+2. **승인 후 수선**: 카드에서 체크박스로 골라 Approve → gap join, 중복 삭제, purge,
+   레이어 재배치가 fingerprint 고정 + predicate 검증으로 실행. 결과는 "검증된 수치"로
+   보고(모델 주장이 아니라 서버 실측). Ctrl+Z로 되돌릴 수 있음.
+3. **일회성 배치**: "선택한 커브 따라 이 블록 뿌려줘", "이 커브들 정리해줘" 같은
+   파괴적 one-shot 작업을 GH definition 없이 처리.
+4. **데이터 관리**: 캔버스에서 Rhino↔GH 참조/bake 흐름이 엣지로 보이고, **삭제된 Rhino
+   객체를 가리키는 GH 참조(끊어진 참조)가 경고로 표시**된다 — 현재는 조용히 빈 출력을
+   내는 침묵 실패.
+5. **사람 지오메트리 보호**: GPTino가 만들지 않은 객체(provenance 유저스트링 없음)에
+   대한 파괴적 op는 승인 grant 없이는 브로커가 거부 — "human wins"의 첫 집행 코드.
+
+---
+
+## 단계별 계획
+
+### Phase 0 — 계약 정리 (선행 필수, 소)
+
+**체감**: 없음(기반). **내용**:
+- role↔mode 얽힘 해소: 현재 `PUT /sessions/{id}/mode`가 role을 덮어쓰고(plan→planner,
+  auto→modeler, `Program.cs:357-363`), `RuntimeStateProjector`가 role에서 mode를 역산한다.
+  mode/role을 직교 컬럼으로 분리, 기존 planner 행은 role=modeler+mode=plan으로 마이그레이션.
+  role 어휘: `modeler | curator`(+기존 read-only 게이트 유지).
+- role을 UI 계약에 노출: `GptinoSession`(types.ts)에 role 추가, projector에 투영,
+  `client.ts:155-167`의 하드코딩 `role:"modeler"` 파라미터화.
+- 이걸 안 하면 curator 세션에 plan 토글 시 curator가 조용히 지워진다.
+
+### Phase 1 — 데이터 플로우 읽기 + 캔버스 데이터 레이어 (중)
+
+**체감**: 참조/bake 가시성 + 끊어진 참조 경고. **내용**:
+- `canvas.listReferencedRhinoIds` (Cordyceps read): 열린 GH doc의 파라미터가 들고 있는
+  ReferenceID(Rhino GUID) 열거. 현재는 쓰기 경로(`referenceRhinoObjects`)만 있고 열람이 없다.
+  **curator purge 가드의 선행 조건이기도 하다.**
+- `data.flowSummary`: doc별 {referenceCount, missingReferenceCount, bakeCount, observedAt,
+  revision} 집계를 RuntimeState에 실어 기존 SSE로 push — 동기화할 두 번째 데이터 경로를
+  만들지 않는다. 캐시 키: (docKey의 canvasRevision, Rhino doc modified serial).
+- `data.flowDetail` (브로커 read op, 패널 GET + gptino_v1 read 툴 겸용): 파라미터별 참조
+  목록(존재 여부·레이어), bake family 목록.
+- bake 귀속: typed bake 경로와 bake_manager.py에 `GPTino.SourceDocKey` 유저스트링 스탬프
+  추가. 레거시 bake는 추측 귀속 금지 — "unattributed" 버킷으로 정직하게 표시.
+- UI: 캔버스 툴바 "Data" 토글(기본 off, localStorage 유지) → doc 노드 간 참조(⇢)/bake(⇠)
+  아크 + 카운트 칩, `missingReferenceCount>0`이면 경고 스타일(`⇢12 · 2!`), 클릭 →
+  하단 드로어(ArchiveBrowser 오버레이 관례), "as of r{N}" 스탬프 필수. 토글 off 시 doc 노드에
+  압축 칩 라인. 스캔 중인 doc은 0이 아니라 "scanning"으로(데이터 부재≠참조 부재).
+- 위험도 낮음(전부 읽기 전용). 이 단계만으로도 독립적 가치가 있다.
+
+### Phase 2 — curator 세션 + 탭 셸 + 문서 검진 (대)
+
+**체감**: 비서 탭에서 대화 + 읽기 전용 검진 보고서. **내용**:
+- `assets/instructions/curator.md`: 역할 정의 — Rhino 문서 위생·일회성 배치 전담,
+  파라메트릭 모델링 요청은 GH 세션으로 리다이렉트. plan 모드가 계획한 지시문 주입
+  패턴 그대로(리빌드 없이 실험 가능).
+- 상주 세션: 확정 결정대로(삭제 불가·역할 고정·최하위 우선순위·lazy 생성).
+  role=curator는 high-assurance 라우팅 floor를 결정론적으로 적용(현재 delete/bake
+  키워드 스니핑보다 강한 신호).
+- `rhino.audit` (읽기 전용, 공유 read 게이트 — rhino_list와 같은 클래스):
+  `{kind, tolerance?, bandFactor?, layerScope?, typeScope?, cursor?, limit≤100}` →
+  `{findings[{findingId, objectIds, fingerprints, measure, proposedFixes}], docTolerance,
+  docUnits, cursor?, truncated}`.
+  - `nearMissEndpoints`: 열린 커브 끝점 RTree 검색, (docTolerance, k×tol] 밴드. GUID 정렬로
+    결정론 보장. T-junction(끝점-커브중간)은 별도 kind로 후속.
+  - `nearDuplicates`: bbox 프리필터 → 커브는 `GetDistancesBetweenCurves`, brep/mesh는
+    정점 샘플 편차. **위치 일치 중복만** — 회전/미러 불변 탐지는 비범위.
+    GH 참조 여부를 후보마다 표시("referenced by GH — 삭제 시 hydration 끊김").
+  - `purgeCandidates`: 미사용 블록 정의(`InstanceDefinition.InUse` 고정점 반복), 빈 레이어,
+    미사용 dimstyle, bad object(`IsValidWithLog`).
+  - `layerSchema`: 스키마 파일 대비 diff (Phase 5에서 수선 연결).
+  - 모든 finding은 fingerprint를 동봉 — 이후 수선 ChangeSet이 "감사한 그 상태"에 CAS로
+    고정된다. tolerance·units를 항상 결과에 명시(같은 값이 predicate에도 쓰여야 함).
+  - UI 스레드 인질 방지: 커서 페이징 + 청크당 시간 예산(45초 브리지 포기 모드 회피).
+- 탭 셸(UI 스킨 체크리스트):
+  - 헤더·에러/pause 배너·conflict drawer는 탭 바 **위**에서 공유. 헤더에 writer 칩
+    ("writer: curator → purge (r124)") 추가.
+  - curator 탭에 브로커 큐 상태 표시("writer 대기 #2") — GH 세션이 lease를 잡고 있을 때
+    탭이 먹통으로 보이면 안 된다.
+  - Model 탭 캔버스: curator 활동/대기 시 고스트 노드(큐 시각화 진실성). `deriveGraph`에
+    role 필터.
+  - 탭 unread 배지(기존 unseen 메커니즘 재사용), toast 딥링크 탭 인식.
+  - ChatPane draft를 `key={session.id}`로 격리(현재 세션 간 새는 기존 버그).
+  - 선택 컨텍스트 tab-aware: 어느 탭에 있든 Rhino 선택이 해당 세션 scope로.
+  - `?demo=1` mock에 curator 세션 + 검진 보고 픽스처(패널 검증 루프 유지).
+
+### Phase 3 — 승인 카드 + provenance 정책 + 첫 수선 (대)
+
+**체감**: gap 수선과 중복 정리가 실제로 실행됨. **내용**:
+- **승인 카드 = Plan 모드 Approve 카드와 동일 컴포넌트로 1회 구축.** audit 보고를 카드로
+  렌더(그룹 체크박스, tolerance 등 파라미터 편집, [Rhino에서 하이라이트], Apply/Revise).
+  Plan 모드는 이 컴포넌트에 "계획 산출물"을 얹는 것으로 승인 플로를 얻는다(modes.md 격차 해소).
+- **provenance default-deny (브로커 검증 계층)**: `GPTino.LogicalEntityId`도
+  `gptino_bake_family`도 없는 객체(=사람이 만든 것)에 대한 delete/modify/transform/
+  moveToLayer는 ChangeSet에 `approvalGrantId`가 없으면 거부. grant는 승인 카드 클릭 시
+  발급되고 **보여준 findingId+fingerprint 집합에 바인딩**(approve-what-you-saw, TOCTOU 안전).
+  자율 기본값: GPTino 생성 객체 + 명시적 선택 객체는 grant 없이 가능(autonomy-by-default 유지).
+- `rhino.fixEndpointPair`: `{findingId, objA/endA, objB/endB, expectedFingerprintA/B,
+  strategy: setEndPoint | extendToIntersection | averageMove}` — 전략은 전역 기본값 금지,
+  finding별 모델/사용자 선택. 기본 predicate `endpointsCoincident`(구현: 복제본 2개
+  `JoinCurves` 결과가 정확히 1개 — 부작용 없고 사용자가 원하는 "joinable"과 일치).
+  주의: `SetStartPoint/SetEndPoint`는 커브 타입에 따라 미구현/NURBS화(호의 반지름 의도
+  파괴) — 전략별 지원 타입을 어댑터에서 검사.
+- **중복 삭제는 신규 op 불필요** — 기존 `deleteRhinoObject`(expectedFingerprint 필수)
+  재사용. victim 선택은 자동화 금지(생성 시각 신뢰 불가, design-option 스택은 의도적
+  near-copy) — 항상 카드에서 사람이 고른다.
+- 배치 규칙: ChangeSet당 ≤20개 청크(preflight가 all-or-nothing이므로 stale 1건이 청크만
+  죽이게), 청크별 committed/stale 보고 — 수선 중 사용자 개입 시 "이 청크 스킵, 재감사"로
+  강등(전체 Blocked 금지).
+- undo: v1은 기존 per-op undo record 유지(50건 수선=Ctrl+Z 50번)를 **문서화된 한계**로
+  수용. 잡 단위 단일 undo는 BeginUndoRecord 중첩(반환 0 → 기존 op 하드에러) 계약을
+  건드리는 별도 리팩터링으로 이연. (McNeel TurnUndoCheckpoint가 선례 — 참조 섹션.)
+
+### Phase 4 — purge + bad object 격리 (중)
+
+**체감**: "미사용 블록/빈 레이어/bad object 정리해줘". **내용**:
+- `rhino.purgeTableEntries {entries[{table: block|dimStyle|linetype|material, id}]}`:
+  실행 시점에 미사용 재검증 후 삭제. 기본 predicate `tableEntryAbsent{table,id}`
+  (id 기반 절대 — count 기반은 동시 사용자 편집과 경합). operation-contract에 예약만
+  돼 있던 rhinoLayer/rhinoMaterial/rhinoLinetype 리소스 kind가 처음 실체화된다.
+- `rhino.moveObjectsToLayer {items[{objectId, expectedFingerprint}], targetLayerId}`:
+  객체 속성 변경이라 레이어 fingerprint 확장 없이 가능(대상 레이어는 기존 ensureLayer로
+  보장). predicate `objectOnLayer`. 배치 결과가 per-object afterFingerprint를 반환하는
+  목록형 브리지 메시지 신설.
+- **bad object는 삭제하지 않는다** — `GPTino::Quarantine` 레이어로 격리(수리 가능성
+  실재, 속성 수준에서 전부 가역). moveObjectsToLayer가 그 수단.
+- 주의: 레이어 이동은 객체 fingerprint(attributesJson 포함) 대량 재작성 이벤트 —
+  다른 세션 ledger stale + roadmap #5 암묵 신호("에이전트 후 사람 수정") 오염.
+  ledger 갱신에 curator 귀속 마커를 남겨 신호 파이프라인에서 구분한다.
+
+### Phase 5 — 레이어 스키마 (중~대)
+
+**체감**: "이 레이어 스키마대로 문서 정리해줘". **내용**:
+- `rhino.listLayers`: 전체 테이블 {id, fullPath, parent, color, visible, locked, material,
+  linetype, objectCount, fingerprint} + 테이블 fingerprint. 레이어 fingerprint를
+  visible/locked/material/linetype까지 확장(현재 id/path/parent/color만 — 이것이
+  UpdateRhinoLayer가 fail-closed였던 이유. 확장 후 presence/absence 증명 가능 →
+  예약 해제 조건 충족).
+- predicates `layerExists / layerAbsent` 추가.
+- `rhino.updateLayer {layerId, expectedLayerFingerprint, color?, visible?, locked?}`:
+  **v1은 rename/re-parent 제외** — 둘 다 하위 레이어 FullPath 전체 재작성이라 GH
+  Geometry Pipeline 이름 필터·레이어 경로 문자열 스크립트를 "에러 없이 빈 출력"으로
+  깨뜨린다. rename은 영향 분석(경로 참조 스캔)과 함께 v2.
+- `rhino.deleteLayer {layerId, expectedLayerFingerprint}`: 빈 레이어 + 자식 없음 +
+  current 아님일 때만.
+- 스키마 적용 플로: `audit(kind=layerSchema)` → 카드 승인 → ensureLayer(부족한 레이어
+  생성) + moveObjectsToLayer 배치. 스키마 정의는 프로젝트 컨텍스트 폴더(LocalAppData)의
+  파일로 — rules.md와 같은 위치.
+
+### Phase 6 — 블록 인스턴스 + 일회성 배치 (중)
+
+**체감**: "선택한 커브 따라 이 블록 뿌려줘". **내용**:
+- `rhino.createInstance {objectId, logicalEntityId, definitionId, matrix, attributes?}`:
+  `ObjectTable.AddInstanceObject` 사용(기존 CreateTransform의 행렬 검증 재사용).
+  typed 경로의 능력 구멍 — `createRhinoPrimitive`에 인스턴스 개념이 없고, upsert의
+  GeometryBase JSON 경로가 InstanceReference를 처리한다는 증거 없음.
+- scatter 플로: curator 턴이 배치 좌표를 계산(스크립트 아닌 서버/모델 계산 + 승인 카드
+  프리뷰 카운트) → createInstance 청크 배치 → objectExists per-instance.
+- 여기까지 오면 "빠른 파괴적 모델링" 요구(커브 정리 포함)가 typed 경로로 전부 커버된다.
+
+---
+
+## Op 계약 요약
+
+| 구분 | 이름 | Phase | 비고 |
+|---|---|---|---|
+| read | `canvas.listReferencedRhinoIds` | 1 | purge 가드 겸 데이터 뷰 소스 |
+| read | `data.flowSummary` / `data.flowDetail` | 1 | SSE 편승 / 드로어+에이전트 겸용 |
+| read | `rhino.audit` (4 kind) | 2 | 커서 페이징, tolerance 명시, finding에 fingerprint 동봉 |
+| read | `rhino.listLayers` | 5 | 레이어 fingerprint 확장 포함 |
+| predicate | `endpointsCoincident` | 3 | JoinCurves-on-duplicates == 1 |
+| predicate | `objectOnLayer` | 4 | |
+| predicate | `tableEntryAbsent` | 4 | id 기반, count 기반 금지 |
+| predicate | `layerExists` / `layerAbsent` | 5 | |
+| mutation | `rhino.fixEndpointPair` | 3 | 전략 enum, 전역 기본값 금지 |
+| mutation | (기존 `deleteRhinoObject` 재사용) | 3 | 중복 삭제 — 신규 op 불필요 |
+| mutation | `rhino.moveObjectsToLayer` | 4 | 격리·스키마 적용의 공용 수단 |
+| mutation | `rhino.purgeTableEntries` | 4 | 실행 시점 미사용 재검증 |
+| mutation | `rhino.updateLayer` / `rhino.deleteLayer` | 5 | v1 rename/re-parent 제외 |
+| mutation | `rhino.createInstance` | 6 | AddInstanceObject |
+| 정책 | provenance default-deny + approvalGrant | 3 | 첫 파괴적 op 전 필수 |
+
+규모 추정(기술 검증 기준): 브로커/어댑터 ~2.5–4k LOC(테스트 포함, wireify 마이그레이션
+1개 웨이브급) + 패널 UI(탭 셸·카드·데이터 레이어) 별도. op 1개당 7개 레이어 관통
+(BridgeMessages → adapter interface → handler → RhinoSceneFoundationAdapter →
+LiveDocumentBackend 검증/predicate 테이블 → DynamicToolSpecs → operation-contract.md → 테스트).
+
+## 검증 방법
+
+- 각 phase는 기존 벤치 루프(dev-mode 실Rhino 자율 측정)로 라이브 게이트 통과 후 다음 단계.
+- audit 결정론 테스트: 같은 문서 두 번 스캔 = 동일 finding 목록(GUID 정렬).
+- 수선 검증: predicate 통과 + 사후 재감사에서 해당 finding 소멸 확인(이중 확인).
+- `?demo=1` mock 픽스처를 phase마다 갱신 — 패널 UI 검증 루프 유지.
+
+## 구현 시 함정 (체크리스트)
+
+- [ ] tolerance/units: `doc.ModelAbsoluteTolerance`를 읽는 코드가 현재 전무. audit과
+  predicate가 **같은 값**을 쓰고 결과에 항상 명시할 것 (mm 문서 휴리스틱이 m 문서에서 참사).
+- [ ] 근사 중복 오탐: bake_manager append 모드 = design-option 스택은 의도적 near-copy.
+  자동 병합 금지, victim 자동 선택 금지.
+- [ ] naive 격자 양자화 해시 단독 사용 금지(격자 경계에서 1e-7 차이가 다른 셀).
+- [ ] UI 스레드: 모든 브리지 op이 UI 스레드 marshal — 전량 스캔은 청크 시간 예산 필수.
+  RhinoDoc은 off-thread 읽기 불가("백그라운드로 돌리면 됨" 아님).
+- [ ] rhino_list 500개 캡·전체 기하 JSON 직렬화 비용 — audit은 프리필터(bbox, 타입 스코프)
+  + finding만 fingerprint(런당 ~100 캡).
+- [ ] BeginUndoRecord 중첩 시 0 반환 → 기존 op은 하드에러. 잡 단위 undo는 의도적 이연.
+- [ ] 레이어 이동 = 객체 fingerprint 대량 재작성 → 학습 신호 오염 방지용 curator 귀속 마커.
+- [ ] GH 스크립트 컴포넌트 우회 금지(ActiveDoc·CAS 없음·검증 없음·GH doc 필요·캔버스에
+  컴포넌트 잔류). curator 지시문에 명시.
+
+## 기존 MCP에서 차용할 구현 디테일 (참조)
+
+- **jingcheng-chen/rhinomcp**: dispatch 초크포인트에서 undo bracketing(핸들러 코드 0줄로
+  전 mutating 커맨드가 named undo 1개); `_delta` perception envelope(뮤테이터 전후 GUID
+  집합 diff → created/deleted id 목록 — purge 검증 보강에 적합); dry_run capability
+  negotiation(구버전 플러그인이 실작업을 몰래 실행하는 것 방지 — 승인 카드 프리뷰와 동형);
+  신생 객체만 `IsValidWithLog` 헬스체크. 반면교사: delete_layer 반환값 무시(거짓성공),
+  "실패 스크립트 롤백" docstring 허위, ActiveDoc 신뢰.
+- **mcneel/RhinoMCP**: per-doc 리스너 + doc 주입(ActiveDoc 불신 — 우리와 같은 결론);
+  TurnUndoCheckpoint(턴 전체 1 undo, BeginUndoRecord 0 반환 처리 — 잡 단위 undo 리팩터링
+  시 선례); set_selection "필터 미해결 시 무선택" 가드; typed error code envelope;
+  빈 프러스텀 캡처 거부 + 메타데이터 반환.
+- **4kk11/RhinoMCPServer**: full-path 레이어 생성(`"Parent::Child::Grandchild"`) 시그니처,
+  annotation/dimension 툴(후속 후보).
+- **reer-ide/rhino_mcp**: 생성 객체 short_id 유저스트링 + 뷰포트 주석으로 시각 식별 —
+  audit 카드 [Rhino에서 하이라이트]에 응용.
+
+## v1 비범위 (명시적 제외)
+
+- 회전/미러 불변 중복 탐지(연구 과제 — 약속하면 정직성 실패 예약).
+- 레이어 rename/re-parent(하위 FullPath 재작성 파급 — 영향 분석과 함께 v2).
+- 자동 victim 선택(중복 병합은 항상 사람 triage).
+- 잡 단위 단일 undo(undo 계약 리팩터링과 함께 후속).
+- GH 캔버스 janitor(roadmap #6)는 이 플랜의 카드/승인 인프라를 재사용하되 별도 트랙.

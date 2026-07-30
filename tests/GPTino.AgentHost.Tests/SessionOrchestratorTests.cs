@@ -1070,6 +1070,27 @@ public sealed class SessionOrchestratorTests
             }
         }
 
+        public Func<string, string, string, Task>? TurnSteered { get; set; }
+
+        public async Task SteerTurnAsync(
+            string threadId,
+            string turnId,
+            string message,
+            IReadOnlyList<string>? imagePaths = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (TurnSteered is not null)
+            {
+                await TurnSteered(threadId, turnId, message);
+            }
+        }
+
+        public Task SetThreadGoalAsync(
+            string threadId,
+            string objective,
+            long? tokenBudget,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
         public Task<CodexTurnReadResult?> ReadTurnAsync(
             string threadId,
             string turnId,

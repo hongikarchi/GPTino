@@ -25,6 +25,11 @@ public sealed class AgentHostOptions
 
     public int MaxParallelTurns { get; init; } = 4;
 
+    // Optional token budget attached to a session's native Codex thread goal (thread/goal/set).
+    // Null = no budget (goal supplies objective context only). Kept modest if enabled, since Codex
+    // goal-driving behavior under a budget is not yet live-verified.
+    public long? GoalTokenBudget { get; init; }
+
     public TimeSpan CodexTurnPollInterval { get; init; } = TimeSpan.FromSeconds(2);
 
     public TimeSpan CodexTurnReadTimeout { get; init; } = TimeSpan.FromSeconds(10);
