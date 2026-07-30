@@ -145,14 +145,10 @@ public sealed class SessionOrchestrator : IDisposable
                 var imagePaths = urlImages.Count == 0
                     ? (attachedImagePaths.Length > 0 ? attachedImagePaths : null)
                     : attachedImagePaths.Concat(urlImages.Select(a => a.AbsolutePath)).ToArray();
-                // If a turn is already running for this session, inject this message into it (turn/steer)
-                // — a live course-correction that keeps the in-flight work — instead of queuing a fresh
-                // turn behind the session gate. Steer fails if the turn already ended; then we fall back.
-                if (await TrySteerActiveTurnAsync(sessionId, messageContent, attachmentsBlock, imagePaths)
-                        .ConfigureAwait(false))
-                {
-                    return;
-                }
+                // C-2 (turn/steer auto-injection) was rolled back: live-testing showed codex 0.144.6 did
+                // not incorporate the mid-turn steer and left the session hung in "queued". Messages sent
+                // while a turn runs queue a fresh turn as before. The SteerTurnAsync client capability is
+                // retained (dormant) for future debugging once codex steer behavior is confirmed.
                 await RunTurnAsync(sessionId, messageContent, attachmentsBlock, imagePaths, _shutdown)
                     .ConfigureAwait(false);
             },
@@ -1279,44 +1275,16 @@ public sealed class SessionOrchestrator : IDisposable
         }
     }
 
-    // C-2: inject a message into the session's running turn (turn/steer) instead of queuing a new
-    // turn. Returns false when there is no active turn OR steer failed (turn ended) — the caller then
-    // starts a fresh turn. Steer bypasses the per-session turn gate on purpose: it is not a new turn.
-    private async Task<bool> TrySteerActiveTurnAsync(
-        Guid sessionId,
-        string message,
-        string? attachmentsBlock,
-        IReadOnlyList<string>? imagePaths)
-    {
-        if (!_activeTurns.TryGetValue(sessionId, out var active))
-        {
-            return false;
-        }
-        var steerText = attachmentsBlock is null ? message : $"{message}\n\n{attachmentsBlock}";
-        try
-        {
-            await _codex.SteerTurnAsync(active.ThreadId, active.TurnId, steerText, imagePaths, _shutdown)
-                .ConfigureAwait(false);
-            await _store.SetSessionStateAsync(sessionId, SessionStates.Running, message, _shutdown)
-                .ConfigureAwait(false);
-            _events.Publish();
-            return true;
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            _logger.LogDebug(
-                exception,
-                "turn/steer for session {SessionId} failed (turn likely ended); starting a fresh turn.",
-                sessionId);
-            return false;
-        }
-    }
-
-    // C-1: give a new thread Codex's native goal (objective + optional token budget) so it tracks
-    // progress. Best-effort — a goal-set failure never blocks the turn. Done-verification still lives
-    // in GPTino's acceptance predicates; the goal only supplies objective + budget context to Codex.
+    // C-1: give a new thread Codex's native goal (objective + token budget) so it tracks progress.
+    // OPT-IN: fires only when GoalTokenBudget is configured — Codex's goal-driving behavior is not yet
+    // live-verified, so the default install does not set goals on real sessions. Best-effort either way
+    // (a failure never blocks the turn); done-verification stays with GPTino's acceptance predicates.
     private async Task TrySetThreadGoalAsync(string threadId, string objective, CancellationToken cancellationToken)
     {
+        if (_options.GoalTokenBudget is null)
+        {
+            return;
+        }
         try
         {
             var goal = objective +
