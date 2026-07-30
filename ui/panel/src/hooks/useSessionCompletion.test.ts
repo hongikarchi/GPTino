@@ -7,7 +7,7 @@ const session = (id: string, status: SessionStatus, over: Partial<GptinoSession>
   title: `Session ${id}`,
   status,
   mode: "auto",
-  modelProfile: "auto",
+  modelProfile: "xhigh",
   paused: false,
   messages: [],
   ...over,

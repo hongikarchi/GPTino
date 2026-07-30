@@ -158,8 +158,8 @@ class HttpApiClient implements GptinoApiClient {
       body: JSON.stringify({
         name,
         role: "modeler",
-        // New sessions default to Deep quality on the GPT-5.6-Sol model (see also mock.ts).
-        modelProfile: "deep",
+        // New sessions default to xhigh reasoning effort on the GPT-5.6-Sol model (see also mock.ts).
+        modelProfile: "xhigh",
         model: "gpt-5.6-sol",
         ...(grasshopperDoc ? { grasshopperDoc } : {}),
       }),

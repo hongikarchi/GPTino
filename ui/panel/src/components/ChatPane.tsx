@@ -115,12 +115,20 @@ type StreamItem =
   | { type: "message"; at: number; message: ChatMessage }
   | { type: "activity"; at: number; activity: SessionActivity };
 
-const profiles: { value: ModelProfile; label: string; description: string }[] = [
-  { value: "auto", label: "Auto", description: "Route by task risk" },
-  { value: "fast", label: "Fast", description: "Simple, typed operations" },
-  { value: "standard", label: "Standard", description: "General modeling" },
-  { value: "deep", label: "Deep", description: "Complex and recovery work" },
-];
+// Reasoning-effort levels, ascending. The slider offers whichever of these the chosen model advertises.
+const EFFORT_ORDER: ModelProfile[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+const EFFORT_LABELS: Record<ModelProfile, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
+};
+const effortRank = (value: string): number => {
+  const index = EFFORT_ORDER.indexOf(value as ModelProfile);
+  return index < 0 ? EFFORT_ORDER.length : index;
+};
 
 const formatTime = (value: string) =>
   new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
@@ -182,6 +190,19 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [effortOpen, setEffortOpen] = useState(false);
+
+  // The slider offers the reasoning-effort levels advertised by the chosen model (pinned, else the
+  // catalog default), sorted ascending. Falls back to the full ladder before the catalog loads.
+  const catalogModel =
+    (session && models.find((model) => model.model === session.pinnedModel)) ??
+    models.find((model) => model.isDefault) ??
+    models[0];
+  const effortLevels: ModelProfile[] = ((catalogModel?.reasoningEfforts?.length
+    ? catalogModel.reasoningEfforts
+    : EFFORT_ORDER) as string[])
+    .filter((level): level is ModelProfile => EFFORT_ORDER.includes(level as ModelProfile))
+    .sort((a, b) => effortRank(a) - effortRank(b));
   const streamRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pasteCounter = useRef(0);
@@ -442,20 +463,39 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
               </button>
             ))}
           </div>
-          <div className="quality-control">
-            <label htmlFor="model-profile">Quality</label>
-            <select
-              id="model-profile"
-              value={session.modelProfile}
-              onChange={(event) => onModel(event.target.value as ModelProfile)}
+          <div className="quality-control effort-control">
+            <button
+              type="button"
+              className="effort-toggle"
+              onClick={() => setEffortOpen((open) => !open)}
               disabled={busyActions.has(`model:${session.id}`)}
+              aria-expanded={effortOpen}
+              title="Reasoning effort for this session (used directly; clamped to the model's range)."
             >
-              {profiles.map((profile) => (
-                <option value={profile.value} key={profile.value} title={profile.description}>
-                  {profile.label}
-                </option>
-              ))}
-            </select>
+              <span className="effort-caption">Effort</span>
+              <span className="effort-value">{EFFORT_LABELS[session.modelProfile] ?? session.modelProfile}</span>
+            </button>
+            {effortOpen ? (
+              <div className="effort-slider">
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(0, effortLevels.length - 1)}
+                  step={1}
+                  value={Math.max(0, effortLevels.indexOf(session.modelProfile))}
+                  onChange={(event) => onModel(effortLevels[Number(event.target.value)] ?? session.modelProfile)}
+                  disabled={busyActions.has(`model:${session.id}`)}
+                  aria-label="Reasoning effort"
+                />
+                <div className="effort-ticks">
+                  {effortLevels.map((level) => (
+                    <span key={level} className={level === session.modelProfile ? "active" : ""}>
+                      {EFFORT_LABELS[level] ?? level}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
           {models.length > 0 ? (
             <div className="quality-control">
@@ -465,9 +505,9 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
                 value={session.pinnedModel ?? ""}
                 onChange={(event) => onPinModel(event.target.value || null)}
                 disabled={busyActions.has(`model:${session.id}`)}
-                title="Pin a Codex model for this session. Quality still sets the capability floor and reasoning effort."
+                title="Pin a Codex model for this session, or Auto to use the catalog default. Effort is set separately."
               >
-                <option value="">Auto (routed)</option>
+                <option value="">Auto (default)</option>
                 {models.map((model) => (
                   <option value={model.model} key={model.id} title={model.description}>
                     {model.displayName || model.model}

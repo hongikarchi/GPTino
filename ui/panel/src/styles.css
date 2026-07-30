@@ -811,6 +811,76 @@ button.llm-auth:hover strong {
   font-size: var(--fs-meta);
 }
 
+.effort-control {
+  position: relative;
+}
+
+.effort-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-2);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+.effort-toggle[aria-expanded="true"] {
+  border-color: var(--muted);
+}
+
+.effort-caption {
+  color: var(--dim);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.effort-value {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.effort-slider {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 240px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
+}
+
+.effort-slider input[type="range"] {
+  width: 100%;
+  accent-color: var(--text);
+  cursor: pointer;
+}
+
+.effort-ticks {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  color: var(--dim);
+  font-size: var(--fs-micro);
+}
+
+.effort-ticks .active {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .effective-model {
   min-width: 0;
   margin-left: auto;

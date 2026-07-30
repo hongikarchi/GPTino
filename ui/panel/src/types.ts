@@ -8,7 +8,9 @@ export type SessionStatus =
   | "blocked"
   | "idle";
 export type SessionMode = "plan" | "auto";
-export type ModelProfile = "auto" | "fast" | "standard" | "deep";
+// Reasoning-effort level (ascending). The session field is still named modelProfile on the wire for
+// back-compat, but it carries the effort — set directly (no adaptive routing), clamped to the model.
+export type ModelProfile = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type MessageRole = "user" | "assistant" | "system";
 
 export interface ChatMessage {
