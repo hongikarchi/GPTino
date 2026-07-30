@@ -316,6 +316,17 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
             state.RuntimeMessages));
     }
 
+    protected override void OnBeforeExecute(
+        GH_Document document,
+        DocumentTarget target,
+        CancellationToken cancellationToken)
+    {
+        // Resolve the paired Rhino document by serial (never ActiveDoc) so the checkpoint captures the exact
+        // model this session solves against, then write GPTino-owned backup copies before the solve runs.
+        var rhinoDocument = global::Rhino.RhinoDoc.FromRuntimeSerialNumber(target.RhinoDocumentSerial);
+        GptinoDocumentBackup.BeforeExecute(document, rhinoDocument);
+    }
+
     protected override Task<IReadOnlyList<ComponentRuntimeMessage>> ReadRuntimeMessagesCoreAsync(
         GH_Document document,
         Guid componentId,

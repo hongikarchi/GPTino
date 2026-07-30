@@ -1518,20 +1518,24 @@ button.llm-auth:hover strong {
   backdrop-filter: blur(12px);
 }
 
-/* Bottom data-flow drawer: sits above content (z-30) but below full overlays and toasts (z-40). */
+/* Bottom data-flow drawer: sits above content (z-30) but below full overlays and toasts (z-40).
+   The app shell reserves the same height below the chat region while the drawer is open, so the
+   composer stays visible and reachable instead of being covered. */
 .data-drawer {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 30;
-  max-height: 45vh;
+  height: min(42vh, 340px);
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--border);
   background: rgb(12 14 15 / 0.97);
   backdrop-filter: blur(12px);
 }
+
+.app-shell.data-drawer-open { padding-bottom: min(42vh, 340px); }
 
 .data-drawer .archive-header { flex: 0 0 auto; }
 .data-drawer-actions { display: flex; gap: 8px; }

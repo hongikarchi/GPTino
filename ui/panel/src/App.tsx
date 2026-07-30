@@ -180,6 +180,17 @@ export default function App() {
     });
   // Drawer target: undefined = closed; null = the only/legacy doc; string = explicit docKey.
   const [dataFlowDocId, setDataFlowDocId] = useState<string | null | undefined>(undefined);
+  // A drawer must not outlive its document: when the doc unregisters (close, Save As re-key),
+  // showing its stale detail — and letting Rescan surface a raw HTTP error — helps nobody.
+  useEffect(() => {
+    if (
+      typeof dataFlowDocId === "string" &&
+      runtime?.grasshopperDocs != null &&
+      !runtime.grasshopperDocs.some((doc) => doc.id === dataFlowDocId)
+    ) {
+      setDataFlowDocId(undefined);
+    }
+  }, [dataFlowDocId, runtime?.grasshopperDocs]);
   const newSessionAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // Esc or a press outside the + Session button / popover closes it. Capture
@@ -250,7 +261,7 @@ export default function App() {
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${dataFlowDocId !== undefined ? " data-drawer-open" : ""}`}>
       <header className="document-header">
         <div className="brand-mark" title="GPTino — Rhino orchestration">G</div>
 

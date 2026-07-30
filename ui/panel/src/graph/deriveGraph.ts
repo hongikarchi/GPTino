@@ -375,6 +375,7 @@ export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): 
     }`;
     doc.dataChipWarning = flow.missingReferenceCount > 0;
   }
+  let hasDataEdges = false;
   if (options?.dataLayer) {
     const edgeX = DOC_X + DOC_W;
     const rhinoMidY = rhinoDoc.y + rhinoDoc.h / 2;
@@ -384,6 +385,7 @@ export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): 
       const ghMidY = doc.y + doc.h / 2;
       const asOf = ` (as of r${flow.revision})`;
       if (flow.referenceCount > 0 || flow.missingReferenceCount > 0) {
+        hasDataEdges = true;
         const bow = 16;
         const y1 = rhinoMidY - 10;
         const y2 = ghMidY - 10;
@@ -410,6 +412,7 @@ export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): 
         });
       }
       if (flow.bakeCount > 0) {
+        hasDataEdges = true;
         const bow = 30;
         const y1 = ghMidY + 10;
         const y2 = rhinoMidY + 10;
@@ -459,6 +462,7 @@ export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): 
   }
 
   // The data arcs bow past the doc column's right edge; give them (and their
-  // chips) headroom instead of letting them clip at the legacy canvas width.
-  return { nodes, edges, width: options?.dataLayer ? CANVAS_W + 40 : CANVAS_W, height };
+  // chips) headroom — but only when arcs were actually drawn, so a persisted
+  // Data toggle with nothing to show does not widen the canvas for no reason.
+  return { nodes, edges, width: hasDataEdges ? CANVAS_W + 40 : CANVAS_W, height };
 }

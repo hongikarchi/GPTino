@@ -103,8 +103,16 @@ function Wire({ edge, selected }: { edge: GraphEdge; selected?: boolean }) {
       <circle className="wire-port" cx={edge.x1} cy={edge.y1} r={3.2} />
       <circle className="wire-port" cx={edge.x2} cy={edge.y2} r={3.2} />
       {edge.label ? (
+        // Pill width tracks the label: queue chips are 2-3 chars, but data-arc labels
+        // ("⇢12·2!") overflow a fixed 26px rect.
         <g className="wire-chip" transform={`translate(${edge.midX}, ${edge.midY})`}>
-          <rect x={-13} y={-9} width={26} height={18} rx={9} />
+          <rect
+            x={-Math.max(26, 8 + edge.label.length * 7) / 2}
+            y={-9}
+            width={Math.max(26, 8 + edge.label.length * 7)}
+            height={18}
+            rx={9}
+          />
           <text x={0} y={3.5}>{edge.label}</text>
         </g>
       ) : null}
@@ -232,7 +240,12 @@ function DocNode({ node, onOpenDataFlow }: { node: GraphNode; onOpenDataFlow?(do
       className={`gnode gnode-doc doc-${node.docTarget}${openable ? " openable" : ""}`}
       transform={`translate(${node.x}, ${node.y})`}
       onClick={open}
-      onKeyDown={open ? (event) => { if (event.key === "Enter") open(); } : undefined}
+      onKeyDown={open ? (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      } : undefined}
       role={openable ? "button" : undefined}
       tabIndex={openable ? 0 : undefined}
       aria-label={openable ? `${node.sublabel ?? node.label} data flow` : undefined}

@@ -25,7 +25,11 @@ export function DataFlowDrawer({ docId, docName, onClose, getDetail }: DataFlowD
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      // Full-screen overlays (archive, deleted sessions) stack above this drawer and own the
+      // Escape while open — without this guard one keypress would close both layers.
+      if (document.querySelector(".archive-overlay")) return;
+      onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -61,6 +65,15 @@ export function DataFlowDrawer({ docId, docName, onClose, getDetail }: DataFlowD
   );
   const unattributed = (bakes?.groups ?? [])
     .filter((group) => group.sourceDocKey == null)
+    .reduce((total, group) => total + group.count, 0);
+  // Stamps keyed to a different (or re-keyed) definition: another open doc's bakes, or orphans
+  // after Save As recomputed the docKey. Surfaced honestly instead of silently dropped.
+  const foreign = (bakes?.groups ?? [])
+    .filter(
+      (group) =>
+        group.sourceDocKey != null &&
+        (detail?.docId == null || group.sourceDocKey.toLowerCase() !== detail.docId.toLowerCase()),
+    )
     .reduce((total, group) => total + group.count, 0);
 
   return (
@@ -151,6 +164,12 @@ export function DataFlowDrawer({ docId, docName, onClose, getDetail }: DataFlowD
                 ))}
               </ul>
             )}
+            {foreign > 0 ? (
+              <p className="archive-note">
+                {foreign} tracked bake{foreign === 1 ? "" : "s"} belong to other or re-keyed
+                definitions (a Save As re-keys the document; re-bake to re-attribute).
+              </p>
+            ) : null}
             {unattributed > 0 ? (
               <p className="archive-note">
                 {unattributed} tracked bake{unattributed === 1 ? "" : "s"} predate provenance stamping

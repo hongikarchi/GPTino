@@ -43,8 +43,14 @@ public abstract class DocumentBoundWireifyAdapter<TDocument> : IWireifyDocumentA
     public Task<PythonExecutionResult> ExecuteAsync(
         DocumentTarget target,
         ExecutePythonComponentRequest request,
-        CancellationToken cancellationToken = default) =>
-        ExecuteCoreAsync(Resolve(target), request, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        var document = Resolve(target);
+        // Checkpoint the document BEFORE the solve: a script execute can freeze or crash Rhino on the
+        // single UI thread, and a force-kill afterwards would otherwise lose all unsaved work.
+        OnBeforeExecute(document, target, cancellationToken);
+        return ExecuteCoreAsync(document, request, cancellationToken);
+    }
 
     public Task<IReadOnlyList<ComponentRuntimeMessage>> ReadRuntimeMessagesAsync(
         DocumentTarget target,
@@ -76,6 +82,19 @@ public abstract class DocumentBoundWireifyAdapter<TDocument> : IWireifyDocumentA
         TDocument document,
         ExecutePythonComponentRequest request,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Fired on the UI thread immediately before a script solve, with the resolved document and its target
+    /// (which carries the paired Rhino document serial). Concrete adapters override it to back the document
+    /// up before the risky solve. Default is a no-op. It MUST NOT throw — it runs inline with the user's
+    /// execute, and a backup failure must never block authoring.
+    /// </summary>
+    protected virtual void OnBeforeExecute(
+        TDocument document,
+        DocumentTarget target,
+        CancellationToken cancellationToken)
+    {
+    }
 
     protected abstract Task<IReadOnlyList<ComponentRuntimeMessage>> ReadRuntimeMessagesCoreAsync(
         TDocument document,

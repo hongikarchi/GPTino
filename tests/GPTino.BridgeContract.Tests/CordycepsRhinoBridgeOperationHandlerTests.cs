@@ -356,6 +356,9 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
             return Task.FromResult(MutationResult);
         }
 
+        public Task<StampedObjectsResult> ListStampedObjectsAsync(DocumentTarget target, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         private static RhinoSceneObjectState State(Guid objectId) =>
             new(objectId, "logical", "Point", "{}", "{}", "fingerprint");
     }

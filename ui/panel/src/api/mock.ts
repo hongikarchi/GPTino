@@ -424,8 +424,18 @@ const demoDataFlowDetails: Record<string, DataFlowDetail> = {
       ],
     },
     bakes: {
+      // The stamped census is Rhino-document-wide, so the facade family appears here too —
+      // the drawer's own-doc filter is what scopes the view, not the payload.
       totalStamped: 41,
-      groups: [{ sourceDocKey: null, bakeFamily: "legacy-massing", count: 3, objectIds: [] }],
+      groups: [
+        {
+          sourceDocKey: DOC_FACADE,
+          bakeFamily: "facade-panels",
+          count: 38,
+          objectIds: ["7f2a4c31-9a41-4c8e-b6a1-2f6d3a5e9c01"],
+        },
+        { sourceDocKey: null, bakeFamily: "legacy-massing", count: 3, objectIds: [] },
+      ],
     },
   },
 };

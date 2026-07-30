@@ -444,48 +444,69 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         var parameters = new List<ReferencedParameterState>();
         var referenceCount = 0;
         var missingCount = 0;
-        foreach (var documentObject in document.Objects)
+        // Clusters carry their own inner GH_Document that document.Objects does not enumerate —
+        // and users routinely wrap internalized references into clusters. The purge guard built on
+        // this ledger ("never delete what GH references") cannot afford that blind spot, so the
+        // scan recurses (depth-capped; a visited set breaks self-referencing cluster files).
+        const int MaxClusterDepth = 8;
+        var visitedDocuments = new HashSet<Guid>();
+        void ScanDocument(GH_Document scanned, int depth)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            IEnumerable<IGH_Param> candidates = documentObject switch
+            if (!visitedDocuments.Add(scanned.DocumentID))
             {
-                IGH_Component component => component.Params.Input,
-                IGH_Param standalone => new[] { standalone },
-                _ => Array.Empty<IGH_Param>()
-            };
-            foreach (var parameter in candidates)
+                return;
+            }
+            foreach (var documentObject in scanned.Objects)
             {
-                var ids = CollectPersistentReferenceIds(parameter);
-                if (ids.Count == 0)
+                cancellationToken.ThrowIfCancellationRequested();
+                if (documentObject is global::Grasshopper.Kernel.Special.GH_Cluster cluster &&
+                    depth < MaxClusterDepth &&
+                    cluster.Document("") is { } innerDocument)
                 {
-                    continue;
+                    ScanDocument(innerDocument, depth + 1);
                 }
-                var objects = new List<ReferencedRhinoObjectState>(ids.Count);
-                foreach (var id in ids)
+                IEnumerable<IGH_Param> candidates = documentObject switch
                 {
-                    var rhinoObject = rhinoDoc.Objects.FindId(id);
-                    string? layer = null;
-                    if (rhinoObject is not null)
+                    IGH_Component component => component.Params.Input,
+                    IGH_Param standalone => new[] { standalone },
+                    _ => Array.Empty<IGH_Param>()
+                };
+                foreach (var parameter in candidates)
+                {
+                    var ids = CollectPersistentReferenceIds(parameter);
+                    if (ids.Count == 0)
                     {
-                        var layerIndex = rhinoObject.Attributes.LayerIndex;
-                        layer = layerIndex >= 0 && layerIndex < rhinoDoc.Layers.Count
-                            ? rhinoDoc.Layers[layerIndex].FullPath
-                            : null;
+                        continue;
                     }
-                    else
+                    var objects = new List<ReferencedRhinoObjectState>(ids.Count);
+                    foreach (var id in ids)
                     {
-                        missingCount++;
+                        var rhinoObject = rhinoDoc.Objects.FindId(id);
+                        string? layer = null;
+                        if (rhinoObject is not null)
+                        {
+                            var layerIndex = rhinoObject.Attributes.LayerIndex;
+                            layer = layerIndex >= 0 && layerIndex < rhinoDoc.Layers.Count
+                                ? rhinoDoc.Layers[layerIndex].FullPath
+                                : null;
+                        }
+                        else
+                        {
+                            missingCount++;
+                        }
+                        objects.Add(new ReferencedRhinoObjectState(id, rhinoObject is not null, layer));
                     }
-                    objects.Add(new ReferencedRhinoObjectState(id, rhinoObject is not null, layer));
+                    referenceCount += ids.Count;
+                    parameters.Add(new ReferencedParameterState(
+                        parameter.InstanceGuid,
+                        parameter.NickName ?? string.Empty,
+                        parameter.GetType().Name,
+                        objects));
                 }
-                referenceCount += ids.Count;
-                parameters.Add(new ReferencedParameterState(
-                    parameter.InstanceGuid,
-                    parameter.NickName ?? string.Empty,
-                    parameter.GetType().Name,
-                    objects));
             }
         }
+
+        ScanDocument(document, depth: 0);
 
         var canonical = JsonSerializer.Serialize(parameters);
         var fingerprint = Convert.ToHexString(

@@ -428,6 +428,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         new(StringComparer.OrdinalIgnoreCase);
     private int _unattributedBakeCount;
     private int _dataFlowRefreshRunning;
+    private int _dataFlowRefreshDirty;
 
     public IReadOnlyList<DataFlowSummary> DataFlowSummaries =>
         _dataFlowSummaries.Values.OrderBy(summary => summary.DocId, StringComparer.Ordinal).ToArray();
@@ -467,7 +468,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             .ConfigureAwait(false);
         var revision = targetState.Snapshot?.State.Revision ?? 0;
         var observedAt = DateTimeOffset.UtcNow;
-        if (UpdateDataFlowSummary(targetState.DocKey, references, stamped, revision, observedAt))
+        if (UpdateDataFlowSummary(targetState.DocKey, references, stamped, revision, observedAt, RegisteredDocKeys()))
         {
             _events.Publish();
         }
@@ -505,10 +506,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     /// <summary>
     /// Best-effort, coalescing background refresh of every registered document's summary. Never
-    /// throws; a failed refresh simply leaves the previous (stamped, dated) summary in place.
+    /// throws; a failed refresh simply leaves the previous (stamped, dated) summary in place. A
+    /// trigger landing while a refresh runs sets the dirty flag and the worker loops — signals
+    /// are deferred, never dropped.
     /// </summary>
     internal void ScheduleDataFlowRefresh()
     {
+        Volatile.Write(ref _dataFlowRefreshDirty, 1);
         if (Interlocked.CompareExchange(ref _dataFlowRefreshRunning, 1, 0) != 0)
         {
             return;
@@ -517,15 +521,31 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             try
             {
-                await RefreshDataFlowCoreAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                _logger.LogDebug(exception, "Data-flow summary refresh failed; keeping previous summaries.");
+                while (Interlocked.Exchange(ref _dataFlowRefreshDirty, 0) == 1)
+                {
+                    // Head start for the broker: the post-commit trigger fires while the commit's
+                    // write epoch still holds the document gate, and an immediate EnterReadAsync
+                    // would queue at the writer-preferring turnstile AHEAD of the next queued job.
+                    // The delay lets that writer reach the gate first and coalesces commit bursts.
+                    await Task.Delay(400).ConfigureAwait(false);
+                    try
+                    {
+                        await RefreshDataFlowCoreAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        _logger.LogDebug(exception, "Data-flow summary refresh failed; keeping previous summaries.");
+                    }
+                }
             }
             finally
             {
                 Volatile.Write(ref _dataFlowRefreshRunning, 0);
+                // A trigger that raced the loop exit would otherwise be stranded until the next one.
+                if (Volatile.Read(ref _dataFlowRefreshDirty) == 1)
+                {
+                    ScheduleDataFlowRefresh();
+                }
             }
         });
     }
@@ -539,13 +559,19 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         if (targets.Count == 0)
         {
+            var cleared = !_dataFlowSummaries.IsEmpty || Volatile.Read(ref _unattributedBakeCount) != 0;
             _dataFlowSummaries.Clear();
             Volatile.Write(ref _unattributedBakeCount, 0);
+            if (cleared)
+            {
+                _events.Publish();
+            }
             return;
         }
-        using var documentRead = await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false);
-        // The stamped census is Rhino-document-wide — one call serves every GH doc's bake counts.
-        var stamped = await SendDataFlowReadAsync(
+        var registeredKeys = RegisteredDocKeys();
+        // Each bridge read takes the document gate for just its own round trip: holding it across
+        // the whole sweep would make a writer arriving mid-refresh wait for every remaining doc.
+        var stamped = await SendDataFlowReadGatedAsync(
             targets[0], BridgeAdapterOwner.CordycepsRhino, "rhino.listStampedObjects", cancellationToken)
             .ConfigureAwait(false);
         var changed = false;
@@ -554,7 +580,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             cancellationToken.ThrowIfCancellationRequested();
             liveKeys.Add(targetState.DocKey);
-            var references = await SendDataFlowReadAsync(
+            var references = await SendDataFlowReadGatedAsync(
                 targetState, BridgeAdapterOwner.CordycepsCanvas, "canvas.listReferencedRhinoIds", cancellationToken)
                 .ConfigureAwait(false);
             changed |= UpdateDataFlowSummary(
@@ -562,7 +588,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 references,
                 stamped,
                 targetState.Snapshot?.State.Revision ?? 0,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                registeredKeys);
         }
         foreach (var staleKey in _dataFlowSummaries.Keys.Where(key => !liveKeys.Contains(key)).ToArray())
         {
@@ -574,12 +601,33 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
+    private async Task<JsonElement> SendDataFlowReadGatedAsync(
+        TargetState targetState,
+        BridgeAdapterOwner owner,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        using var documentRead = await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false);
+        return await SendDataFlowReadAsync(targetState, owner, operation, cancellationToken).ConfigureAwait(false);
+    }
+
+    private HashSet<string> RegisteredDocKeys()
+    {
+        lock (_connectionGate)
+        {
+            return _targets.Values
+                .Select(state => state.DocKey)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
     private bool UpdateDataFlowSummary(
         string docKey,
         JsonElement references,
         JsonElement stamped,
         long revision,
-        DateTimeOffset observedAt)
+        DateTimeOffset observedAt,
+        IReadOnlySet<string> registeredDocKeys)
     {
         var referenceCount = ReadInt32(references, "referenceCount");
         var missingCount = ReadInt32(references, "missingCount");
@@ -596,8 +644,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     keyProperty.ValueKind == JsonValueKind.String
                         ? keyProperty.GetString()
                         : null;
-                if (string.IsNullOrEmpty(sourceDocKey))
+                if (string.IsNullOrEmpty(sourceDocKey) || !registeredDocKeys.Contains(sourceDocKey))
                 {
+                    // Null keys predate provenance stamping; non-null keys matching no registered
+                    // doc are orphans (Save As re-keyed the document, or a skill-derived key
+                    // diverged). Both land in the honest unattributed bucket — dropping them
+                    // silently would make tracked bakes vanish from every ledger surface.
                     unattributed += count;
                 }
                 else if (string.Equals(sourceDocKey, docKey, StringComparison.OrdinalIgnoreCase))
@@ -606,19 +658,22 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 }
             }
         }
-        Volatile.Write(ref _unattributedBakeCount, unattributed);
+        var previousUnattributed = Interlocked.Exchange(ref _unattributedBakeCount, unattributed);
         var next = new DataFlowSummary(docKey, referenceCount, missingCount, bakeCount, revision, observedAt);
-        var changed = true;
-        _dataFlowSummaries.AddOrUpdate(
-            docKey,
-            next,
-            (_, previous) =>
-            {
-                changed = previous.ReferenceCount != next.ReferenceCount ||
-                    previous.MissingReferenceCount != next.MissingReferenceCount ||
-                    previous.BakeCount != next.BakeCount;
-                return next;
-            });
+        var changed = previousUnattributed != unattributed;
+        if (_dataFlowSummaries.TryGetValue(docKey, out var previous))
+        {
+            changed |= previous.ReferenceCount != next.ReferenceCount ||
+                previous.MissingReferenceCount != next.MissingReferenceCount ||
+                previous.BakeCount != next.BakeCount ||
+                previous.Revision != next.Revision;
+        }
+        else
+        {
+            // A first summary for a doc is always news to the panel.
+            changed = true;
+        }
+        _dataFlowSummaries[docKey] = next;
         return changed;
     }
 
@@ -629,7 +684,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             ? value.GetInt32()
             : 0;
 
-    private static IReadOnlyList<PreparedOperation> InjectRhinoUpsertSourceDocKey(
+    internal static IReadOnlyList<PreparedOperation> InjectRhinoUpsertSourceDocKey(
         IReadOnlyList<PreparedOperation> operations,
         string docKey)
     {
@@ -2168,6 +2223,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             // Only calls addressed to the closed document fail; siblings keep running.
             FailPendingFor(key, new IOException("The bound document was closed."));
+            // The closed doc's data-flow summary must not linger in the panel.
+            ScheduleDataFlowRefresh();
         }
         _events.Publish();
     }
@@ -2183,6 +2240,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
         }
         FailPending(new IOException(reason));
+        // With zero targets the refresh clears every summary (and publishes), so the panel's
+        // data layer drops instead of showing counts for a bridge that no longer exists.
+        ScheduleDataFlowRefresh();
         _events.Publish();
     }
 
@@ -4270,7 +4330,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
-    private static void ValidateUpsertArguments(UpsertRhinoObjectRequest request, string operationId)
+    internal static void ValidateUpsertArguments(UpsertRhinoObjectRequest request, string operationId)
     {
         if (request.SourceDocKey is not null)
         {

@@ -122,7 +122,18 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         var groups = new Dictionary<(string? SourceDocKey, string? Family), List<Guid>>();
         var counts = new Dictionary<(string? SourceDocKey, string? Family), int>();
         var totalStamped = 0;
-        foreach (var rhinoObject in document.Objects
+        // The census counts what EXISTS, not what is visible: the default enumerator skips hidden
+        // objects, which would shrink bake counts (and churn the fingerprint) the moment a user
+        // hides a baked family while iterating. Block-definition members stay excluded — instance
+        // containers are the countable objects.
+        var enumeratorSettings = new global::Rhino.DocObjects.ObjectEnumeratorSettings
+        {
+            ActiveObjects = true,
+            HiddenObjects = true,
+            LockedObjects = true,
+            DeletedObjects = false,
+        };
+        foreach (var rhinoObject in document.Objects.GetObjectList(enumeratorSettings)
                      .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();

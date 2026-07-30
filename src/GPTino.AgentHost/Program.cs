@@ -191,6 +191,16 @@ app.Use(async (context, next) =>
     {
         await WriteErrorAsync(context, StatusCodes.Status409Conflict, "invalid_state", exception.Message);
     }
+    catch (GPTino.BridgeContract.BridgeProtocolException exception)
+    {
+        // Bridge reads (e.g. GET /data-flow) surface adapter failures as protocol exceptions;
+        // a typed 502 beats a raw 500 with a non-ApiError body.
+        await WriteErrorAsync(context, StatusCodes.Status502BadGateway, "bridge_error", exception.Message);
+    }
+    catch (TimeoutException exception)
+    {
+        await WriteErrorAsync(context, StatusCodes.Status504GatewayTimeout, "bridge_timeout", exception.Message);
+    }
 });
 
 app.UseDefaultFiles();
