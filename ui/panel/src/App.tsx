@@ -338,6 +338,9 @@ export default function App() {
 
         <div className="session-toolbar">
           <div className="toolbar-group">
+            {/* Graph/Data/+Session act on the Model tab's canvas and rail; showing them on the
+                Curator tab would mutate invisible state. Deleted/Past sessions stay global. */}
+            {tab === "model" ? (
             <button
               type="button"
               className="secondary-button"
@@ -347,7 +350,8 @@ export default function App() {
             >
               {canvasCollapsed ? `▸ Graph (${modelSessions.length})` : "▾ Graph"}
             </button>
-            {!canvasCollapsed && (runtime.dataFlow?.length ?? 0) > 0 ? (
+            ) : null}
+            {tab === "model" && !canvasCollapsed && (runtime.dataFlow?.length ?? 0) > 0 ? (
               <button
                 type="button"
                 className="secondary-button"
@@ -358,7 +362,7 @@ export default function App() {
                 {dataLayerOn ? "▾ Data" : "▸ Data"}
               </button>
             ) : null}
-            <div className="new-session-anchor" ref={newSessionAnchorRef}>
+            <div className="new-session-anchor" ref={newSessionAnchorRef} hidden={tab !== "model"}>
               <button
                 type="button"
                 className="new-session-button"
@@ -503,8 +507,9 @@ export default function App() {
         </section>
       ) : null}
 
-      {tab === "model" ? (
-        <main className="chat-region">
+      {/* Both tab regions stay MOUNTED and toggle via `hidden`: unmounting a ChatPane would
+          silently discard its composer draft and staged attachments on every tab switch. */}
+      <main className="chat-region" hidden={tab !== "model"}>
           <ChatPane
             key={selected?.id ?? "none"}
             session={selected}
@@ -532,15 +537,15 @@ export default function App() {
             }}
             onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
           />
-        </main>
-      ) : (
-        <main className="chat-region curator-region">
+      </main>
+      <main className="chat-region curator-region" hidden={tab !== "curator"}>
           <CuratorActions
             busy={
               curatorSession?.status === "working" ||
               curatorSession?.status === "drafting" ||
               curatorSession?.status === "verifying" ||
-              curatorSession?.status === "queued"
+              curatorSession?.status === "queued" ||
+              curatorSession?.paused === true
             }
             onRun={(prompt) => {
               if (!curatorSession) return;
@@ -573,8 +578,7 @@ export default function App() {
             onStopEdit={() =>
               curatorSession ? actions.retractLast(curatorSession.id) : Promise.resolve(null)}
           />
-        </main>
-      )}
+      </main>
 
       {dataFlowDocId !== undefined ? (
         <DataFlowDrawer

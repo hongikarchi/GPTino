@@ -454,19 +454,23 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             Resume
           </button>
         ) : null}
-        <button
-          type="button"
-          className="chat-delete"
-          title="Delete session (recoverable from Deleted)"
-          disabled={busyActions.has(`delete:${session.id}`)}
-          onClick={() => {
-            if (window.confirm(`Delete session "${session.title}"? You can restore it from Deleted.`)) {
-              onDelete();
-            }
-          }}
-        >
-          Delete
-        </button>
+        {session.role !== "curator" ? (
+          // The resident curator is not deletable (the server 409s); a Delete button whose
+          // confirm dialog promises restoration would be a lie here, so it does not render.
+          <button
+            type="button"
+            className="chat-delete"
+            title="Delete session (recoverable from Deleted)"
+            disabled={busyActions.has(`delete:${session.id}`)}
+            onClick={() => {
+              if (window.confirm(`Delete session "${session.title}"? You can restore it from Deleted.`)) {
+                onDelete();
+              }
+            }}
+          >
+            Delete
+          </button>
+        ) : null}
       </header>
 
       <div className="chat-stream" ref={streamRef} aria-live="polite">

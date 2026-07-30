@@ -196,7 +196,9 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         {
             case "nearMissEndpoints":
             {
-                var bandFactor = request.BandFactor is > 1 ? request.BandFactor.Value : 10.0;
+                // Clamped: an unbounded band degenerates the RTree search into all-pairs
+                // enumeration on the UI thread.
+                var bandFactor = request.BandFactor is > 1 ? Math.Min(request.BandFactor.Value, 100.0) : 10.0;
                 bandUsed = tolerance * bandFactor;
                 outcome = AuditNearMissEndpoints(document, tolerance, bandUsed.Value, limit, cancellationToken);
                 break;
@@ -226,13 +228,18 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             fingerprint));
     }
 
-    private static ObjectEnumeratorSettings AuditEnumerator(ObjectType? typeFilter = null) => new()
+    private static ObjectEnumeratorSettings AuditEnumerator(
+        ObjectType? typeFilter = null,
+        bool includeDefinitionMembers = false) => new()
     {
-        // Audits count what exists, not what is visible — hidden and locked included.
+        // Audits count what exists, not what is visible — hidden and locked included. Block
+        // definition members are opt-in: the layer census needs them (a layer holding only block
+        // member geometry is NOT empty), while geometry analyses stay top-level.
         ActiveObjects = true,
         HiddenObjects = true,
         LockedObjects = true,
         DeletedObjects = false,
+        IdefObjects = includeDefinitionMembers,
         ObjectTypeFilter = typeFilter ?? ObjectType.AnyObject,
     };
 
@@ -274,8 +281,12 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         {
             tree.Insert(endpoints[index].Point, index);
         }
+        // Dense endpoint clusters (or a wide band) can still explode the hit count; the pair
+        // budget keeps the UI-thread cost bounded and reports Truncated instead of freezing.
+        const int MaxPairChecks = 20000;
+        var pairChecks = 0;
         var pairs = new Dictionary<string, (Guid A, int EndA, Guid B, int EndB, double Gap)>(StringComparer.Ordinal);
-        for (var index = 0; index < endpoints.Count; index++)
+        for (var index = 0; index < endpoints.Count && !truncated; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (idA, endA, pointA) = endpoints[index];
@@ -283,6 +294,11 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             tree.Search(new Sphere(pointA, band), (_, args) => hits.Add(args.Id));
             foreach (var hit in hits)
             {
+                if (++pairChecks > MaxPairChecks)
+                {
+                    truncated = true;
+                    break;
+                }
                 if (hit <= index)
                 {
                     continue;
@@ -358,7 +374,11 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 truncated = true;
                 break;
             }
-            var box = rhinoObject.Geometry.GetBoundingBox(accurate: false);
+            // Accurate boxes are mandatory here: the estimated (control-hull) box of a NURBS
+            // rebuild overshoots by the control-polygon sagitta — orders of magnitude beyond the
+            // tolerance-scale gates below — silently filtering out exactly the
+            // different-representation coincidences this analyzer exists to catch.
+            var box = rhinoObject.Geometry.GetBoundingBox(accurate: true);
             items.Add((rhinoObject.Id, rhinoObject, box.Center, box.Diagonal.Length));
         }
 
@@ -448,18 +468,21 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         return (findings, scanned, truncated);
     }
 
-    // Junk census: unused block definitions (no top-level or nested references — a chain of
-    // unused nesting surfaces root-first, the child becomes flaggable after the root is purged),
-    // empty leaf layers (no objects incl. hidden, no children, not current), and invalid objects.
-    // Bad objects propose QUARANTINE, never deletion — they are often repairable.
+    // Junk census: unused block definitions (no references anywhere — not placed in the document
+    // and not nested inside another definition), empty leaf layers (no objects including hidden
+    // AND block-definition members, no children, not current), and invalid objects. Bad objects
+    // propose QUARANTINE, never deletion — they are often repairable. Each subkind gets its own
+    // finding budget so a junk-heavy category cannot starve the others.
     private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditPurgeCandidates(
         global::Rhino.RhinoDoc document,
         int limit,
         CancellationToken cancellationToken)
     {
-        var findings = new List<RhinoAuditFinding>();
         var scanned = 0;
         var truncated = false;
+        var unusedBlocks = new List<RhinoAuditFinding>();
+        var emptyLayers = new List<RhinoAuditFinding>();
+        var badObjects = new List<RhinoAuditFinding>();
 
         foreach (var definition in document.InstanceDefinitions)
         {
@@ -469,23 +492,35 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 continue;
             }
             scanned++;
-            if (definition.InUse(1))
+            // InUse(1) sees top-level + nested references IN THE DOCUMENT only; InUse(2) sees
+            // references inside other definitions. Without the second check, an unplaced Root
+            // nesting Child would flag BOTH in one pass, and purging Child first would corrupt
+            // Root. With it, chains genuinely surface root-first.
+            if (definition.InUse(1) || definition.InUse(2))
             {
                 continue;
             }
-            findings.Add(new RhinoAuditFinding(
+            if (unusedBlocks.Count > limit)
+            {
+                truncated = true;
+                break;
+            }
+            unusedBlocks.Add(new RhinoAuditFinding(
                 Hash($"unusedBlock|{definition.Id:D}")[..16],
                 "unusedBlockDefinition",
                 new[] { definition.Id },
                 Array.Empty<string>(),
                 null,
-                $"Block definition '{definition.Name}' has no references (top-level or nested); " +
-                $"{definition.ObjectCount} member object(s).",
+                $"Block definition '{definition.Name}' has no references anywhere (not placed, not " +
+                $"nested in another definition); {definition.ObjectCount} member object(s).",
                 new[] { "purgeBlockDefinition" }));
         }
 
+        // Layer census must include block-definition members: a block-library layer holding only
+        // member geometry is IN USE, not empty.
         var layersWithObjects = new HashSet<int>();
-        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator()))
+        foreach (var rhinoObject in document.Objects.GetObjectList(
+                     AuditEnumerator(includeDefinitionMembers: true)))
         {
             cancellationToken.ThrowIfCancellationRequested();
             layersWithObjects.Add(rhinoObject.Attributes.LayerIndex);
@@ -512,44 +547,57 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             {
                 continue;
             }
-            findings.Add(new RhinoAuditFinding(
+            if (emptyLayers.Count > limit)
+            {
+                truncated = true;
+                break;
+            }
+            emptyLayers.Add(new RhinoAuditFinding(
                 Hash($"emptyLayer|{layer.Id:D}")[..16],
                 "emptyLayer",
                 new[] { layer.Id },
                 new[] { LayerFingerprint(layer) },
                 null,
-                $"Layer '{layer.FullPath}' is an empty leaf (no objects including hidden, no children).",
+                $"Layer '{layer.FullPath}' is an empty leaf (no objects — including hidden and " +
+                "block members — and no children).",
                 new[] { "deleteLayer" }));
         }
 
+        const int MaxValidityChecks = 8000;
+        var validityChecks = 0;
         foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator())
                      .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
             scanned++;
+            if (++validityChecks > MaxValidityChecks)
+            {
+                truncated = true;
+                break;
+            }
             if (rhinoObject.Geometry is null || rhinoObject.Geometry.IsValidWithLog(out var log))
             {
                 continue;
             }
+            if (badObjects.Count > limit)
+            {
+                truncated = true;
+                break;
+            }
             var reason = (log ?? string.Empty).Split('\n').FirstOrDefault()?.Trim();
-            findings.Add(new RhinoAuditFinding(
+            badObjects.Add(new RhinoAuditFinding(
                 Hash($"badObject|{rhinoObject.Id:D}")[..16],
                 "badObject",
                 new[] { rhinoObject.Id },
-                new[] { ToState(rhinoObject).Fingerprint },
+                new[] { BadObjectFingerprint(rhinoObject) },
                 null,
                 $"Invalid geometry ({rhinoObject.Geometry.ObjectType}): " +
                 $"{(string.IsNullOrEmpty(reason) ? "IsValidWithLog failed" : reason)} " +
                 "— quarantine, do not delete (often repairable).",
                 new[] { "quarantineToLayer" }));
-            if (findings.Count > limit * 2)
-            {
-                truncated = true;
-                break;
-            }
         }
 
-        var ordered = findings
+        var ordered = badObjects.Concat(emptyLayers).Concat(unusedBlocks)
             .OrderBy(finding => finding.Kind, StringComparer.Ordinal)
             .ThenBy(finding => finding.FindingId, StringComparer.Ordinal)
             .Take(limit + 1)
@@ -560,6 +608,21 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             truncated = true;
         }
         return (ordered, scanned, truncated);
+    }
+
+    // ToState serializes geometry via ToJSON, which can throw on the very invalid geometry this
+    // subkind reports; the bad-object fingerprint therefore hashes identity + attributes only.
+    private static string BadObjectFingerprint(RhinoObject rhinoObject)
+    {
+        try
+        {
+            return ToState(rhinoObject).Fingerprint;
+        }
+        catch
+        {
+            var attributesJson = rhinoObject.Attributes.ToJSON(new SerializationOptions());
+            return Hash($"badObject|{rhinoObject.Id:D}\n{attributesJson}");
+        }
     }
 
     protected override Task<RhinoSceneObjectState> InspectObjectCoreAsync(

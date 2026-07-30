@@ -114,7 +114,9 @@ export function useRuntime() {
       if (!runtime || sourceId === targetId) return;
       const sessions = moveById(runtime.sessions, sourceId, targetId);
       const request = {
-        orderedSessionIds: sessions.map(({ id }) => id),
+        // The resident curator is outside the draggable order: the server's exact-membership
+        // check excludes it, so including its id here would 409 every drag.
+        orderedSessionIds: sessions.filter(({ role }) => role !== "curator").map(({ id }) => id),
         orderVersion: runtime.orderVersion,
       };
       void runAction(

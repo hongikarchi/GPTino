@@ -110,6 +110,18 @@ public sealed class SessionStore
                 connection,
                 "UPDATE sessions SET mode='plan', role='modeler' WHERE lower(role)='planner';",
                 cancellationToken).ConfigureAwait(false);
+            // Curators created before the sort_order parking band existed sit inside the panel's
+            // draggable 0..N-1 range and break every reorder with a UNIQUE collision. Rebase them
+            // into the band once (idempotent: the predicate excludes already-parked rows; deleted
+            // rows keep their negative parking).
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE sessions SET sort_order = sort_order + 1000000
+                WHERE lower(role)='curator' AND deleted_at IS NULL
+                  AND sort_order >= 0 AND sort_order < 1000000;
+                """,
+                cancellationToken).ConfigureAwait(false);
             // model_profile now stores a reasoning-effort level (low..ultra). Rewrite any legacy
             // profile values from pre-refactor sessions to the nearest effort. Idempotent: effort
             // values fall through the ELSE untouched.
@@ -471,6 +483,7 @@ public sealed class SessionStore
                   UPDATE sessions
                   SET deleted_at=NULL, updated_at=$now,
                       sort_order = COALESCE((SELECT MAX(sort_order) FROM sessions WHERE deleted_at IS NULL), -1) + 1
+                          + (CASE WHEN lower(role)='curator' THEN 1000000 ELSE 0 END)
                   WHERE id=$id AND deleted_at IS NOT NULL;
                   """;
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));

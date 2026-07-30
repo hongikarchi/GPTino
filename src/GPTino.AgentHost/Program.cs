@@ -136,7 +136,18 @@ codex.DynamicToolHandler = dispatcher.DispatchAsync;
 var (liveSessions, _) = await store.ReadStateAsync();
 if (!liveSessions.Any(session => string.Equals(session.Role, "curator", StringComparison.OrdinalIgnoreCase)))
 {
-    await store.CreateSessionAsync(new CreateSessionRequest("Document care", "curator", ModelProfile: "xhigh"));
+    // A legacy soft-deleted curator (from before the delete guard) is restored rather than
+    // duplicated — the guard would leave a second, unpurgeable copy in the trash forever.
+    var deletedCurator = (await store.ReadDeletedSessionsAsync())
+        .FirstOrDefault(session => string.Equals(session.Role, "curator", StringComparison.OrdinalIgnoreCase));
+    if (deletedCurator is not null)
+    {
+        await store.SetSessionDeletedAsync(deletedCurator.Id, deleted: false);
+    }
+    else
+    {
+        await store.CreateSessionAsync(new CreateSessionRequest("Document care", "curator", ModelProfile: "xhigh"));
+    }
 }
 await queueControl.RefreshScheduleAsync();
 
@@ -330,6 +341,13 @@ api.MapPost("/sessions", async (
     ILiveDocumentQueueControl queue,
     CancellationToken cancellationToken) =>
 {
+    if (string.Equals(request.Role?.Trim(), "curator", StringComparison.OrdinalIgnoreCase))
+    {
+        // Singleton by construction: extra curators would be invisible on the panel yet
+        // permanently undeletable (the delete guard fires for any curator-role row).
+        throw new ArgumentException(
+            "The resident curator session is provisioned by the runtime; sessions created here are modelers.");
+    }
     // ModelProfile now carries the reasoning-effort level directly (low..ultra) — manual effort, no
     // adaptive routing. NormalizeEffort validates and maps any legacy profile value for back-compat.
     var session = await sessionStore.CreateSessionAsync(
