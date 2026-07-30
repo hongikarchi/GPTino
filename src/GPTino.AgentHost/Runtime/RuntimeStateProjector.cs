@@ -215,6 +215,20 @@ public sealed class RuntimeStateProjector
             codexAuth = codexAuthSnapshot is null
                 ? null
                 : new { status = codexAuthSnapshot.Wire, detail = codexAuthSnapshot.Detail },
+            // Account-scoped provider rate limits (5h / weekly windows) as of the most recent
+            // turn on any session — session.usage keeps the per-thread context numbers.
+            codexLimits = _usage?.AccountLimits is { } accountLimits
+                ? new
+                {
+                    updatedAt = accountLimits.UpdatedAt,
+                    windows = accountLimits.Windows.Select(limit => new
+                    {
+                        label = limit.Label,
+                        usedPercent = limit.UsedPercent,
+                        resetsAt = limit.ResetsAt
+                    }).ToArray()
+                }
+                : null,
             currentSelection = live?.CurrentSelection is { } selection
                 ? new
                 {

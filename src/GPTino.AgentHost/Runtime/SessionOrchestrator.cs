@@ -1162,13 +1162,27 @@ public sealed class SessionOrchestrator : IDisposable
             return;
         }
 
-        // Token-count style notifications (thread/tokenCount and CLI-version variants) carry the
-        // cumulative usage, the context-window size, and account rate limits — everything the
-        // panel's remaining-context display needs.
-        if (method.EndsWith("tokenCount", StringComparison.OrdinalIgnoreCase) ||
+        // Token-usage notifications carry the thread's cumulative tokens, the last-request
+        // footprint, and the context-window size. Live codex sends thread/tokenUsage/updated;
+        // the tokenCount suffixes cover older CLI variants.
+        if (method.EndsWith("tokenUsage/updated", StringComparison.OrdinalIgnoreCase) ||
+            method.EndsWith("tokenCount", StringComparison.OrdinalIgnoreCase) ||
             method.EndsWith("token_count", StringComparison.OrdinalIgnoreCase))
         {
             await RecordUsageAsync(parameters, parameters).ConfigureAwait(false);
+            return;
+        }
+
+        // Account rate limits arrive on their own notification with NO threadId (they are
+        // account-scoped), so they update the account snapshot directly instead of a session.
+        if (method.EndsWith("rateLimits/updated", StringComparison.OrdinalIgnoreCase) && _usage is not null)
+        {
+            var snapshot = SessionUsageState.TryParse(parameters);
+            if (snapshot is { RateLimits.Count: > 0 })
+            {
+                _usage.UpdateAccountLimits(snapshot.RateLimits);
+                _events.Publish();
+            }
             return;
         }
 

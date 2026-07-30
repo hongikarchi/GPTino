@@ -392,6 +392,7 @@ export default function App() {
           session={selected}
           conflicts={runtime.conflicts}
           models={models}
+          limits={runtime.codexLimits ?? null}
           grasshopperDocs={ghDocs}
           busyActions={busyActions}
           onMode={(mode) => selected && void actions.setMode(selected.id, mode)}

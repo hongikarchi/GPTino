@@ -57,6 +57,19 @@ export interface SessionUsage {
   rateLimits?: { label: string; usedPercent: number; resetsAt?: string | null }[] | null;
 }
 
+/** One account-scoped provider rate-limit window, e.g. { label: "5h", usedPercent: 34 }. */
+export interface CodexLimitWindow {
+  label: string;
+  usedPercent: number;
+  resetsAt?: string | null;
+}
+
+/** Freshest account rate limits seen on any session's turn (rate limits are account-, not thread-scoped). */
+export interface CodexLimits {
+  updatedAt?: string | null;
+  windows: CodexLimitWindow[];
+}
+
 /** One Grasshopper document registered with the runtime. `id` is the durable 16-hex docKey. */
 export interface GrasshopperDocInfo {
   id: string;
@@ -163,6 +176,7 @@ export interface RuntimeState {
   currentSelection?: CurrentSelection | null;
   contextFolder?: string | null;
   codexAuth?: CodexAuth;
+  codexLimits?: CodexLimits | null;
   lastUpdatedAt: string;
 }
 

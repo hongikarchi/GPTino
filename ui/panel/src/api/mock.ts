@@ -63,6 +63,13 @@ const demoState: RuntimeState = {
   gitRevision: 17,
   orderVersion: 8,
   paused: false,
+  codexLimits: {
+    updatedAt: minutesAgo(2),
+    windows: [
+      { label: "5h", usedPercent: 34, resetsAt: minutesAgo(-140) },
+      { label: "weekly", usedPercent: 12, resetsAt: minutesAgo(-4_320) },
+    ],
+  },
   writer: {
     sessionId: "facade",
     jobId: "job-184",

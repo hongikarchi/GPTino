@@ -10,6 +10,7 @@ import {
 } from "react";
 import type {
   ChatMessage,
+  CodexLimits,
   GptinoSession,
   GrasshopperDocInfo,
   MessageAttachment,
@@ -27,6 +28,8 @@ interface ChatPaneProps {
   session: GptinoSession | undefined;
   conflicts: RuntimeConflict[];
   models: ModelInfo[];
+  /** Account-scoped codex rate limits for the status line; null before the first turn reports them. */
+  limits?: CodexLimits | null;
   /** Registered GH docs; the target selector renders when more than one exists OR the session carries a (possibly stale) binding. */
   grasshopperDocs?: GrasshopperDocInfo[] | null;
   busyActions: Set<string>;
@@ -140,56 +143,88 @@ const formatTime = (value: string) =>
 const compactTokens = (value: number) =>
   value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${Math.round(value / 1_000)}k` : `${value}`;
 
-// Context-left chip: green while roomy, amber past 70% used, red past 90%.
-function UsageChip({ usage }: { usage: SessionUsage }) {
-  const { contextWindow, contextUsedTokens, totalTokens, rateLimits } = usage;
-  // The server serializes absent values as explicit nulls, so every guard is
-  // null-inclusive (`!= null`), never `!== undefined`.
-  const hasContext = contextWindow != null && contextWindow > 0 && contextUsedTokens != null;
-  const usedPercent = hasContext ? Math.min(100, Math.round((contextUsedTokens! / contextWindow!) * 100)) : undefined;
-  const worstLimit = (rateLimits ?? []).reduce<{ label: string; usedPercent: number } | null>(
-    (worst, limit) => (worst === null || limit.usedPercent > worst.usedPercent ? limit : worst),
-    null,
-  );
-  if (usedPercent === undefined && totalTokens == null && !worstLimit) return null;
+// Window labels sort shortest first: "45m" < "5h" < "weekly" < "3d" < anything unparsed.
+const windowRank = (label: string): number => {
+  const match = /^(\d+(?:\.\d+)?)([mhd])$/.exec(label);
+  if (match) {
+    const value = Number(match[1]);
+    return match[2] === "m" ? value : match[2] === "h" ? value * 60 : value * 1_440;
+  }
+  return label === "weekly" ? 10_080 : Number.MAX_SAFE_INTEGER;
+};
 
-  const tone = usedPercent !== undefined && usedPercent >= 90 ? "critical" : usedPercent !== undefined && usedPercent >= 70 ? "warn" : "";
-  const title = [
-    hasContext
-      ? `Context: ${compactTokens(contextUsedTokens!)} of ${compactTokens(contextWindow!)} tokens used (${usedPercent}%) — ${compactTokens(Math.max(0, contextWindow! - contextUsedTokens!))} left`
-      : null,
-    totalTokens != null ? `Session total: ${compactTokens(totalTokens)} tokens` : null,
-    ...(rateLimits ?? []).map(
-      (limit) => `Rate limit ${limit.label}: ${Math.round(limit.usedPercent)}% used${limit.resetsAt ? ` · resets ${formatTime(limit.resetsAt)}` : ""}`,
-    ),
-  ]
-    .filter(Boolean)
-    .join("\n");
+const usageTone = (usedPercent: number) =>
+  usedPercent >= 90 ? "critical" : usedPercent >= 70 ? "warn" : "";
+
+// One fuel-gauge segment of the status line: the filled part is what REMAINS.
+function UsageMeter({ label, usedPercent, title }: { label: string; usedPercent: number; title: string }) {
+  const left = Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
+  return (
+    <span className={`usage-meter ${usageTone(usedPercent)}`} title={title}>
+      <b>{label}</b>
+      <span className="meter-track">
+        <span className="meter-fill" style={{ width: `${left}%` }} />
+      </span>
+      {left}%
+    </span>
+  );
+}
+
+// codex-CLI-style status line under the composer: the selected session's
+// context left plus the account's provider windows (5h / weekly). Every figure
+// shows what REMAINS; used% and reset times live in the tooltips. Renders
+// nothing until the first turn reports usage. Null guards are null-inclusive
+// (`!= null`) because the server serializes absent values as explicit nulls.
+function UsageStatusLine({ usage, limits }: { usage?: SessionUsage; limits?: CodexLimits | null }) {
+  const hasContext = usage?.contextWindow != null && usage.contextWindow > 0 && usage.contextUsedTokens != null;
+  const contextUsedPercent = hasContext
+    ? Math.min(100, (usage!.contextUsedTokens! / usage!.contextWindow!) * 100)
+    : undefined;
+  const windows = [...(limits?.windows ?? [])].sort((a, b) => windowRank(a.label) - windowRank(b.label));
+  if (contextUsedPercent === undefined && windows.length === 0) return null;
 
   return (
-    <span className={`usage-chip ${tone}`} title={title}>
-      {usedPercent !== undefined ? (
-        <>
-          <b>ctx</b> {100 - usedPercent}% left
-        </>
-      ) : totalTokens != null ? (
-        <>
-          <b>tok</b> {compactTokens(totalTokens)}
-        </>
+    <span className="usage-line" aria-label="Remaining codex tokens">
+      {contextUsedPercent !== undefined ? (
+        <UsageMeter
+          label="ctx"
+          usedPercent={contextUsedPercent}
+          title={[
+            `Context: ${compactTokens(usage!.contextUsedTokens!)} of ${compactTokens(usage!.contextWindow!)} tokens used (${Math.round(contextUsedPercent)}%)`,
+            usage!.totalTokens != null ? `Session total: ${compactTokens(usage!.totalTokens)} tokens` : null,
+          ]
+            .filter(Boolean)
+            .join("\n")}
+        />
       ) : null}
-      {worstLimit ? (
-        <>
-          {" · "}
-          <b>{worstLimit.label}</b> {Math.round(worstLimit.usedPercent)}%
-        </>
-      ) : null}
+      {windows.map((window) => {
+        // A reset time in the past means the provider window rolled over since
+        // the last turn — report it as full instead of a stale used%.
+        const reset = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN;
+        const rolledOver = !Number.isNaN(reset) && reset < Date.now();
+        return (
+          <UsageMeter
+            key={window.label}
+            label={window.label}
+            usedPercent={rolledOver ? 0 : window.usedPercent}
+            title={[
+              rolledOver
+                ? `${window.label} window reset ${formatTime(window.resetsAt!)} — full again.`
+                : `${window.label} window: ${Math.round(window.usedPercent)}% used${window.resetsAt ? ` · resets ${formatTime(window.resetsAt)}` : ""}`,
+              limits?.updatedAt ? `As of the last turn (${formatTime(limits.updatedAt)})` : null,
+            ]
+              .filter(Boolean)
+              .join("\n")}
+          />
+        );
+      })}
     </span>
   );
 }
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onGoal, onTarget, onSend, onResume, onDelete, onStopEdit }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onGoal, onTarget, onSend, onResume, onDelete, onStopEdit }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -408,7 +443,6 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
           </div>
           <p>{session.summary}</p>
         </div>
-        {session.usage ? <UsageChip usage={session.usage} /> : null}
         {session.paused ? (
           <button
             type="button"
@@ -700,8 +734,11 @@ export function ChatPane({ session, conflicts, models, grasshopperDocs, busyActi
           </div>
         ) : null}
         <div className="composer-hint">
-          <span>Ctrl ↵ to send</span>
-          <span>Shift ⇥ toggles Plan / Auto</span>
+          <div className="hint-keys">
+            <span>Ctrl ↵ to send</span>
+            <span>Shift ⇥ toggles Plan / Auto</span>
+          </div>
+          <UsageStatusLine usage={session.usage} limits={limits} />
         </div>
       </div>
     </section>

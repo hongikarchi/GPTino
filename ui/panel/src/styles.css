@@ -538,20 +538,28 @@ button.llm-auth:hover strong {
 .status-blocked .status-dot { background: var(--red); }
 .status-blocked { color: #eaa39b; }
 
-.usage-chip {
+/* Token status line (right side of the composer hint row) — codex-CLI style:
+   fuel-gauge meters where the filled part is what remains. Neutral until a
+   window runs low (amber past 70% used, red past 90%). */
+
+.usage-line {
+  display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--muted);
-  background: var(--surface-2);
+  gap: 12px;
   font-family: var(--mono);
-  font-size: var(--fs-meta);
-  white-space: nowrap;
+  color: var(--muted);
   cursor: help;
 }
 
-.usage-chip b {
+.usage-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.usage-meter b {
   color: var(--dim);
   font-size: var(--fs-micro);
   font-weight: 500;
@@ -559,8 +567,26 @@ button.llm-auth:hover strong {
   letter-spacing: 0.06em;
 }
 
-.usage-chip.warn { color: var(--amber); border-color: rgb(230 184 92 / 0.35); }
-.usage-chip.critical { color: var(--red); border-color: rgb(225 111 98 / 0.4); }
+.meter-track {
+  width: 42px;
+  height: 5px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: var(--surface-3);
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--muted);
+}
+
+.usage-meter.warn { color: var(--amber); }
+.usage-meter.warn .meter-fill { background: var(--amber); }
+.usage-meter.critical { color: var(--red); }
+.usage-meter.critical .meter-fill { background: var(--red); }
 
 /* Problem & solution callout shown inside the chat when the session is blocked. */
 
@@ -1026,9 +1052,17 @@ button.llm-auth:hover strong {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-top: 5px;
   color: var(--dim);
   font-size: var(--fs-micro);
+}
+
+.hint-keys {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 14px;
 }
 
 .secondary-button,
