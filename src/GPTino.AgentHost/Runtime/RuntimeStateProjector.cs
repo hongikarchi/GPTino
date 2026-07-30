@@ -191,6 +191,21 @@ public sealed class RuntimeStateProjector
             grasshopperDocs = registeredDocs.Count > 0
                 ? registeredDocs.Select(doc => new { id = doc.Id, file = doc.File }).ToArray()
                 : null,
+            // Eventually-consistent data-flow summaries (references/bakes per GH doc) from the
+            // backend cache — no second data path: the counts ride the same snapshot the panel
+            // already consumes. Absent until the first refresh completes.
+            dataFlow = live?.DataFlowSummaries is { Count: > 0 } dataFlowSummaries
+                ? dataFlowSummaries.Select(summary => new
+                {
+                    docId = summary.DocId,
+                    referenceCount = summary.ReferenceCount,
+                    missingReferenceCount = summary.MissingReferenceCount,
+                    bakeCount = summary.BakeCount,
+                    revision = summary.Revision,
+                    observedAt = summary.ObservedAt
+                }).ToArray()
+                : null,
+            unattributedBakeCount = live?.UnattributedBakeCount ?? 0,
             health = _backend.IsConnected ? "connected" : "disconnected",
             healthDetail = _backend.IsConnected
                 ? "Explicit document bridge authenticated."

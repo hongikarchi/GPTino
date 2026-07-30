@@ -105,6 +105,20 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "data_flow_read",
+                    "Read the Rhino<->Grasshopper data-flow ledger for the session's bound GH document: every " +
+                    "Rhino object its parameters reference (with per-object existence — a missing object means a " +
+                    "broken reference silently emitting empty data) and every GPTino-stamped bake grouped by " +
+                    "source document and family. Read-only. Consult it before deleting or purging Rhino objects: " +
+                    "never remove an object a definition still references. If a writer session is active this " +
+                    "returns writerActive=true immediately instead of queueing.",
+                    new
+                    {
+                        type = "object",
+                        properties = new { },
+                        additionalProperties = false
+                    }),
+                Function(
                     "inspect_outputs",
                     "Read a component's live output data: per-output DataCount, TypeNames, GeometryBounds, and capped " +
                     "sample values. Use it to ground input access (item/list/tree), type hints, and to verify a script " +

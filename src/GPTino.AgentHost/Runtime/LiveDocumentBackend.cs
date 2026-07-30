@@ -410,6 +410,252 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         };
     }
 
+    /// <summary>
+    /// One data-flow summary per registered GH document: what it references from the Rhino
+    /// document (with broken-reference count) and what it has baked back. Eventually consistent —
+    /// refreshed after commits, on document registration, and whenever a detail read runs; a stale
+    /// entry can never cause a wrong write because mutations are still CAS-gated per resource.
+    /// </summary>
+    public sealed record DataFlowSummary(
+        string DocId,
+        int ReferenceCount,
+        int MissingReferenceCount,
+        int BakeCount,
+        long Revision,
+        DateTimeOffset ObservedAt);
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DataFlowSummary> _dataFlowSummaries =
+        new(StringComparer.OrdinalIgnoreCase);
+    private int _unattributedBakeCount;
+    private int _dataFlowRefreshRunning;
+
+    public IReadOnlyList<DataFlowSummary> DataFlowSummaries =>
+        _dataFlowSummaries.Values.OrderBy(summary => summary.DocId, StringComparer.Ordinal).ToArray();
+
+    public int UnattributedBakeCount => Volatile.Read(ref _unattributedBakeCount);
+
+    /// <summary>Session-scoped agent read (data_flow_read tool): honors the session's doc binding.</summary>
+    public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
+        ReadDataFlowCoreAsync(ResolveSessionTargetState(session), cancellationToken);
+
+    /// <summary>Panel read (GET /data-flow): explicit docKey, or the only registered doc.</summary>
+    public Task<object> ReadDataFlowDetailAsync(string? docKey, CancellationToken cancellationToken) =>
+        ReadDataFlowCoreAsync(
+            ResolveTargetStateByDocKey(
+                string.IsNullOrWhiteSpace(docKey) ? null : docKey.Trim(),
+                "The data-flow read"),
+            cancellationToken);
+
+    private async Task<object> ReadDataFlowCoreAsync(TargetState targetState, CancellationToken cancellationToken)
+    {
+        // Same fail-fast rule as inspect_outputs: the document gate is writer-preferring, so
+        // queuing this read behind an executing job would stall past tool deadlines.
+        if (WriterSessionId is not null)
+        {
+            return new
+            {
+                writerActive = true,
+                message = "A writer session currently holds the document; retry after the queue drains."
+            };
+        }
+        using var documentRead = await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false);
+        var references = await SendDataFlowReadAsync(
+            targetState, BridgeAdapterOwner.CordycepsCanvas, "canvas.listReferencedRhinoIds", cancellationToken)
+            .ConfigureAwait(false);
+        var stamped = await SendDataFlowReadAsync(
+            targetState, BridgeAdapterOwner.CordycepsRhino, "rhino.listStampedObjects", cancellationToken)
+            .ConfigureAwait(false);
+        var revision = targetState.Snapshot?.State.Revision ?? 0;
+        var observedAt = DateTimeOffset.UtcNow;
+        if (UpdateDataFlowSummary(targetState.DocKey, references, stamped, revision, observedAt))
+        {
+            _events.Publish();
+        }
+        return new
+        {
+            docId = targetState.DocKey,
+            revision,
+            observedAt,
+            references,
+            bakes = stamped
+        };
+    }
+
+    private async Task<JsonElement> SendDataFlowReadAsync(
+        TargetState targetState,
+        BridgeAdapterOwner owner,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        RequireAdapter(targetState, owner);
+        using var emptyArguments = JsonDocument.Parse("{}");
+        var request = new BridgeOperationRequest(
+            $"read-{Guid.NewGuid():N}",
+            owner,
+            operation,
+            BridgeOperationAccess.Read,
+            targetState.Snapshot?.State.Revision ?? 0,
+            ExpectedFingerprint: null,
+            WriterLeaseToken: null,
+            emptyArguments.RootElement.Clone());
+        var response = await SendOperationAsync(targetState.Target, request, cancellationToken)
+            .ConfigureAwait(false);
+        return response.Result.Clone();
+    }
+
+    /// <summary>
+    /// Best-effort, coalescing background refresh of every registered document's summary. Never
+    /// throws; a failed refresh simply leaves the previous (stamped, dated) summary in place.
+    /// </summary>
+    internal void ScheduleDataFlowRefresh()
+    {
+        if (Interlocked.CompareExchange(ref _dataFlowRefreshRunning, 1, 0) != 0)
+        {
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await RefreshDataFlowCoreAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogDebug(exception, "Data-flow summary refresh failed; keeping previous summaries.");
+            }
+            finally
+            {
+                Volatile.Write(ref _dataFlowRefreshRunning, 0);
+            }
+        });
+    }
+
+    private async Task RefreshDataFlowCoreAsync(CancellationToken cancellationToken)
+    {
+        List<TargetState> targets;
+        lock (_connectionGate)
+        {
+            targets = _targets.Values.OrderBy(state => state.Sequence).ToList();
+        }
+        if (targets.Count == 0)
+        {
+            _dataFlowSummaries.Clear();
+            Volatile.Write(ref _unattributedBakeCount, 0);
+            return;
+        }
+        using var documentRead = await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false);
+        // The stamped census is Rhino-document-wide — one call serves every GH doc's bake counts.
+        var stamped = await SendDataFlowReadAsync(
+            targets[0], BridgeAdapterOwner.CordycepsRhino, "rhino.listStampedObjects", cancellationToken)
+            .ConfigureAwait(false);
+        var changed = false;
+        var liveKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var targetState in targets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            liveKeys.Add(targetState.DocKey);
+            var references = await SendDataFlowReadAsync(
+                targetState, BridgeAdapterOwner.CordycepsCanvas, "canvas.listReferencedRhinoIds", cancellationToken)
+                .ConfigureAwait(false);
+            changed |= UpdateDataFlowSummary(
+                targetState.DocKey,
+                references,
+                stamped,
+                targetState.Snapshot?.State.Revision ?? 0,
+                DateTimeOffset.UtcNow);
+        }
+        foreach (var staleKey in _dataFlowSummaries.Keys.Where(key => !liveKeys.Contains(key)).ToArray())
+        {
+            changed |= _dataFlowSummaries.TryRemove(staleKey, out _);
+        }
+        if (changed)
+        {
+            _events.Publish();
+        }
+    }
+
+    private bool UpdateDataFlowSummary(
+        string docKey,
+        JsonElement references,
+        JsonElement stamped,
+        long revision,
+        DateTimeOffset observedAt)
+    {
+        var referenceCount = ReadInt32(references, "referenceCount");
+        var missingCount = ReadInt32(references, "missingCount");
+        var bakeCount = 0;
+        var unattributed = 0;
+        if (stamped.ValueKind == JsonValueKind.Object &&
+            stamped.TryGetProperty("groups", out var groups) &&
+            groups.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var group in groups.EnumerateArray())
+            {
+                var count = ReadInt32(group, "count");
+                var sourceDocKey = group.TryGetProperty("sourceDocKey", out var keyProperty) &&
+                    keyProperty.ValueKind == JsonValueKind.String
+                        ? keyProperty.GetString()
+                        : null;
+                if (string.IsNullOrEmpty(sourceDocKey))
+                {
+                    unattributed += count;
+                }
+                else if (string.Equals(sourceDocKey, docKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    bakeCount += count;
+                }
+            }
+        }
+        Volatile.Write(ref _unattributedBakeCount, unattributed);
+        var next = new DataFlowSummary(docKey, referenceCount, missingCount, bakeCount, revision, observedAt);
+        var changed = true;
+        _dataFlowSummaries.AddOrUpdate(
+            docKey,
+            next,
+            (_, previous) =>
+            {
+                changed = previous.ReferenceCount != next.ReferenceCount ||
+                    previous.MissingReferenceCount != next.MissingReferenceCount ||
+                    previous.BakeCount != next.BakeCount;
+                return next;
+            });
+        return changed;
+    }
+
+    private static int ReadInt32(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object &&
+        element.TryGetProperty(property, out var value) &&
+        value.ValueKind == JsonValueKind.Number
+            ? value.GetInt32()
+            : 0;
+
+    private static IReadOnlyList<PreparedOperation> InjectRhinoUpsertSourceDocKey(
+        IReadOnlyList<PreparedOperation> operations,
+        string docKey)
+    {
+        if (operations.All(operation => operation.BridgeOperation != "rhino.upsert"))
+        {
+            return operations;
+        }
+        var result = new List<PreparedOperation>(operations.Count);
+        foreach (var operation in operations)
+        {
+            if (operation.BridgeOperation != "rhino.upsert")
+            {
+                result.Add(operation);
+                continue;
+            }
+            var node = System.Text.Json.Nodes.JsonNode.Parse(operation.Arguments.GetRawText())?.AsObject()
+                ?? throw new InvalidOperationException("rhino.upsert arguments must be a JSON object.");
+            node["sourceDocKey"] = docKey;
+            result.Add(operation with
+            {
+                Arguments = JsonSerializer.SerializeToElement(node, BridgeProtocol.JsonOptions)
+            });
+        }
+        return result;
+    }
+
     private async Task<ScopedInspection> ReadInspectionScopeAsync(
         TargetState targetState,
         string scope,
@@ -1130,6 +1376,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 return new JobExecutionResult(job.JobId, JobState.Blocked, message);
             }
 
+            // Server-owned provenance: stamp every rhino.upsert with the job's target docKey so
+            // bakes stay attributable to the GH document that produced them. Model payloads cannot
+            // carry the field (ValidateUpsertArguments rejects it at submit); like auto-pivot
+            // resolution below, only the dispatched Arguments change — FrozenPayload is untouched.
+            preparedOperations = InjectRhinoUpsertSourceDocKey(preparedOperations, targetState.DocKey);
             await PreflightBridgePayloadsAsync(
                 targetState,
                 preparedOperations,
@@ -1368,6 +1619,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 commitQuality is null
                     ? "Verified and committed to managed history."
                     : $"Verified and committed to managed history. {commitQuality}").ConfigureAwait(false);
+            // Commits are the moment reference/bake topology can change; refresh the data-flow
+            // summaries in the background (the refresh takes the read gate itself, so it waits for
+            // this write epoch to release rather than extending it).
+            ScheduleDataFlowRefresh();
             return new JobExecutionResult(
                 job.JobId,
                 JobState.Committed,
@@ -1794,6 +2049,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     frame.MessageId),
                 cancellationToken).ConfigureAwait(false);
             _events.Publish();
+            // A newly registered (or Save-As-renamed) document changes what the data-flow view
+            // should cover; refresh in the background once the registration frame is answered.
+            ScheduleDataFlowRefresh();
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -4014,6 +4272,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     private static void ValidateUpsertArguments(UpsertRhinoObjectRequest request, string operationId)
     {
+        if (request.SourceDocKey is not null)
+        {
+            // Provenance is server-injected at execution; a model-authored payload carrying it
+            // would let bake attribution be spoofed.
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' must not set sourceDocKey; provenance is stamped by the server.");
+        }
         if (request.ObjectId == Guid.Empty || string.IsNullOrWhiteSpace(request.LogicalEntityId) ||
             string.IsNullOrWhiteSpace(request.GeometryType) || string.IsNullOrWhiteSpace(request.GeometryJson) ||
             request.AttributesJson is null)

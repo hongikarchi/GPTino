@@ -58,6 +58,12 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
         // — so the objects it validates are exactly the ones the model listed and referenced by GUID.
         ReferenceRhinoObjectsCoreAsync(Resolve(target), target.RhinoDocumentSerial, request, cancellationToken);
 
+    public Task<ReferencedRhinoIdsResult> ListReferencedRhinoIdsAsync(DocumentTarget target, CancellationToken cancellationToken = default) =>
+        // Like referenceRhinoObjects, this read spans both documents: reference GUIDs live in the GH
+        // parameters, but existence/layer resolve against the paired Rhino document serial — never
+        // RhinoDoc.ActiveDoc.
+        ListReferencedRhinoIdsCoreAsync(Resolve(target), target.RhinoDocumentSerial, cancellationToken);
+
     protected abstract Task<CanvasSnapshot> CaptureSnapshotCoreAsync(TDocument document, CancellationToken cancellationToken);
     protected abstract Task<CanvasObjectState> InspectObjectCoreAsync(TDocument document, Guid objectId, CancellationToken cancellationToken);
     protected abstract Task<CanvasOutputInspection> InspectOutputsCoreAsync(TDocument document, InspectCanvasOutputsRequest request, CancellationToken cancellationToken);
@@ -69,6 +75,7 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
     protected abstract Task<CanvasMutationResult> SetWireCoreAsync(TDocument document, SetWireRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> SetGroupCoreAsync(TDocument document, SetGroupRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> ReferenceRhinoObjectsCoreAsync(TDocument document, uint rhinoDocumentSerial, ReferenceRhinoObjectsRequest request, CancellationToken cancellationToken);
+    protected abstract Task<ReferencedRhinoIdsResult> ListReferencedRhinoIdsCoreAsync(TDocument document, uint rhinoDocumentSerial, CancellationToken cancellationToken);
 
     private TDocument Resolve(DocumentTarget target)
     {
@@ -97,6 +104,9 @@ public abstract class DocumentBoundRhinoSceneAdapter<TRhinoDocument> : ICordycep
     public Task<RhinoSceneObjectState> InspectObjectAsync(DocumentTarget target, Guid objectId, CancellationToken cancellationToken = default) =>
         InspectObjectCoreAsync(Resolve(target), objectId, cancellationToken);
 
+    public Task<StampedObjectsResult> ListStampedObjectsAsync(DocumentTarget target, CancellationToken cancellationToken = default) =>
+        ListStampedObjectsCoreAsync(Resolve(target), cancellationToken);
+
     public Task<RhinoSceneMutationResult> CreatePrimitiveAsync(DocumentTarget target, CreateRhinoPrimitiveRequest request, CancellationToken cancellationToken = default) =>
         CreatePrimitiveCoreAsync(Resolve(target), request, cancellationToken);
 
@@ -117,6 +127,7 @@ public abstract class DocumentBoundRhinoSceneAdapter<TRhinoDocument> : ICordycep
 
     protected abstract Task<RhinoSceneListResult> ListObjectsCoreAsync(TRhinoDocument document, RhinoListObjectsRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoSceneObjectState> InspectObjectCoreAsync(TRhinoDocument document, Guid objectId, CancellationToken cancellationToken);
+    protected abstract Task<StampedObjectsResult> ListStampedObjectsCoreAsync(TRhinoDocument document, CancellationToken cancellationToken);
     protected abstract Task<RhinoSceneMutationResult> CreatePrimitiveCoreAsync(TRhinoDocument document, CreateRhinoPrimitiveRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoSceneMutationResult> UpsertObjectCoreAsync(TRhinoDocument document, UpsertRhinoObjectRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoUpsertValidationResult> ValidateUpsertObjectCoreAsync(TRhinoDocument document, UpsertRhinoObjectRequest request, CancellationToken cancellationToken);

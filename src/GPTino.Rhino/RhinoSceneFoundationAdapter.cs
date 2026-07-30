@@ -20,6 +20,11 @@ namespace GPTino.Rhino;
 public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter<global::Rhino.RhinoDoc>
 {
     private const string LogicalEntityKey = "GPTino.LogicalEntityId";
+    // Provenance stamp: the durable GH docKey whose job produced this object. Server-injected
+    // (never model-supplied); legacy objects without it stay honestly unattributed.
+    private const string SourceDocKeyKey = "GPTino.SourceDocKey";
+    // Stamped by the bake_manager skill (family identity for replace/append re-bakes).
+    private const string BakeFamilyKey = "gptino_bake_family";
 
     public RhinoSceneFoundationAdapter(ExplicitRhinoDocumentResolver resolver)
         : base(resolver)
@@ -103,6 +108,62 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             bounds,
             matches,
             fingerprint));
+    }
+
+    protected override Task<StampedObjectsResult> ListStampedObjectsCoreAsync(
+        global::Rhino.RhinoDoc document,
+        CancellationToken cancellationToken)
+    {
+        // Bake-ledger census: every object carrying a GPTino stamp, grouped by
+        // (source docKey, bake family). Deterministic ordering (group key, then object id) so the
+        // fingerprint is stable across identical documents. Object id lists are capped per group —
+        // the ledger needs counts and samples, not a full dump of a 10k-object bake.
+        const int MaxIdsPerGroup = 50;
+        var groups = new Dictionary<(string? SourceDocKey, string? Family), List<Guid>>();
+        var counts = new Dictionary<(string? SourceDocKey, string? Family), int>();
+        var totalStamped = 0;
+        foreach (var rhinoObject in document.Objects
+                     .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var attributes = rhinoObject.Attributes;
+            var logicalId = attributes.GetUserString(LogicalEntityKey);
+            var family = attributes.GetUserString(BakeFamilyKey);
+            if (string.IsNullOrEmpty(logicalId) && string.IsNullOrEmpty(family))
+            {
+                continue;
+            }
+            totalStamped++;
+            var sourceDocKey = attributes.GetUserString(SourceDocKeyKey);
+            var key = (
+                string.IsNullOrEmpty(sourceDocKey) ? null : sourceDocKey.ToLowerInvariant(),
+                string.IsNullOrEmpty(family) ? null : family);
+            counts[key] = counts.TryGetValue(key, out var count) ? count + 1 : 1;
+            if (!groups.TryGetValue(key, out var ids))
+            {
+                groups[key] = ids = new List<Guid>();
+            }
+            if (ids.Count < MaxIdsPerGroup)
+            {
+                ids.Add(rhinoObject.Id);
+            }
+        }
+
+        var ordered = groups
+            .OrderBy(pair => pair.Key.SourceDocKey ?? string.Empty, StringComparer.Ordinal)
+            .ThenBy(pair => pair.Key.Family ?? string.Empty, StringComparer.Ordinal)
+            .Select(pair => new StampedObjectGroup(
+                pair.Key.SourceDocKey,
+                pair.Key.Family,
+                counts[pair.Key],
+                pair.Value))
+            .ToArray();
+        var fingerprint = Hash(
+            "stampedObjects\n" + string.Join(
+                "\n",
+                ordered.Select(group =>
+                    $"{group.SourceDocKey}|{group.BakeFamily}|{group.Count}|{string.Join(",", group.ObjectIds.Select(id => id.ToString("D")))}")));
+        return Task.FromResult(new StampedObjectsResult(totalStamped, ordered, fingerprint));
     }
 
     protected override Task<RhinoSceneObjectState> InspectObjectCoreAsync(
@@ -964,6 +1025,10 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             try
             {
                 attributes.SetUserString(LogicalEntityKey, request.LogicalEntityId);
+                if (!string.IsNullOrWhiteSpace(request.SourceDocKey))
+                {
+                    attributes.SetUserString(SourceDocKeyKey, request.SourceDocKey);
+                }
                 attributes.ObjectId = existing?.Id ?? request.ObjectId;
                 return new PreparedRhinoUpsert(existing, before, geometry, attributes);
             }

@@ -335,6 +335,9 @@ public sealed class DynamicToolDispatcherTests
         public Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken) =>
             Task.FromResult<object>(new { state = "queued" });
 
+        public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
+            Task.FromResult<object>(new { docId = "test", references = new { }, bakes = new { } });
+
         public Task StopCurrentAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

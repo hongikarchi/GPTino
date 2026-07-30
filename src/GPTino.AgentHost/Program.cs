@@ -277,6 +277,15 @@ api.MapGet("/events", async (HttpContext context, RuntimeStateProjector projecto
     }
 });
 
+// On-demand Rhino<->GH data-flow detail for the panel drawer: per-parameter references (with
+// existence/layer) plus the stamped-bake census. ?doc= selects the GH docKey; omitted = the only
+// registered document. Refreshes the summary cache as a side effect.
+api.MapGet("/data-flow", async (
+    string? doc,
+    LiveDocumentBackend liveBackend,
+    CancellationToken cancellationToken) =>
+    Results.Ok(await liveBackend.ReadDataFlowDetailAsync(doc, cancellationToken)));
+
 api.MapPost("/sessions", async (
     CreateSessionRequest request,
     SessionStore sessionStore,

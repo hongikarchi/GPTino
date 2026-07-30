@@ -429,6 +429,101 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         return loaded;
     }
 
+    protected override Task<ReferencedRhinoIdsResult> ListReferencedRhinoIdsCoreAsync(
+        GH_Document document,
+        uint rhinoDocumentSerial,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        // Same pairing rule as referenceRhinoObjects: existence resolves against the session's
+        // paired Rhino document serial, never RhinoDoc.ActiveDoc.
+        var rhinoDoc = global::Rhino.RhinoDoc.FromRuntimeSerialNumber(rhinoDocumentSerial)
+            ?? throw new InvalidOperationException(
+                $"Paired Rhino document {rhinoDocumentSerial} is not open; cannot resolve references.");
+
+        var parameters = new List<ReferencedParameterState>();
+        var referenceCount = 0;
+        var missingCount = 0;
+        foreach (var documentObject in document.Objects)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            IEnumerable<IGH_Param> candidates = documentObject switch
+            {
+                IGH_Component component => component.Params.Input,
+                IGH_Param standalone => new[] { standalone },
+                _ => Array.Empty<IGH_Param>()
+            };
+            foreach (var parameter in candidates)
+            {
+                var ids = CollectPersistentReferenceIds(parameter);
+                if (ids.Count == 0)
+                {
+                    continue;
+                }
+                var objects = new List<ReferencedRhinoObjectState>(ids.Count);
+                foreach (var id in ids)
+                {
+                    var rhinoObject = rhinoDoc.Objects.FindId(id);
+                    string? layer = null;
+                    if (rhinoObject is not null)
+                    {
+                        var layerIndex = rhinoObject.Attributes.LayerIndex;
+                        layer = layerIndex >= 0 && layerIndex < rhinoDoc.Layers.Count
+                            ? rhinoDoc.Layers[layerIndex].FullPath
+                            : null;
+                    }
+                    else
+                    {
+                        missingCount++;
+                    }
+                    objects.Add(new ReferencedRhinoObjectState(id, rhinoObject is not null, layer));
+                }
+                referenceCount += ids.Count;
+                parameters.Add(new ReferencedParameterState(
+                    parameter.InstanceGuid,
+                    parameter.NickName ?? string.Empty,
+                    parameter.GetType().Name,
+                    objects));
+            }
+        }
+
+        var canonical = JsonSerializer.Serialize(parameters);
+        var fingerprint = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(
+                $"{document.DocumentID:N}|referencedRhinoIds|{canonical}")))
+            .ToLowerInvariant();
+        return Task.FromResult(new ReferencedRhinoIdsResult(
+            document.DocumentID,
+            referenceCount,
+            missingCount,
+            parameters,
+            fingerprint));
+    }
+
+    // Persistent data is the source of truth for references: volatile data would double-count goos
+    // flowing through wires from upstream reference parameters. IGH_Param exposes no non-generic
+    // persistent accessor, so read GH_PersistentParam<T>.PersistentData reflectively and walk it as
+    // IGH_Structure. Covers both agent-made reference parameters and user-internalized ("Set One
+    // Curve") references, on standalone parameters and component inputs alike.
+    private static IReadOnlyList<Guid> CollectPersistentReferenceIds(IGH_Param parameter)
+    {
+        var property = parameter.GetType().GetProperty("PersistentData");
+        if (property?.GetValue(parameter) is not IGH_Structure structure)
+        {
+            return Array.Empty<Guid>();
+        }
+        List<Guid>? ids = null;
+        foreach (var item in structure.AllData(true))
+        {
+            if (item is IGH_GeometricGoo { IsReferencedGeometry: true } goo &&
+                goo.ReferenceID != Guid.Empty)
+            {
+                (ids ??= new List<Guid>()).Add(goo.ReferenceID);
+            }
+        }
+        return (IReadOnlyList<Guid>?)ids ?? Array.Empty<Guid>();
+    }
+
     protected override Task<CanvasMutationResult> DeleteObjectCoreAsync(
         GH_Document document,
         DeleteCanvasObjectRequest request,

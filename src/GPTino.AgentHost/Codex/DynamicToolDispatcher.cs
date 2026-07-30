@@ -41,6 +41,8 @@ public interface ILiveDocumentBackend
 
     Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken);
 
+    Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken);
+
     Task StopCurrentAsync(CancellationToken cancellationToken);
 }
 
@@ -82,6 +84,9 @@ public sealed class DisconnectedDocumentBackend : ILiveDocumentBackend
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
+
+    public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task StopCurrentAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -137,6 +142,8 @@ public sealed class DynamicToolDispatcher
                     await _backend.ListRhinoObjectsAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "inspect_outputs" => DynamicToolResult.Ok(
                     await InspectOutputsAsync(call, cancellationToken).ConfigureAwait(false)),
+                "data_flow_read" => DynamicToolResult.Ok(
+                    await ReadDataFlowAsync(call, cancellationToken).ConfigureAwait(false)),
                 "artifact_read" => DynamicToolResult.Ok(await ReadArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "artifact_write" => DynamicToolResult.Ok(await WriteArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "change_submit" => DynamicToolResult.Ok(await SubmitChangeAsync(call, cancellationToken).ConfigureAwait(false)),
@@ -168,6 +175,13 @@ public sealed class DynamicToolDispatcher
                 exception.Message).ConfigureAwait(false);
             return DynamicToolResult.Fail(exception.Message);
         }
+    }
+
+    private async Task<object> ReadDataFlowAsync(DynamicToolCall call, CancellationToken cancellationToken)
+    {
+        var session = await _store.FindSessionByThreadAsync(call.ThreadId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The calling Codex thread is not bound to a GPTino session.");
+        return await _backend.ReadDataFlowAsync(session, cancellationToken).ConfigureAwait(false);
     }
 
     private SkillLibrary RequireSkills() =>
@@ -229,6 +243,7 @@ public sealed class DynamicToolDispatcher
                 : "Reading the canvas snapshot",
         "component_catalog" => $"Searching components: {TryString(call.Arguments, "query")}",
         "rhino_list" => "Listing Rhino objects",
+        "data_flow_read" => "Reading the Rhino-GH data-flow ledger",
         "inspect_outputs" => "Inspecting component outputs",
         "artifact_read" => $"Reading draft {TryString(call.Arguments, "path")}",
         "artifact_write" => $"Drafting {TryString(call.Arguments, "path")}",

@@ -15,6 +15,16 @@ public interface ICordycepsRhinoSceneAdapter
         Guid objectId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Enumerates GPTino-stamped objects (GPTino.LogicalEntityId / gptino_bake_family user
+    /// strings) grouped by source GH document and bake family. Read-only; feeds the data-flow
+    /// bake ledger. Objects stamped before GPTino.SourceDocKey existed land in the
+    /// null-SourceDocKey (unattributed) groups — never guessed onto a document.
+    /// </summary>
+    Task<StampedObjectsResult> ListStampedObjectsAsync(
+        DocumentTarget target,
+        CancellationToken cancellationToken = default);
+
     Task<RhinoSceneMutationResult> CreatePrimitiveAsync(
         DocumentTarget target,
         CreateRhinoPrimitiveRequest request,
@@ -160,7 +170,22 @@ public sealed record UpsertRhinoObjectRequest(
     string GeometryType,
     string GeometryJson,
     string AttributesJson,
-    string? ExpectedFingerprint) : IRhinoSceneMutationRequest;
+    string? ExpectedFingerprint,
+    // Server-injected provenance: the durable docKey of the GH document whose job produced this
+    // write. Model payloads must NOT set it (the submit validator rejects non-null values); the
+    // executor stamps it after freezing, so bake attribution cannot be spoofed.
+    string? SourceDocKey = null) : IRhinoSceneMutationRequest;
+
+public sealed record StampedObjectGroup(
+    string? SourceDocKey,
+    string? BakeFamily,
+    int Count,
+    IReadOnlyList<Guid> ObjectIds);
+
+public sealed record StampedObjectsResult(
+    int TotalStamped,
+    IReadOnlyList<StampedObjectGroup> Groups,
+    string Fingerprint);
 
 public sealed record RhinoUpsertValidationResult(
     string OperationId,

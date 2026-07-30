@@ -24,6 +24,25 @@ import System
 
 doc = Rhino.RhinoDoc.ActiveDoc
 FAMILY_KEY = "gptino_bake_family"
+SOURCE_DOC_KEY = "GPTino.SourceDocKey"
+
+
+def source_doc_key():
+    """Durable docKey of the GH definition this script bakes from, so the data-flow ledger can
+    attribute the bake. Mirrors AgentHostOptions.ComputeDocumentKey: sha256 of the full path
+    uppercased, first 16 hex, lowercase. (Python .upper() can diverge from .NET ToUpperInvariant
+    on non-ASCII paths; an unsaved doc hashes the empty string, same as the host fallback.)"""
+    try:
+        import hashlib
+        import os
+        path = ghenv.Component.OnPingDocument().FilePath  # noqa: F821 - ambient in script components
+        canonical = os.path.abspath(path).upper() if path else ""
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return None
+
+
+DOC_KEY = source_doc_key()
 
 
 def ensure_layer(full_path):
@@ -62,6 +81,8 @@ def make_attributes(family, ordinal, layer_index):
     attributes.Name = "{}-{:03d}".format(family, ordinal)
     attributes.LayerIndex = layer_index
     attributes.SetUserString(FAMILY_KEY, family)
+    if DOC_KEY:
+        attributes.SetUserString(SOURCE_DOC_KEY, DOC_KEY)
     return attributes
 
 
@@ -143,6 +164,10 @@ else:
                     if replace_geometry(obj.Id, geo):
                         obj.Attributes.Name = attributes.Name
                         obj.Attributes.LayerIndex = layer_index
+                        # Replace-in-place keeps the old attribute set; re-stamp provenance so
+                        # pre-SourceDocKey family objects gain attribution on their next re-bake.
+                        if DOC_KEY:
+                            obj.Attributes.SetUserString(SOURCE_DOC_KEY, DOC_KEY)
                         obj.CommitChanges()
                         replaced += 1
                         continue

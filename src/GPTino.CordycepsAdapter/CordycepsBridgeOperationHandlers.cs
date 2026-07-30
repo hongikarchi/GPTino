@@ -32,10 +32,25 @@ public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHand
             "canvas.setWire" => await MutationAsync<SetWireRequest>(target, request, _adapter.SetWireAsync, cancellationToken).ConfigureAwait(false),
             "canvas.setGroup" => await MutationAsync<SetGroupRequest>(target, request, _adapter.SetGroupAsync, cancellationToken).ConfigureAwait(false),
             "canvas.referenceRhinoObjects" => await MutationAsync<ReferenceRhinoObjectsRequest>(target, request, _adapter.ReferenceRhinoObjectsAsync, cancellationToken).ConfigureAwait(false),
+            "canvas.listReferencedRhinoIds" => await ListReferencedRhinoIdsAsync(target, request, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
                 "unknown_cordyceps_canvas_operation",
                 $"Unknown Cordyceps canvas operation '{request.Operation}'."),
         };
+    }
+
+    private async Task<BridgeOperationResponse> ListReferencedRhinoIdsAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireAccess(request, BridgeOperationAccess.Read);
+        var result = await _adapter.ListReferencedRhinoIdsAsync(target, cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: false,
+            result,
+            afterFingerprint: result.Fingerprint);
     }
 
     private async Task<BridgeOperationResponse> SnapshotAsync(
@@ -167,6 +182,7 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
         return request.Operation switch
         {
             "rhino.list" => await ListAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "rhino.listStampedObjects" => await ListStampedObjectsAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.inspect" => await InspectAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.validateUpsert" => await ValidateUpsertAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.createPrimitive" => await MutationAsync<CreateRhinoPrimitiveRequest>(target, request, _adapter.CreatePrimitiveAsync, cancellationToken).ConfigureAwait(false),
@@ -205,6 +221,20 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
             result,
             afterFingerprint: result.Fingerprint,
             diagnostics: diagnostics);
+    }
+
+    private async Task<BridgeOperationResponse> ListStampedObjectsAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireAccess(request, BridgeOperationAccess.Read);
+        var result = await _adapter.ListStampedObjectsAsync(target, cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: false,
+            result,
+            afterFingerprint: result.Fingerprint);
     }
 
     private async Task<BridgeOperationResponse> InspectAsync(
