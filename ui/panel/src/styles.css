@@ -169,8 +169,9 @@ textarea:disabled {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px 8px;
   padding-top: 8px;
   border-top: 1px solid var(--border-soft);
 }
@@ -429,6 +430,10 @@ button.llm-auth:hover strong {
 
 .chat-pane {
   display: grid;
+  /* minmax(0, 1fr) clamps the single column to the pane: without it the track
+     sizes to the widest row's min-content, so one unshrinkable row (e.g. the
+     token status line) pushed the whole chat past a narrow panel's right edge. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(120px, 1fr) auto;
   background: #111415;
 }
@@ -545,8 +550,12 @@ button.llm-auth:hover strong {
 .usage-line {
   display: inline-flex;
   align-items: center;
-  flex: 0 0 auto;
-  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  /* Right-aligned; on narrow panels the whole line wraps under the key hints
+     instead of pushing the row past the panel edge. */
+  margin-left: auto;
+  gap: 4px 12px;
   font-family: var(--mono);
   color: var(--muted);
   cursor: help;
@@ -1051,8 +1060,9 @@ button.llm-auth:hover strong {
 .composer-hint {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px 12px;
   margin-top: 5px;
   color: var(--dim);
   font-size: var(--fs-micro);
