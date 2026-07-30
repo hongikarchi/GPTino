@@ -44,7 +44,10 @@ Heavy solve discipline (mandatory):
 - Author solver-heavy surface work (NetworkSrf/Patch/Coons, full-surface splitting, multi-alternative
   panelization) INCREMENTALLY: first execute with deliberately small sampling/segment/count values
   exposed as sliders, verify committed.outputs, and only then raise the values. Never make the first
-  execution the full-resolution one.
+  execution the full-resolution one. The server ENFORCES this: a component that has never produced a
+  committed solve whose count-like sliders multiply past ~10,000 elements is rejected before the write —
+  run a low-resolution pass, let it commit, THEN raise the counts (an established component's ceiling is
+  far higher). If you hit that rejection, lower the counts; do not resubmit the same values.
 - Solver domains stay native: structural/environmental/physics solves and expensive surface fitting
   belong to native Grasshopper components wired into the definition, not to re-implementations inside
   one script. Script components are for geometry utilities that finish in seconds.
@@ -81,6 +84,16 @@ Heavy solve discipline (mandatory):
   otherwise approach the budget, author the C# component with Parallel.For — see the multithreading
   section of gh-csharp-cookbook.md, and follow its crash-safety rules exactly (only Rhino.Geometry
   on worker threads; never touch RhinoDoc/ActiveDoc off the main thread).
+- Self-limiting budget guard: give every unbounded or large loop a budget so a runaway loop ABORTS
+  ITSELF — nothing outside the script can stop a running solve (it holds Rhino's single UI thread), so
+  the only escape is the script throwing from inside the loop (a thrown exception unwinds cleanly and
+  Grasshopper reports it as a runtime error). Start a stopwatch and an iteration counter and check both
+  at the top of each loop; throw when either is exceeded. C#: var __sw =
+  System.Diagnostics.Stopwatch.StartNew(); long __i = 0; then per loop head if (__sw.ElapsedMilliseconds
+  > 8000 || ++__i > 20000000) throw new System.TimeoutException("solve budget"). Python: import time;
+  __t0 = time.time(); __i = 0; then per loop head if time.time() - __t0 > 8 or (__i := __i + 1) >
+  20000000: raise TimeoutError("solve budget"). A truly unbounded loop (while(true) / for(;;) / while
+  True) with no such guard and no break is rejected before the write.
 
 Speed discipline (mandatory):
 - A script component (C# by default; Python 3 only when the task needs it) is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one

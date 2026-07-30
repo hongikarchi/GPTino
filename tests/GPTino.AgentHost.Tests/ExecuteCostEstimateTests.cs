@@ -110,4 +110,38 @@ public sealed class ExecuteCostEstimateTests
 
         Assert.Equal(6_400, estimate);
     }
+
+    // ---- Layer 1: low-resolution-first gate (ShouldBlockExecuteCost) ----
+
+    [Theory]
+    // Established component (has a committed solve): only the 2,000,000 hard ceiling applies.
+    [InlineData(6_400, true, false)]
+    [InlineData(1_999_999, true, false)]
+    [InlineData(2_000_000, true, false)]
+    [InlineData(2_000_001, true, true)]
+    // First solve (never committed): the 10,000-element low-resolution ceiling applies instead.
+    [InlineData(6_400, false, false)]
+    [InlineData(10_000, false, false)]
+    [InlineData(10_001, false, true)]
+    [InlineData(40_000, false, true)]
+    public void FirstSolveGetsTheLowResolutionCeiling_EstablishedGetsTheHardCeiling(
+        long estimate,
+        bool established,
+        bool expectedBlocked)
+    {
+        Assert.Equal(expectedBlocked, LiveDocumentBackend.ShouldBlockExecuteCost(estimate, established, out _));
+    }
+
+    [Fact]
+    public void FirstSolveCeilingIsFarStricterThanTheEstablishedCeiling()
+    {
+        LiveDocumentBackend.ShouldBlockExecuteCost(0, established: true, out var establishedCeiling);
+        LiveDocumentBackend.ShouldBlockExecuteCost(0, established: false, out var firstSolveCeiling);
+
+        Assert.Equal(2_000_000, establishedCeiling);
+        Assert.Equal(10_000, firstSolveCeiling);
+        // A 100x100 first pass squeaks under; a 200x200 first pass must go lower first.
+        Assert.False(LiveDocumentBackend.ShouldBlockExecuteCost(100 * 100, established: false, out _));
+        Assert.True(LiveDocumentBackend.ShouldBlockExecuteCost(200 * 200, established: false, out _));
+    }
 }

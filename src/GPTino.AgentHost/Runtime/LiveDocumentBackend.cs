@@ -2554,8 +2554,121 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 case "python.execute":
                     PreflightExecuteCost(item, before);
                     break;
+                case "python.setSource":
+                    PreflightSourceBudgetGuard(item);
+                    break;
             }
         }
+    }
+
+    // Layer 2 (self-limiting budget guard) enforcement. A running solve holds Rhino's single UI thread
+    // and cannot be aborted from outside (the thread that would process an abort IS the blocked one), so
+    // a truly infinite loop freezes Rhino forever — the only escape is the script throwing from inside the
+    // loop. The house-rule teaches every large loop to carry a stopwatch/iteration budget that throws; this
+    // is the hard backstop for the unambiguous case. DELIBERATELY conservative — it rejects a source ONLY
+    // when it has an unbounded loop header (while(true)/for(;;)/while True) AND contains no exit or guard
+    // mechanism anywhere (no break/return/throw/raise/goto/yield, no escape-key/stopwatch/time check). That
+    // combination is an unconditional freeze; anything with any exit path passes through untouched, so valid
+    // scripts are never blocked (recall for merely-large bounded loops is covered by the house-rule + the
+    // layer-1 cost gate, not here). Never rewrites the source — the model owns its text so a read-back on the
+    // next edit stays consistent.
+    private static readonly string[] LoopEscapeTokens =
+    [
+        "break", "return", "throw", "raise", "goto", "yield",
+        "EscapeKeyPressed", "ElapsedMilliseconds", "time.time", "__sw", "__t0",
+    ];
+
+    private static void PreflightSourceBudgetGuard(PreparedOperation item)
+    {
+        if (!item.Arguments.TryGetProperty("source", out var sourceElement) ||
+            sourceElement.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+        var source = sourceElement.GetString();
+        if (string.IsNullOrEmpty(source))
+        {
+            return;
+        }
+        var isCSharp = item.Arguments.TryGetProperty("runtime", out var runtimeElement) &&
+            runtimeElement.ValueKind == JsonValueKind.String &&
+            string.Equals(runtimeElement.GetString(), "csharp", StringComparison.OrdinalIgnoreCase);
+        if (!HasUnboundedLoopWithoutEscape(source, isCSharp))
+        {
+            return;
+        }
+        throw new InvalidOperationException(
+            $"Operation '{item.Operation.OperationId}': the script has an unbounded loop " +
+            "(while(true) / for(;;) / while True) with no break, return, throw/raise, or solve-budget guard " +
+            "anywhere — it will spin forever and freeze Rhino on the single UI thread, which cannot be aborted " +
+            "from outside once the solve starts. Rejected before any write. Add a self-limiting budget guard " +
+            "that throws when a stopwatch/iteration cap is exceeded (see the house-rule), or a bounded exit " +
+            "condition, before resubmitting.");
+    }
+
+    /// <summary>
+    /// Pure detector for the conservative infinite-loop backstop: true only when the source has an
+    /// unbounded loop header and NO exit/guard token anywhere. Unit-tested without a live document.
+    /// </summary>
+    internal static bool HasUnboundedLoopWithoutEscape(string source, bool isCSharp)
+    {
+        if (string.IsNullOrEmpty(source) || !ContainsUnboundedLoopHeader(source, isCSharp))
+        {
+            return false;
+        }
+        foreach (var token in LoopEscapeTokens)
+        {
+            if (source.Contains(token, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool ContainsUnboundedLoopHeader(string source, bool isCSharp)
+    {
+        foreach (var rawLine in source.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            // Skip whole-line comments so a commented-out loop never trips the backstop.
+            if (line.StartsWith("//", StringComparison.Ordinal) || line.StartsWith("#", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var code = line;
+            if (isCSharp)
+            {
+                var slashSlash = code.IndexOf("//", StringComparison.Ordinal);
+                if (slashSlash >= 0)
+                {
+                    code = code[..slashSlash];
+                }
+            }
+            else
+            {
+                var hash = code.IndexOf('#');
+                if (hash >= 0)
+                {
+                    code = code[..hash];
+                }
+            }
+            var compact = new string(code.Where(c => !char.IsWhiteSpace(c)).ToArray());
+            if (isCSharp)
+            {
+                if (compact.Contains("while(true)", StringComparison.Ordinal) ||
+                    compact.Contains("for(;;)", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            else if (compact.Contains("whileTrue:", StringComparison.Ordinal) ||
+                     compact.Contains("while1:", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // The GH document solves on Rhino's single UI thread, so a script whose loop count is driven by
@@ -2565,13 +2678,38 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     // the counts or stages the work first. Conservative by design: only whole-number sliders whose
     // socket name reads like a resolution knob are counted, and the threshold is high, so ordinary
     // work is never blocked — a heavy solve with no such slider simply is not caught here.
+    // Established components (already solved and committed at least once — a non-empty ValueFingerprint
+    // in the before-snapshot) may run up to this hard ceiling; beyond it a solve is egregiously large and
+    // will freeze Rhino on the UI thread, so it is rejected before any write.
     private const long ExecuteElementCostBlockThreshold = 2_000_000;
+
+    // First-solve ceiling (layer 1 — "low-resolution first"): a component that has never produced a
+    // committed solve (null/empty ValueFingerprint) must make its FIRST execute low-resolution, so the
+    // true solve cost is measured cheaply and checkpointed BEFORE the counts are raised. A never-solved
+    // component whose resolution sliders already multiply past this is rejected before the write, with
+    // guidance to run a low-res pass first (see the staged-authoring house-rule). This substitutes for the
+    // impossible task of predicting an arbitrary solve's runtime: instead of guessing, make the first touch
+    // cheap and observable. Restart-safe — the signal is the persisted snapshot, not in-memory state — and
+    // the failure direction is safe (an unknown/unreported ValueFingerprint falls back to the higher
+    // established ceiling, which still blocks the catastrophic case). ~100x100 grid passes; 200x200 does not.
+    private const long FirstSolveElementCostThreshold = 10_000;
 
     private static readonly string[] CountKnobKeywords =
     [
         "count", "num", "span", "div", "segment", "seg", "sample", "resolution", "res",
         "subdiv", "grid", "row", "col", "column", "density", "cell", "step", "tile",
     ];
+
+    /// <summary>
+    /// Pure gate decision so it is unit-tested without a live document: an execute solving
+    /// <paramref name="estimate"/> elements is blocked when it exceeds the ceiling for the component's
+    /// maturity. <paramref name="established"/> is true once the component has a committed solve.
+    /// </summary>
+    internal static bool ShouldBlockExecuteCost(long estimate, bool established, out long ceiling)
+    {
+        ceiling = established ? ExecuteElementCostBlockThreshold : FirstSolveElementCostThreshold;
+        return estimate > ceiling;
+    }
 
     private static void PreflightExecuteCost(PreparedOperation item, SnapshotEnvelope before)
     {
@@ -2581,17 +2719,34 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             return;
         }
         var (estimate, knobs) = EstimateExecuteElementCost(before.Canvas, componentId);
-        if (estimate <= ExecuteElementCostBlockThreshold)
+        if (estimate == 0)
         {
             return;
         }
+        var component = before.Canvas.Objects.FirstOrDefault(obj => obj.ObjectId == componentId);
+        var established = component is not null && !string.IsNullOrEmpty(component.ValueFingerprint);
+        if (!ShouldBlockExecuteCost(estimate, established, out _))
+        {
+            return;
+        }
+        if (established)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{item.Operation.OperationId}': executing component {componentId:D} would solve " +
+                $"~{estimate:N0} elements from its resolution sliders ({string.Join(", ", knobs)}), which will " +
+                "freeze Rhino on the UI thread — Grasshopper cannot abort a running solve. Rejected before any " +
+                "write. Lower those slider counts and run a low-resolution pass first, or split the work into " +
+                "staged components (each executed and verified in turn); raise resolution only after a committed " +
+                "low-resolution solve.");
+        }
         throw new InvalidOperationException(
-            $"Operation '{item.Operation.OperationId}': executing component {componentId:D} would solve " +
-            $"~{estimate:N0} elements from its resolution sliders ({string.Join(", ", knobs)}), which will " +
-            "freeze Rhino on the UI thread — Grasshopper cannot abort a running solve. Rejected before any " +
-            "write. Lower those slider counts and run a low-resolution pass first, or split the work into " +
-            "staged components (each executed and verified in turn); raise resolution only after a committed " +
-            "low-resolution solve.");
+            $"Operation '{item.Operation.OperationId}': component {componentId:D} has never produced a committed " +
+            $"solve, and this first execute would solve ~{estimate:N0} elements from its resolution sliders " +
+            $"({string.Join(", ", knobs)}) — over the {FirstSolveElementCostThreshold:N0}-element first-pass limit. " +
+            "A new component's FIRST execute must be low-resolution so its real solve cost is measured cheaply " +
+            "before scaling: lower those slider counts to run a low-resolution pass, verify it commits, then raise " +
+            "the counts. Rejected before any write (an untested heavy solve freezes Rhino on the UI thread, which " +
+            "Grasshopper cannot abort).");
     }
 
     /// <summary>
