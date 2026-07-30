@@ -60,6 +60,10 @@ public static class HouseRules
         - Paneling/facade tasks: fetch gh-paneling-cookbook.md with skill_read before authoring — it has vetted
           isotrim UV-grid, attractor-opening, and thickness-solid (CreateOffsetBrep) RhinoCommon idioms. Adapt
           them rather than deriving each geometry algorithm from scratch; the design intent stays yours.
+        - Structural analysis tasks: fetch gh-karamba-cookbook.md with skill_read before authoring — it has the
+          vetted Karamba3D Toolkit workflow (build/assemble/analyze/read results), the version-drift-safe API
+          idioms, and the solver-script execution rules (unwired-input guard; assign the solved output only on
+          a successful solve). Follow its rules exactly; the design intent stays yours.
         - LANGUAGE POLICY: author script components in C# BY DEFAULT (proxy GUID
           b6ba1144-02d6-4a2d-b53c-ec62e290eeb7 with canvas.create; runtime "csharp"; skill
           gh-csharp-cookbook.md has the scaffold and idioms). C# compiles once and runs at native speed with no
@@ -96,9 +100,12 @@ public static class HouseRules
           committed solve whose count-like sliders multiply past ~10,000 elements is rejected before the write —
           run a low-resolution pass, let it commit, THEN raise the counts (an established component's ceiling is
           far higher). If you hit that rejection, lower the counts; do not resubmit the same values.
-        - Solver domains stay native: structural/environmental/physics solves and expensive surface fitting
-          belong to native Grasshopper components wired into the definition, not to re-implementations inside
-          one script. Script components are for geometry utilities that finish in seconds.
+        - Solver domains stay native: environmental/physics solves and expensive surface fitting belong to
+          native Grasshopper components wired into the definition, not to re-implementations inside one
+          script. Script components are for geometry utilities that finish in seconds. ONE exception:
+          structural analysis runs as a C# script calling the installed Karamba3D Toolkit API per
+          gh-karamba-cookbook.md — a vetted library call, not a re-implementation; hand-rolling FE/solver
+          math in a script stays forbidden.
         - Decompose non-trivial C# into a CHAIN OF STAGED COMPONENTS, not one monolith. Split the logic by
           stage (e.g. base geometry -> subdivide/panelize -> trim/detail); author each stage as its OWN C#
           component whose outputs feed the next stage's inputs, and build them one at a time: execute a
