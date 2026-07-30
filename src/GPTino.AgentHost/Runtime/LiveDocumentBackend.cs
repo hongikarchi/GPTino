@@ -461,6 +461,154 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             response.Diagnostics);
     }
 
+    /// <summary>
+    /// Server-computed "tidy" layout. Reads the live snapshot, computes a deterministic layered
+    /// arrangement of the dataflow cluster(s) the <c>seedComponentIds</c> belong to (see
+    /// <see cref="CanvasLayout"/>), and submits the resulting component moves as a perfectly ordinary
+    /// <c>canvas.move</c> ChangeSet — so single-writer, conflict detection, rollback, and the adapter's
+    /// re-layout/redraw all apply unchanged. The model supplies only the seed ids it authored; every pivot
+    /// and fingerprint is server-owned (computed from wire topology + real bounds), so it costs no model
+    /// inference and cannot drift. A no-op when the cluster is already tidy.
+    /// </summary>
+    public async Task<object> ArrangeLayoutAsync(
+        SessionRecord session,
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        var seeds = ReadSeedComponentIds(arguments);
+        if (seeds.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "arrange_layout requires seedComponentIds: the objectIds of the components you just authored.");
+        }
+        // Default wait=true so the tidy result comes back inline with the tool call.
+        var wait = !arguments.TryGetProperty("wait", out var waitElement) ||
+            waitElement.ValueKind != JsonValueKind.False;
+
+        var targetState = ResolveSessionTargetState(session);
+        SnapshotEnvelope snapshot;
+        using (await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            snapshot = await CaptureSnapshotAsync(targetState, force: true, cancellationToken).ConfigureAwait(false);
+        }
+
+        var moves = CanvasLayout.Arrange(snapshot.Canvas, seeds);
+        if (moves.Count == 0)
+        {
+            return new { status = "already-tidy", moved = 0 };
+        }
+
+        // Per-component layout fingerprint from the SAME snapshot the move will validate against — using the
+        // exact fallback BuildResources uses — so the writeSet/payload fingerprints are consistent by
+        // construction and never manufacture a false conflict.
+        var layoutFingerprint = snapshot.Canvas.Objects.ToDictionary(
+            item => item.ObjectId,
+            item => string.IsNullOrEmpty(item.LayoutFingerprint) ? item.Fingerprint : item.LayoutFingerprint);
+
+        const string operationId = "arrange";
+        var pivots = new Dictionary<Guid, object>();
+        var expectedFingerprints = new Dictionary<Guid, string>();
+        var writes = new List<ResourceAddress>();
+        var writeSet = new List<ResourceExpectation>();
+        foreach (var (id, pivot) in moves)
+        {
+            if (!layoutFingerprint.TryGetValue(id, out var fingerprint))
+            {
+                continue; // a computed move for a component no longer in the snapshot — skip defensively
+            }
+            pivots[id] = new { x = pivot.X, y = pivot.Y };
+            expectedFingerprints[id] = fingerprint;
+            var address = new ResourceAddress(ResourceKind.GrasshopperComponentLayout, id.ToString("D"));
+            writes.Add(address);
+            writeSet.Add(new ResourceExpectation(address, fingerprint));
+        }
+        if (writeSet.Count == 0)
+        {
+            return new { status = "already-tidy", moved = 0 };
+        }
+
+        var artifactName = FormattableString.Invariant($"arrange-{Guid.NewGuid():N}.json");
+        await WriteSessionArtifactAsync(
+            session.Id,
+            artifactName,
+            new
+            {
+                bridgeOperation = "canvas.move",
+                arguments = new { operationId, pivots, expectedFingerprints },
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            targetState.Target.ProjectId,
+            session.Id,
+            ResourceExpectation.AutoBaseRevision,
+            null,
+            Array.Empty<Guid>(),
+            Array.Empty<ResourceExpectation>(),
+            writeSet,
+            [
+                new TypedOperation(
+                    operationId,
+                    OperationKind.MoveComponent,
+                    AdapterOwner.Cordyceps,
+                    Array.Empty<ResourceAddress>(),
+                    writes,
+                    Reversible: true,
+                    artifactName)
+            ],
+            Array.Empty<VerificationPredicate>(),
+            Array.Empty<RollbackBeforeImage>(),
+            DateTimeOffset.UtcNow);
+
+        var submission = JsonSerializer.SerializeToElement(
+            new
+            {
+                changeSet,
+                // 'gptino:auto' skips the whole-snapshot-id gate; the concrete per-component layout
+                // fingerprints above still govern conflicts, so a between-capture drift blocks correctly.
+                expectedSnapshotId = ResourceExpectation.AutoFingerprint,
+                idempotencyKey = FormattableString.Invariant($"arrange-{Guid.NewGuid():N}"),
+                summary = FormattableString.Invariant($"Auto-tidy layout ({writeSet.Count} components)"),
+                wait,
+            },
+            BridgeProtocol.JsonOptions);
+
+        return await SubmitChangeAsync(session, submission, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyCollection<Guid> ReadSeedComponentIds(JsonElement arguments)
+    {
+        if (!arguments.TryGetProperty("seedComponentIds", out var element) ||
+            element.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<Guid>();
+        }
+        var ids = new List<Guid>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String && Guid.TryParse(item.GetString(), out var id))
+            {
+                ids.Add(id);
+            }
+        }
+        return ids;
+    }
+
+    private async Task WriteSessionArtifactAsync(
+        Guid sessionId,
+        string artifactName,
+        object payload,
+        CancellationToken cancellationToken)
+    {
+        var sessionRoot = Path.Combine(_artifactRoot, sessionId.ToString("N"));
+        Directory.CreateDirectory(sessionRoot);
+        var path = ConstrainedPath.Resolve(sessionRoot, artifactName, "Arrange payload");
+        var json = JsonSerializer.Serialize(payload, payload.GetType(), BridgeProtocol.JsonOptions);
+        await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<object> SubmitChangeAsync(
         SessionRecord session,
         JsonElement arguments,

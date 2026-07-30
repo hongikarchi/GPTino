@@ -170,6 +170,31 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "arrange_layout",
+                    "Tidy the canvas: the server computes a clean left-to-right dataflow layout (inputs on the left, " +
+                    "script stages flowing rightward, outputs on the right, stacked top-to-bottom, groups kept together) " +
+                    "from the wire topology and real component sizes, then moves the components. You pass only the objectIds " +
+                    "you authored (seedComponentIds); the whole connected dataflow cluster they belong to is arranged, and " +
+                    "every coordinate is server-owned — you never compute positions or fingerprints. It is a single canvas.move " +
+                    "under the hood (single-writer, rollback-safe) and a no-op when the cluster is already tidy. Call this ONCE " +
+                    "as the final step after an authoring chain commits.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            seedComponentIds = new
+                            {
+                                type = "array",
+                                items = new { type = "string", format = "uuid" },
+                                description = "objectIds of components you authored; the connected cluster around them is tidied."
+                            },
+                            wait = new { type = "boolean", description = "Block briefly for the terminal result; default true." }
+                        },
+                        required = new[] { "seedComponentIds" },
+                        additionalProperties = false
+                    }),
+                Function(
                     "job_status",
                     "Read queue, execution, verification, commit, recovery-required, or failure state for a submitted job. " +
                     "Terminal states include diagnostics[] (per-operation errors/warnings/remarks from the live solve). " +

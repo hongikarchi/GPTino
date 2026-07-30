@@ -1824,6 +1824,10 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
 
     public bool IncludeNumberSliderValue { get; set; }
 
+    // Opt-in: wire the two canvas objects (first -> second) so the tidy layout has a real dataflow cluster
+    // to arrange. Off by default so every existing test keeps its wire-free canvas.
+    public bool WireFirstTwoObjects { get; set; }
+
     public Guid? LastRegistrationMessageId { get; private set; }
 
     public static async Task<LiveDocumentBackendHarness> CreateAsync(
@@ -2003,11 +2007,14 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
                 }
             }
             : [state];
+        var wires = WireFirstTwoObjects && IncludeNumberSliderValue
+            ? new[] { new WireState(CanvasObjectId, Guid.NewGuid(), SecondCanvasObjectId, Guid.NewGuid()) }
+            : Array.Empty<WireState>();
         return new(
             target.GrasshopperDocumentId,
             "document-v1",
             objects,
-            Array.Empty<WireState>(),
+            wires,
             Array.Empty<GroupState>());
     }
 

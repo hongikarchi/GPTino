@@ -37,6 +37,8 @@ public interface ILiveDocumentBackend
 
     Task<object> SubmitChangeAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken);
 
+    Task<object> ArrangeLayoutAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken);
+
     Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken);
 
     Task StopCurrentAsync(CancellationToken cancellationToken);
@@ -74,6 +76,9 @@ public sealed class DisconnectedDocumentBackend : ILiveDocumentBackend
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> SubmitChangeAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken) =>
+        Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
+
+    public Task<object> ArrangeLayoutAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken) =>
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken) =>
@@ -135,6 +140,7 @@ public sealed class DynamicToolDispatcher
                 "artifact_read" => DynamicToolResult.Ok(await ReadArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "artifact_write" => DynamicToolResult.Ok(await WriteArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
                 "change_submit" => DynamicToolResult.Ok(await SubmitChangeAsync(call, cancellationToken).ConfigureAwait(false)),
+                "arrange_layout" => DynamicToolResult.Ok(await ArrangeLayoutAsync(call, cancellationToken).ConfigureAwait(false)),
                 "job_status" => DynamicToolResult.Ok(
                     await _backend.ReadJobAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "skill_read" => DynamicToolResult.Ok(RequireSkills().Read(TryString(call.Arguments, "name"))),
@@ -227,6 +233,7 @@ public sealed class DynamicToolDispatcher
         "artifact_read" => $"Reading draft {TryString(call.Arguments, "path")}",
         "artifact_write" => $"Drafting {TryString(call.Arguments, "path")}",
         "change_submit" => $"Submitting: {TryString(call.Arguments, "summary")}",
+        "arrange_layout" => "Tidying the canvas layout",
         "job_status" => "Polling job status",
         "skill_read" => $"Reading skill {TryString(call.Arguments, "name")}",
         "memory_append" => "Saving a project memory note",
@@ -263,6 +270,27 @@ public sealed class DynamicToolDispatcher
             throw new InvalidOperationException("This session is paused.");
         }
         return await _backend.SubmitChangeAsync(session, call.Arguments, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<object> ArrangeLayoutAsync(DynamicToolCall call, CancellationToken cancellationToken)
+    {
+        // arrange_layout is a write (it submits a canvas.move), so it carries the same role/pause gate as
+        // change_submit: planner/read-only sessions cannot mutate the live document.
+        var session = await _store.FindSessionByThreadAsync(call.ThreadId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The calling Codex thread is not bound to a GPTino session.");
+        if (string.Equals(session.Role, "planner", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Role, "read-only", StringComparison.OrdinalIgnoreCase))
+        {
+            var message = $"Session role '{session.Role}' cannot submit live changes; arrange_layout tidies " +
+                "the canvas by moving components, so switch this session to auto to use it.";
+            _problems?.RecordRoleDenial(session.Id, session.Role, call.Tool, message);
+            throw new InvalidOperationException(message);
+        }
+        if (session.State == SessionStates.Paused)
+        {
+            throw new InvalidOperationException("This session is paused.");
+        }
+        return await _backend.ArrangeLayoutAsync(session, call.Arguments, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<object> ReadSnapshotAsync(
