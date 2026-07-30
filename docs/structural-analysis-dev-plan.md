@@ -1,6 +1,7 @@
 # GPTino 구조해석 구현 계획 (세션 단위, file:line 확정)
 
-**작성일**: 2026-07-30 · **상태**: 계획 (미실행) · **상위 문서**: `structural-analysis-plan.md` (전략·검증)
+**작성일**: 2026-07-30 · **상태**: 세션 0·1 완료 (커밋 6030157, c55842e — 라이브 스모크는 재패키징+Rhino 종료 대기) · **상위 문서**: `structural-analysis-plan.md` (전략·검증)
+· 세션 0 비고: 트리거 포인터는 gh-karamba-cookbook.md만 지목(미존재 스킬 참조 방지 — structural-analysis.md·structural_check.py 포인터는 세션 3에서 확장)
 · **근거**: 4-에이전트 read-only 코드 조사 (스킬 통로 / data_read 신설 지점 / 벤치마크 하네스 /
 스크립트 실행·배선 경로)로 접점을 file:line까지 확정.
 
