@@ -110,8 +110,10 @@ internal static class DynamicToolSpecs
                     "Rhino object its parameters reference (with per-object existence — a missing object means a " +
                     "broken reference silently emitting empty data) and every GPTino-stamped bake grouped by " +
                     "source document and family. Read-only. Consult it before deleting or purging Rhino objects: " +
-                    "never remove an object a definition still references. If a writer session is active this " +
-                    "returns writerActive=true immediately instead of queueing.",
+                    "never remove a referenced object SILENTLY — name the parameter that breaks and ask first. " +
+                    "If the user then explicitly confirms despite the breakage, proceed: the human's informed " +
+                    "decision wins over the guard. If a writer session is active this returns writerActive=true " +
+                    "immediately instead of queueing.",
                     new
                     {
                         type = "object",

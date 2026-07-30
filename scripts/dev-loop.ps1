@@ -77,6 +77,10 @@ if ($RegenerateScene -or -not (Test-Path -LiteralPath $scene3dm)) {
     Start-Sleep -Seconds 2  # let the Rhino handle on scene.3dm release before the live open
 }
 
+# A reused run directory still holds the PREVIOUS run's endpoint.json; polling would report that
+# stale (dead) endpoint as ready before the new AgentHost overwrites it. Clear it first.
+Remove-Item -LiteralPath (Join-Path $runtime 'endpoint.json') -Force -ErrorAction SilentlyContinue
+
 # --- live launch: open scene, panel, and Grasshopper doc via runscript ----------
 # Order: open the panel (starts the AgentHost) then open the saved .gh (forms the
 # rhino+gh target). Paths carry no spaces, so the .gh path is passed unquoted.
