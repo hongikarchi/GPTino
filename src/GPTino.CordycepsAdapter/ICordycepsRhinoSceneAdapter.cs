@@ -138,7 +138,10 @@ public sealed record CreateRhinoPrimitiveRequest(
     RhinoCirclePrimitive? Circle = null,
     RhinoBoxPrimitive? Box = null,
     RhinoSpherePrimitive? Sphere = null,
-    RhinoPrimitiveAttributes? Attributes = null) : IRhinoSceneMutationRequest;
+    RhinoPrimitiveAttributes? Attributes = null,
+    // Server-injected provenance, same contract as UpsertRhinoObjectRequest.SourceDocKey: the
+    // submit validator rejects model-authored values; the executor stamps the job's docKey.
+    string? SourceDocKey = null) : IRhinoSceneMutationRequest;
 
 public sealed record RhinoPointPrimitive(RhinoPoint3d Location);
 

@@ -34,10 +34,28 @@ public sealed class SourceDocKeyProvenanceTests
     }
 
     [Fact]
+    public void ValidatePrimitiveRejectsModelAuthoredSourceDocKey()
+    {
+        var request = new CreateRhinoPrimitiveRequest(
+            "op-1",
+            Guid.NewGuid(),
+            "entity-1",
+            RhinoPrimitiveKind.Point,
+            Point: new RhinoPointPrimitive(new RhinoPoint3d(0, 0, 0)),
+            SourceDocKey: "abcdef0123456789");
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => LiveDocumentBackend.ValidatePrimitiveArguments(request, "op-1"));
+        Assert.Contains("sourceDocKey", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void InjectRewritesOnlyRhinoUpsertArgumentsAndKeepsFrozenPayload()
     {
         var upsertArguments = JsonSerializer.SerializeToElement(
             new { operationId = "op-1", objectId = Guid.NewGuid() },
+            BridgeProtocol.JsonOptions);
+        var primitiveArguments = JsonSerializer.SerializeToElement(
+            new { operationId = "op-3" },
             BridgeProtocol.JsonOptions);
         var wireArguments = JsonSerializer.SerializeToElement(
             new { operationId = "op-2" },
@@ -47,6 +65,8 @@ public sealed class SourceDocKeyProvenanceTests
         {
             new LiveDocumentBackend.PreparedOperation(
                 null!, BridgeAdapterOwner.CordycepsRhino, "rhino.upsert", upsertArguments, frozen, "sha-upsert"),
+            new LiveDocumentBackend.PreparedOperation(
+                null!, BridgeAdapterOwner.CordycepsRhino, "rhino.createPrimitive", primitiveArguments, frozen, "sha-prim"),
             new LiveDocumentBackend.PreparedOperation(
                 null!, BridgeAdapterOwner.CordycepsCanvas, "canvas.setWire", wireArguments, frozen, "sha-wire"),
         };
@@ -61,9 +81,14 @@ public sealed class SourceDocKeyProvenanceTests
         Assert.Equal("op-1", stamped.Arguments.GetProperty("operationId").GetString());
         Assert.Same(frozen, stamped.FrozenPayload);
         Assert.Equal("sha-upsert", stamped.PayloadSha256);
-        // Non-upsert operations pass through by reference, arguments unmodified.
-        Assert.Same(operations[1], injected[1]);
-        Assert.False(injected[1].Arguments.TryGetProperty("sourceDocKey", out _));
+        // createPrimitive is stamped too — the live gate caught an agent baking "one point"
+        // through the primitive op, which had been left out of the injection.
+        Assert.Equal(
+            "abcdef0123456789",
+            injected[1].Arguments.GetProperty("sourceDocKey").GetString());
+        // Non-Rhino-creation operations pass through by reference, arguments unmodified.
+        Assert.Same(operations[2], injected[2]);
+        Assert.False(injected[2].Arguments.TryGetProperty("sourceDocKey", out _));
 
         // The stamped shape still deserializes under the strict bridge options (Disallow unmapped),
         // which is exactly what rhino.validateUpsert and rhino.upsert do on the GH side.

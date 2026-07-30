@@ -684,24 +684,30 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             ? value.GetInt32()
             : 0;
 
+    // Both Rhino-object creation paths carry provenance: upsert (bakeGeometry and friends) AND
+    // createPrimitive — the live gate caught an agent baking "one point" through the primitive op,
+    // which would have left the object honestly-but-needlessly unattributed.
+    private static readonly string[] SourceDocKeyStampedOperations = { "rhino.upsert", "rhino.createPrimitive" };
+
     internal static IReadOnlyList<PreparedOperation> InjectRhinoUpsertSourceDocKey(
         IReadOnlyList<PreparedOperation> operations,
         string docKey)
     {
-        if (operations.All(operation => operation.BridgeOperation != "rhino.upsert"))
+        if (!operations.Any(operation => SourceDocKeyStampedOperations.Contains(operation.BridgeOperation)))
         {
             return operations;
         }
         var result = new List<PreparedOperation>(operations.Count);
         foreach (var operation in operations)
         {
-            if (operation.BridgeOperation != "rhino.upsert")
+            if (!SourceDocKeyStampedOperations.Contains(operation.BridgeOperation))
             {
                 result.Add(operation);
                 continue;
             }
             var node = System.Text.Json.Nodes.JsonNode.Parse(operation.Arguments.GetRawText())?.AsObject()
-                ?? throw new InvalidOperationException("rhino.upsert arguments must be a JSON object.");
+                ?? throw new InvalidOperationException(
+                    $"{operation.BridgeOperation} arguments must be a JSON object.");
             node["sourceDocKey"] = docKey;
             result.Add(operation with
             {
@@ -4191,10 +4197,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
-    private static void ValidatePrimitiveArguments(
+    internal static void ValidatePrimitiveArguments(
         CreateRhinoPrimitiveRequest request,
         string operationId)
     {
+        if (request.SourceDocKey is not null)
+        {
+            // Same anti-spoof rule as rhino.upsert: provenance is server-injected at execution.
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' must not set sourceDocKey; provenance is stamped by the server.");
+        }
         if (request.ObjectId == Guid.Empty || string.IsNullOrWhiteSpace(request.LogicalEntityId))
         {
             throw new InvalidOperationException(

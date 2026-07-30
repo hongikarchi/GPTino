@@ -783,6 +783,10 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             attributes.ColorSource = ObjectColorSource.ColorFromObject;
         }
         attributes.SetUserString(LogicalEntityKey, request.LogicalEntityId);
+        if (!string.IsNullOrWhiteSpace(request.SourceDocKey))
+        {
+            attributes.SetUserString(SourceDocKeyKey, request.SourceDocKey);
+        }
         return attributes;
     }
 
