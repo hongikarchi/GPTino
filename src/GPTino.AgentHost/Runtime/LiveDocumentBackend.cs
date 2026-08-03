@@ -533,6 +533,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         return grant.Items;
     }
 
+    /// <summary>
+    /// Bridge failure code the Rhino adapter raises when destructive work targets an object the
+    /// user made and no approval grant covers it (RhinoSceneFoundationAdapter.ApprovalRequiredCode
+    /// — duplicated here because the AgentHost does not reference the Rhino plugin assembly).
+    /// </summary>
+    private const string ApprovalRequiredFailureCode = "approval_required";
+
     // Destructive rhino ops that honor the user-approval flag; the flag is injected ONLY when the
     // grant covers the op's target object at its exact audited fingerprint.
     private static readonly string[] ApprovableOperations =
@@ -1910,7 +1917,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         catch (Exception exception)
         {
-            var state = liveChanged || writeMayHaveChanged ? JobState.RecoveryRequired : JobState.Failed;
+            // The human-wins refusal is raised by the adapter BEFORE it touches the document, so
+            // (unless an earlier operation in the batch already landed) nothing changed: report a
+            // deterministic Failed the session can act on, not a recoveryRequired review task.
+            var approvalRefusal =
+                exception is BridgeProtocolException { Code: ApprovalRequiredFailureCode } && !liveChanged;
+            var state = !approvalRefusal && (liveChanged || writeMayHaveChanged)
+                ? JobState.RecoveryRequired
+                : JobState.Failed;
             var message = exception.Message;
             if (state == JobState.RecoveryRequired)
             {

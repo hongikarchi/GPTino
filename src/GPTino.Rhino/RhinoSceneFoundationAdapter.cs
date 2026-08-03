@@ -25,6 +25,8 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
     private const string SourceDocKeyKey = "GPTino.SourceDocKey";
     // Stamped by the bake_manager skill (family identity for replace/append re-bakes).
     private const string BakeFamilyKey = "gptino_bake_family";
+    /// <summary>Bridge failure code for the human-wins refusal; see RequireProvenanceOrApproval.</summary>
+    public const string ApprovalRequiredCode = "approval_required";
 
     public RhinoSceneFoundationAdapter(ExplicitRhinoDocumentResolver resolver)
         : base(resolver)
@@ -856,10 +858,14 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             !string.IsNullOrEmpty(attributes.GetUserString(BakeFamilyKey));
         if (!hasProvenance)
         {
-            throw new InvalidOperationException(
+            // Typed code, not a bare exception: the refusal happens BEFORE any document change, so
+            // the executor can classify it as a deterministic failure instead of the
+            // "outcome unknown -> recoveryRequired" bucket every mid-write fault lands in.
+            throw new BridgeProtocolException(
+                ApprovalRequiredCode,
                 $"Rhino object {existing.Id:D} was not created by GPTino; {verb} it requires the " +
                 "user's explicit approval. Present the change (naming this object) and resubmit " +
-                "with the approval grant the panel issues.");
+                "with the approval grant the panel issues. No change was applied.");
         }
     }
 

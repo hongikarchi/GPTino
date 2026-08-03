@@ -619,7 +619,8 @@ if (developmentDataDirectory is not null)
         LiveDocumentBackend liveBackend,
         CancellationToken cancellationToken) =>
     {
-        var arguments = JsonSerializer.SerializeToElement(new { limit = 1000 });
+        // 500 is the adapter's hard cap (ValidateListRequest); 1000 made every dev call fail.
+        var arguments = JsonSerializer.SerializeToElement(new { limit = 500 });
         return Results.Ok(await liveBackend.ListRhinoObjectsAsync(arguments, cancellationToken));
     });
     api.MapGet("/dev/grasshopper/{objectId:guid}/outputs", async (
