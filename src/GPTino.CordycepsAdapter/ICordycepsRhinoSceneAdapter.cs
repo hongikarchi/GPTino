@@ -67,6 +67,11 @@ public interface ICordycepsRhinoSceneAdapter
         DocumentTarget target,
         TransformRhinoObjectRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<RhinoSceneMutationResult> FixEndpointPairAsync(
+        DocumentTarget target,
+        FixEndpointPairRequest request,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -190,7 +195,8 @@ public sealed record UpsertRhinoObjectRequest(
     // Server-injected provenance: the durable docKey of the GH document whose job produced this
     // write. Model payloads must NOT set it (the submit validator rejects non-null values); the
     // executor stamps it after freezing, so bake attribution cannot be spoofed.
-    string? SourceDocKey = null) : IRhinoSceneMutationRequest;
+    string? SourceDocKey = null,
+    bool Approved = false) : IRhinoSceneMutationRequest;
 
 /// <summary>
 /// Audit query. Kind: nearMissEndpoints | nearDuplicates | purgeCandidates. Tolerance defaults to
@@ -246,7 +252,29 @@ public sealed record RhinoUpsertValidationResult(
 public sealed record DeleteRhinoObjectRequest(
     string OperationId,
     Guid ObjectId,
-    string ExpectedFingerprint) : IRhinoSceneMutationRequest;
+    string ExpectedFingerprint,
+    // Server-injected when the ChangeSet carries a user approval grant covering this object;
+    // model payloads must not set it (submit validation rejects). Without it, destructive ops on
+    // objects lacking GPTino provenance stamps are refused — the human-wins default-deny.
+    bool Approved = false) : IRhinoSceneMutationRequest;
+
+/// <summary>
+/// Heals one audited near-miss endpoint pair by moving ONE curve's endpoint (B) onto the anchor
+/// curve's endpoint (A). A is only referenced (fingerprint-verified, unchanged); B is the single
+/// write target — which curve moves is the user's triage decision. The fix is verified BEFORE the
+/// write: the modified duplicate must be valid and its endpoint must land within Tolerance of the
+/// anchor, else the operation fails with no document change.
+/// </summary>
+public sealed record FixEndpointPairRequest(
+    string OperationId,
+    Guid AnchorObjectId,
+    int AnchorEnd,
+    Guid MoveObjectId,
+    int MoveEnd,
+    string ExpectedAnchorFingerprint,
+    string ExpectedFingerprint,
+    double Tolerance,
+    bool Approved = false) : IRhinoSceneMutationRequest;
 
 public sealed record EnsureRhinoLayerRequest(
     string OperationId,
@@ -278,7 +306,8 @@ public sealed record TransformRhinoObjectRequest(
     string OperationId,
     Guid ObjectId,
     string ExpectedFingerprint,
-    RhinoTransformMatrix Matrix) : IRhinoSceneMutationRequest;
+    RhinoTransformMatrix Matrix,
+    bool Approved = false) : IRhinoSceneMutationRequest;
 
 public sealed record RhinoSceneMutationResult(
     string OperationId,

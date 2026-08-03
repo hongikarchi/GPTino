@@ -837,6 +837,31 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         }
     }
 
+    /// <summary>
+    /// The human-wins default-deny: CAS fingerprints prove "unchanged since inspected", never
+    /// "user consents". Objects without a GPTino provenance stamp are the user's own geometry —
+    /// destroying or mutating them requires a server-injected approval (minted when the user
+    /// approves the change on the panel), not just a fingerprint.
+    /// </summary>
+    private static void RequireProvenanceOrApproval(RhinoObject existing, bool approved, string verb)
+    {
+        if (approved)
+        {
+            return;
+        }
+        var attributes = existing.Attributes;
+        var hasProvenance =
+            !string.IsNullOrEmpty(attributes.GetUserString(LogicalEntityKey)) ||
+            !string.IsNullOrEmpty(attributes.GetUserString(BakeFamilyKey));
+        if (!hasProvenance)
+        {
+            throw new InvalidOperationException(
+                $"Rhino object {existing.Id:D} was not created by GPTino; {verb} it requires the " +
+                "user's explicit approval. Present the change (naming this object) and resubmit " +
+                "with the approval grant the panel issues.");
+        }
+    }
+
     protected override Task<RhinoSceneMutationResult> DeleteObjectCoreAsync(
         global::Rhino.RhinoDoc document,
         DeleteRhinoObjectRequest request,
@@ -855,6 +880,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         {
             throw new InvalidOperationException("Rhino object changed after the request snapshot.");
         }
+        RequireProvenanceOrApproval(existing, request.Approved, "deleting");
 
         var undo = document.BeginUndoRecord($"GPTino: {request.OperationId}");
         try
@@ -983,6 +1009,116 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         }
     }
 
+    // Heals one audited near-miss pair: the ANCHOR curve is referenced (fingerprint-verified,
+    // never modified); the MOVE curve's chosen endpoint is set onto the anchor's endpoint. The
+    // fix is verified before any write — the modified duplicate must be valid and land within
+    // Tolerance — so a failed strategy changes nothing. SetStartPoint/SetEndPoint is not
+    // implemented for every curve type (and can silently NURBS-ify arcs), so unsupported types
+    // fail loudly instead of approximating.
+    protected override Task<RhinoSceneMutationResult> FixEndpointPairCoreAsync(
+        global::Rhino.RhinoDoc document,
+        FixEndpointPairRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        RequireOperationId(request.OperationId);
+        if (request.AnchorObjectId == Guid.Empty || request.MoveObjectId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(request.ExpectedAnchorFingerprint) ||
+            string.IsNullOrWhiteSpace(request.ExpectedFingerprint))
+        {
+            throw new InvalidOperationException(
+                "Anchor/move object ids and both expected fingerprints are required for an endpoint fix.");
+        }
+        if (request.AnchorObjectId == request.MoveObjectId)
+        {
+            throw new InvalidOperationException("Anchor and move objects must differ.");
+        }
+        if (request.AnchorEnd is not (0 or 1) || request.MoveEnd is not (0 or 1))
+        {
+            throw new InvalidOperationException("Endpoint indices must be 0 (start) or 1 (end).");
+        }
+        var tolerance = request.Tolerance > 0 ? request.Tolerance : document.ModelAbsoluteTolerance;
+
+        var anchorObject = document.Objects.FindId(request.AnchorObjectId)
+            ?? throw new KeyNotFoundException($"Rhino object {request.AnchorObjectId:D} was not found.");
+        var moveObject = document.Objects.FindId(request.MoveObjectId)
+            ?? throw new KeyNotFoundException($"Rhino object {request.MoveObjectId:D} was not found.");
+        var anchorState = ToState(anchorObject);
+        if (!string.Equals(anchorState.Fingerprint, request.ExpectedAnchorFingerprint, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Anchor Rhino object changed after the request snapshot.");
+        }
+        var before = ToState(moveObject);
+        if (!string.Equals(before.Fingerprint, request.ExpectedFingerprint, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Rhino object changed after the request snapshot.");
+        }
+        RequireProvenanceOrApproval(moveObject, request.Approved, "editing");
+
+        if (anchorObject.Geometry is not Curve anchorCurve || moveObject.Geometry is not Curve moveCurve)
+        {
+            throw new InvalidOperationException("Endpoint fixes require two curve objects.");
+        }
+        var anchorPoint = request.AnchorEnd == 0 ? anchorCurve.PointAtStart : anchorCurve.PointAtEnd;
+
+        var healed = moveCurve.DuplicateCurve()
+            ?? throw new InvalidOperationException("Rhino could not duplicate the curve to heal.");
+        try
+        {
+            var moved = request.MoveEnd == 0
+                ? healed.SetStartPoint(anchorPoint)
+                : healed.SetEndPoint(anchorPoint);
+            if (!moved)
+            {
+                throw new InvalidOperationException(
+                    $"This curve type ({moveCurve.GetType().Name}) does not support endpoint editing; " +
+                    "rebuild it as a NURBS curve first or choose the other curve as the move target.");
+            }
+            var resultingPoint = request.MoveEnd == 0 ? healed.PointAtStart : healed.PointAtEnd;
+            var resultingGap = resultingPoint.DistanceTo(anchorPoint);
+            if (!healed.IsValid || resultingGap > tolerance)
+            {
+                throw new InvalidOperationException(
+                    $"Endpoint edit did not converge (resulting gap {resultingGap:G4} > tolerance {tolerance:G4}); " +
+                    "no change was applied.");
+            }
+
+            var undo = document.BeginUndoRecord($"GPTino: {request.OperationId}");
+            if (undo == 0)
+            {
+                throw new InvalidOperationException("Rhino could not start an undo record for the endpoint fix.");
+            }
+            if (!document.Objects.Replace(new ObjRef(document, moveObject.Id), healed))
+            {
+                throw new InvalidOperationException(
+                    $"Rhino could not replace curve {request.MoveObjectId:D} with the healed geometry.");
+            }
+            var afterObject = document.Objects.FindId(request.MoveObjectId)
+                ?? throw new InvalidOperationException("Rhino object disappeared after the endpoint fix.");
+            var after = ToState(afterObject);
+            document.Views.Redraw();
+            return Task.FromResult(new RhinoSceneMutationResult(
+                request.OperationId,
+                Changed: true,
+                before.Fingerprint,
+                after.Fingerprint,
+                request.MoveObjectId,
+                after,
+                new[]
+                {
+                    new BridgeDiagnostic(
+                        BridgeDiagnosticSeverity.Information,
+                        "endpoint_fix_verified",
+                        $"Endpoint gap closed to {resultingGap:G4} (tolerance {tolerance:G4}).")
+                }));
+        }
+        finally
+        {
+            healed.Dispose();
+        }
+    }
+
     protected override Task<RhinoSceneMutationResult> TransformObjectCoreAsync(
         global::Rhino.RhinoDoc document,
         TransformRhinoObjectRequest request,
@@ -1004,6 +1140,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         {
             throw new InvalidOperationException("Rhino object changed after the request snapshot.");
         }
+        RequireProvenanceOrApproval(existing, request.Approved, "transforming");
 
         var transform = CreateTransform(request.Matrix);
         using var originalGeometry = existing.Geometry.Duplicate();
@@ -1482,6 +1619,12 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                  !string.Equals(before.Fingerprint, request.ExpectedFingerprint, StringComparison.Ordinal)))
             {
                 throw new InvalidOperationException("Rhino object changed after the request snapshot.");
+            }
+            if (existing is not null)
+            {
+                // Creates are always allowed; REPLACING an existing object destroys what the user
+                // may have made — same default-deny as delete/transform.
+                RequireProvenanceOrApproval(existing, request.Approved, "modifying");
             }
 
             var attributes = ParseAttributes(request.AttributesJson, existing?.Attributes);

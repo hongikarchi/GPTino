@@ -191,6 +191,7 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
             "rhino.delete" => await MutationAsync<DeleteRhinoObjectRequest>(target, request, _adapter.DeleteObjectAsync, cancellationToken).ConfigureAwait(false),
             "rhino.ensureLayer" => await MutationAsync<EnsureRhinoLayerRequest>(target, request, _adapter.EnsureLayerAsync, cancellationToken).ConfigureAwait(false),
             "rhino.transform" => await TransformAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "rhino.fixEndpointPair" => await MutationAsync<FixEndpointPairRequest>(target, request, _adapter.FixEndpointPairAsync, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
                 "unknown_cordyceps_rhino_operation",
                 $"Unknown Cordyceps Rhino operation '{request.Operation}'."),
