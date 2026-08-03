@@ -567,7 +567,7 @@ export default function App() {
               key={`${auditKind}-${auditNonce}`}
               kind={auditKind}
               runAudit={actions.getAudit}
-              approvable={auditKind !== "purgeCandidates"}
+              approvable
               busy={curatorBusy}
               onClose={() => setAuditKind(null)}
               onApprove={async (result, approved, keepFirst) => {
@@ -587,6 +587,15 @@ export default function App() {
                       { objectId: finding.objectIds[remove], fingerprint: finding.fingerprints[remove] ?? "" },
                     ];
                   }
+                  // Purge subkinds: unused blocks and empty layers are document-table entries,
+                  // not user geometry, so they carry no object grant. Only quarantining a bad
+                  // object writes to an object the user may have made.
+                  if (finding.kind === "badObject") {
+                    return [{ objectId: finding.objectIds[0], fingerprint: finding.fingerprints[0] ?? "" }];
+                  }
+                  if (finding.kind === "unusedBlockDefinition" || finding.kind === "emptyLayer") {
+                    return [];
+                  }
                   return finding.objectIds.map((objectId, index) => ({
                     objectId,
                     fingerprint: finding.fingerprints[index] ?? "",
@@ -603,6 +612,15 @@ export default function App() {
                     if (finding.kind === "nearMissEndpoints") {
                       const ends = finding.endIndices ?? [];
                       return `- ${finding.findingId}: heal the endpoint gap (${finding.measure}) via fixRhinoEndpointPair: anchorObjectId=${finding.objectIds[0]}, anchorEnd=${ends[0] ?? 0}, moveObjectId=${finding.objectIds[1]}, moveEnd=${ends[1] ?? 0}; declare the anchor in the readSet with its audited fingerprint.`;
+                    }
+                    if (finding.kind === "unusedBlockDefinition") {
+                      return `- ${finding.findingId}: purgeTableEntries {table:"block", id:"${finding.objectIds[0]}"} (no object grant needed — it is a table entry).`;
+                    }
+                    if (finding.kind === "emptyLayer") {
+                      return `- ${finding.findingId}: deleteRhinoLayer layerId=${finding.objectIds[0]} with expectedFingerprint=${finding.fingerprints[0]} (rhino_layers gives the current one if it drifted).`;
+                    }
+                    if (finding.kind === "badObject") {
+                      return `- ${finding.findingId}: QUARANTINE ${finding.objectIds[0]} — ensure the layer "GPTino::Quarantine" exists, then moveObjectsToLayer with expectedFingerprint=${finding.fingerprints[0]}. Do NOT delete it.`;
                     }
                     return `- ${finding.findingId}: ${finding.detail}`;
                   })

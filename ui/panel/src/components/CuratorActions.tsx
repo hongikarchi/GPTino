@@ -31,6 +31,22 @@ const PRESETS: { label: string; title: string; prompt: string }[] = [
       "Run data_flow_read and report what this definition references from the Rhino document " +
       "(broken references prominently) and what it has baked. Change nothing.",
   },
+  {
+    label: "Layers",
+    title: "Layer table: paths, counts, visibility, saved states",
+    prompt:
+      "Run rhino_layers and report the layer table: full paths, object counts (including hidden " +
+      "and block members), visibility/lock, which layers are empty leaves, and the saved named " +
+      "layer states. Change nothing.",
+  },
+  {
+    label: "Layer checkpoint",
+    title: "Save a named layer state before reorganizing",
+    prompt:
+      "Save a named layer state called 'GPTino checkpoint' with one saveRhinoLayerState operation " +
+      "(action save), so any later layer work can be reverted without touching geometry. Report " +
+      "the committed job state and the resulting list of saved states.",
+  },
 ];
 
 const AUDIT_PRESETS: { label: string; title: string; kind: RhinoAuditKind }[] = [
