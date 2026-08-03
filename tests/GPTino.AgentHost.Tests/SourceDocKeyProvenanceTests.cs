@@ -95,6 +95,40 @@ public sealed class SourceDocKeyProvenanceTests
     }
 
     [Fact]
+    public void MoveObjectsValidatorRejectsPreApprovalAndDuplicateTargets()
+    {
+        var objectId = Guid.NewGuid();
+        var layerId = Guid.NewGuid();
+        var items = new[] { new MoveObjectItem(objectId, "fp-1") };
+        // Server-injected approval only.
+        Assert.Throws<InvalidOperationException>(
+            () => LiveDocumentBackend.ValidateMoveObjectsArguments(
+                new MoveObjectsToLayerRequest("op-1", items, layerId, Approved: true), "op-1"));
+        // One object listed twice would make its per-item fingerprint expectations ambiguous.
+        Assert.Throws<InvalidOperationException>(
+            () => LiveDocumentBackend.ValidateMoveObjectsArguments(
+                new MoveObjectsToLayerRequest(
+                    "op-1",
+                    new[] { new MoveObjectItem(objectId, "fp-1"), new MoveObjectItem(objectId, "fp-2") },
+                    layerId),
+                "op-1"));
+        LiveDocumentBackend.ValidateMoveObjectsArguments(
+            new MoveObjectsToLayerRequest("op-1", items, layerId), "op-1");
+    }
+
+    [Fact]
+    public void PurgeValidatorRejectsUnknownTables()
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => LiveDocumentBackend.ValidatePurgeArguments(
+                new PurgeTableEntriesRequest("op-1", new[] { new PurgeTableEntry("layer", Guid.NewGuid()) }),
+                "op-1"));
+        LiveDocumentBackend.ValidatePurgeArguments(
+            new PurgeTableEntriesRequest("op-1", new[] { new PurgeTableEntry("block", Guid.NewGuid()) }),
+            "op-1");
+    }
+
+    [Fact]
     public void ValidatePrimitiveRejectsModelAuthoredSourceDocKey()
     {
         var request = new CreateRhinoPrimitiveRequest(

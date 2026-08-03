@@ -1773,8 +1773,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 }
                 if (bridgeOwner is BridgeAdapterOwner.Wireify or BridgeAdapterOwner.CordycepsRhino)
                 {
+                    // A multi-object operation reports ONE aggregate AfterFingerprint, which is not
+                    // any object's real fingerprint. Batch results carry per-item fingerprints;
+                    // recording the aggregate for each declared write would poison the resource
+                    // ledger and stale every later operation on those objects.
+                    var perItem = ReadBatchItemFingerprints(response.Result);
                     operationObservations.AddRange(operation.Writes.Select(resource =>
-                        new ResourceObservation(resource, response.AfterFingerprint)));
+                        new ResourceObservation(
+                            resource,
+                            perItem is not null && perItem.TryGetValue(resource.Id, out var itemFingerprint)
+                                ? itemFingerprint
+                                : response.AfterFingerprint)));
                 }
                 var error = response.Diagnostics.FirstOrDefault(item =>
                     item.Severity == BridgeDiagnosticSeverity.Error);
@@ -4960,6 +4969,34 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 // "unused" (purge) and existence (layer state) at execution.
                 return;
         }
+    }
+
+    /// <summary>
+    /// Per-object after-fingerprints from a batch mutation result (keyed by the resource id form
+    /// the writeSet uses), or null when the response is not a batch.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? ReadBatchItemFingerprints(JsonElement result)
+    {
+        if (result.ValueKind != JsonValueKind.Object ||
+            !result.TryGetProperty("items", out var items) ||
+            items.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.Object &&
+                item.TryGetProperty("objectId", out var objectId) &&
+                objectId.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(objectId.GetString(), out var id) &&
+                item.TryGetProperty("afterFingerprint", out var fingerprint) &&
+                fingerprint.ValueKind == JsonValueKind.String)
+            {
+                map[id.ToString("D")] = fingerprint.GetString()!;
+            }
+        }
+        return map.Count > 0 ? map : null;
     }
 
     private static IReadOnlyList<Guid> ReadItemGuids(
