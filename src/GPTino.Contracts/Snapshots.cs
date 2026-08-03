@@ -26,6 +26,10 @@ public enum ResourceKind
     RhinoGroup,
     RhinoMaterial,
     RhinoLinetype,
+    /// <summary>The layer table as a whole — a CAS domain covering presence AND absence of layers.</summary>
+    RhinoLayerTable,
+    RhinoBlockDefinition,
+    RhinoDimensionStyle,
 }
 
 /// <summary>

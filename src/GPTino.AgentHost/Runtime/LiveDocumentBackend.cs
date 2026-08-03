@@ -545,6 +545,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private static readonly string[] ApprovableOperations =
     {
         "rhino.delete", "rhino.transform", "rhino.upsert", "rhino.fixEndpointPair",
+        // Quarantining a user-made object moves it — without this the panel would mint a grant
+        // the executor never applies and every quarantine would be refused as unapproved.
+        "rhino.moveObjectsToLayer",
     };
 
     internal static IReadOnlyList<PreparedOperation> InjectApprovalFlags(
@@ -567,13 +570,29 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             var node = System.Text.Json.Nodes.JsonNode.Parse(operation.Arguments.GetRawText())?.AsObject()
                 ?? throw new InvalidOperationException(
                     $"{operation.BridgeOperation} arguments must be a JSON object.");
-            var idProperty = operation.BridgeOperation == "rhino.fixEndpointPair" ? "moveObjectId" : "objectId";
-            var covered =
-                node[idProperty]?.GetValue<string>() is { } idText &&
-                Guid.TryParse(idText, out var objectId) &&
-                approvalItems.TryGetValue(objectId, out var approvedFingerprint) &&
-                node["expectedFingerprint"]?.GetValue<string>() is { } fingerprint &&
-                string.Equals(fingerprint, approvedFingerprint, StringComparison.Ordinal);
+            bool covered;
+            if (operation.BridgeOperation == "rhino.moveObjectsToLayer")
+            {
+                // A batch is approved only when EVERY moved object is covered at its audited
+                // fingerprint: a partially covered batch must be refused, not half-authorized.
+                var items = node["items"]?.AsArray();
+                covered = items is { Count: > 0 } && items.All(item =>
+                    item?["objectId"]?.GetValue<string>() is { } itemId &&
+                    Guid.TryParse(itemId, out var movedId) &&
+                    approvalItems.TryGetValue(movedId, out var approvedItemFingerprint) &&
+                    item?["expectedFingerprint"]?.GetValue<string>() is { } itemFingerprint &&
+                    string.Equals(itemFingerprint, approvedItemFingerprint, StringComparison.Ordinal));
+            }
+            else
+            {
+                var idProperty = operation.BridgeOperation == "rhino.fixEndpointPair" ? "moveObjectId" : "objectId";
+                covered =
+                    node[idProperty]?.GetValue<string>() is { } idText &&
+                    Guid.TryParse(idText, out var objectId) &&
+                    approvalItems.TryGetValue(objectId, out var approvedFingerprint) &&
+                    node["expectedFingerprint"]?.GetValue<string>() is { } fingerprint &&
+                    string.Equals(fingerprint, approvedFingerprint, StringComparison.Ordinal);
+            }
             if (!covered)
             {
                 result.Add(operation);
@@ -928,6 +947,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         string scope,
         CancellationToken cancellationToken)
     {
+        // Layer/table scopes ("rhinoTables:<kind>:<id>") resolve from one layer-table read rather
+        // than a per-object inspect: layers and document-table entries appear in no snapshot, so
+        // this is the only way their expectations survive conflict validation.
+        if (scope.StartsWith("rhinoTables:", StringComparison.Ordinal))
+        {
+            return await ReadTableScopeAsync(targetState, scope, cancellationToken).ConfigureAwait(false);
+        }
+
         var separator = scope.IndexOf(':');
         if (separator <= 0 || separator == scope.Length - 1 ||
             !Guid.TryParse(scope[(separator + 1)..], out var objectId))
@@ -970,6 +997,57 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             owner,
             operation,
             response.AfterFingerprint,
+            response.Result.Clone(),
+            response.Diagnostics);
+    }
+
+    /// <summary>
+    /// Resolves a layer or document-table expectation from one rhino.listLayers read. The layer
+    /// table's own fingerprint answers RhinoLayerTable scopes (a whole-table CAS covering presence
+    /// AND absence); a single layer's fingerprint answers RhinoLayer. Other table kinds (block,
+    /// dimension style, material, linetype) are purge targets whose entries the audit fingerprints;
+    /// their live value is resolved by the adapter at execution, so the enrichment reports the
+    /// table fingerprint and lets the purge re-verify usage itself.
+    /// </summary>
+    private async Task<ScopedInspection> ReadTableScopeAsync(
+        TargetState targetState,
+        string scope,
+        CancellationToken cancellationToken)
+    {
+        var parts = scope.Split(':', 3);
+        if (parts.Length != 3)
+        {
+            throw new InvalidOperationException($"Invalid table scope '{scope}'.");
+        }
+        RequireAdapter(targetState, BridgeAdapterOwner.CordycepsRhino);
+        using var empty = JsonDocument.Parse("{}");
+        var request = new BridgeOperationRequest(
+            $"read-{Guid.NewGuid():N}",
+            BridgeAdapterOwner.CordycepsRhino,
+            "rhino.listLayers",
+            BridgeOperationAccess.Read,
+            targetState.Snapshot?.State.Revision ?? 0,
+            ExpectedFingerprint: null,
+            WriterLeaseToken: null,
+            empty.RootElement.Clone());
+        var response = await SendOperationAsync(targetState.Target, request, cancellationToken)
+            .ConfigureAwait(false);
+        var table = response.Result.Deserialize<RhinoLayerTableResult>(BridgeProtocol.JsonOptions)
+            ?? throw new BridgeProtocolException(
+                "rhino_layer_table_payload",
+                "The Rhino layer listing returned an empty payload.");
+        var fingerprint = parts[1] switch
+        {
+            nameof(ResourceKind.RhinoLayer) => Guid.TryParse(parts[2], out var layerId)
+                ? table.Layers.FirstOrDefault(layer => layer.LayerId == layerId)?.Fingerprint
+                : null,
+            _ => table.Fingerprint,
+        };
+        return new ScopedInspection(
+            scope,
+            BridgeAdapterOwner.CordycepsRhino,
+            "rhino.listLayers",
+            fingerprint,
             response.Result.Clone(),
             response.Diagnostics);
     }
@@ -2892,6 +2970,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         ResourceKind.RhinoObjectAttributes => Guid.TryParse(resource.Id, out var objectId)
             ? $"rhino:{objectId:D}"
             : null,
+        // Layer and document-table resources live in no snapshot (BuildResources emits Grasshopper
+        // kinds only), so without an inspection scope every layer/purge expectation would Stale-
+        // block before dispatch. One layer-table read serves all of them.
+        ResourceKind.RhinoLayer or
+        ResourceKind.RhinoLayerTable or
+        ResourceKind.RhinoBlockDefinition or
+        ResourceKind.RhinoDimensionStyle or
+        ResourceKind.RhinoMaterial or
+        ResourceKind.RhinoLinetype => $"rhinoTables:{resource.Kind}:{resource.Id}",
         _ => null
     };
 
@@ -4001,7 +4088,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         OperationKind.UpdateRhinoAttributes or OperationKind.UpdateRhinoLayer or
         OperationKind.FixRhinoEndpointPair or OperationKind.PurgeTableEntries or
         OperationKind.MoveObjectsToLayer or OperationKind.UpdateRhinoLayerProperties or
-        OperationKind.DeleteRhinoLayer or OperationKind.SaveRhinoLayerState;
+        OperationKind.DeleteRhinoLayer or OperationKind.SaveRhinoLayerState or
+        OperationKind.EnsureRhinoLayer;
 
     private static string ResolveBridgeOperation(TypedOperation operation, JsonElement payload)
     {
@@ -4030,6 +4118,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             OperationKind.UpdateRhinoLayerProperties => "rhino.updateLayer",
             OperationKind.DeleteRhinoLayer => "rhino.deleteLayer",
             OperationKind.SaveRhinoLayerState => "rhino.layerState",
+            OperationKind.EnsureRhinoLayer => "rhino.ensureLayer",
             OperationKind.UpdateRhinoLayer => throw new InvalidOperationException(
                 "UpdateRhinoLayer is reserved until deterministic layer inspection is available."),
             OperationKind.Read when operation.Owner == AdapterOwner.Wireify => "python.inspect",
@@ -4110,6 +4199,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 "expectedAnchorFingerprint", "expectedFingerprint", "tolerance"
             },
             "rhino.purgeTableEntries" => new[] { "operationId", "entries" },
+            "rhino.ensureLayer" => new[] { "operationId", "fullPath" },
             "rhino.moveObjectsToLayer" => new[] { "operationId", "items", "targetLayerId" },
             "rhino.updateLayer" => new[] { "operationId", "layerId", "expectedFingerprint" },
             "rhino.deleteLayer" => new[] { "operationId", "layerId", "expectedFingerprint" },
@@ -4963,10 +5053,26 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 return;
 
             case "rhino.purgeTableEntries":
+                // One declared write per purged entry, in that entry's own table domain — a purge
+                // is exactly as declared as any other destructive write.
+                RequireExactDeclaredTableTargets(operation, arguments);
+                return;
+
             case "rhino.layerState":
-                // Document-table writes: the resources are table entries and the state table, not
-                // Rhino objects, so object-target alignment does not apply. The adapter re-proves
-                // "unused" (purge) and existence (layer state) at execution.
+                // Save/restore/delete all touch the layer table as a whole; restore rewrites every
+                // layer, so the table resource is the honest (and CAS-able) declaration.
+                if (!operation.Writes.Any(resource => resource.Kind == ResourceKind.RhinoLayerTable))
+                {
+                    throw new InvalidOperationException(
+                        $"Operation '{operation.OperationId}' must declare a rhinoLayerTable write " +
+                        "(a layer state save/restore/delete acts on the whole table).");
+                }
+                return;
+
+            case "rhino.ensureLayer":
+                // Creating or updating a layer by path: the layer is the write. A brand-new layer
+                // has no id yet, so the declaration is an absent-expectation on its path-derived
+                // id — the adapter returns the real id after creating it.
                 return;
         }
     }
@@ -4997,6 +5103,47 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
         }
         return map.Count > 0 ? map : null;
+    }
+
+    /// <summary>
+    /// Every purge entry must be declared as a write in its own table domain, and every declared
+    /// table write must be purged — the exactness single-object ops get, applied per entry.
+    /// </summary>
+    private static void RequireExactDeclaredTableTargets(TypedOperation operation, JsonElement arguments)
+    {
+        var declared = operation.Writes
+            .Where(resource => resource.Kind is ResourceKind.RhinoBlockDefinition
+                or ResourceKind.RhinoDimensionStyle or ResourceKind.RhinoMaterial or ResourceKind.RhinoLinetype)
+            .Select(resource => (resource.Kind, Id: resource.Id))
+            .ToHashSet();
+        var payload = new HashSet<(ResourceKind Kind, string Id)>();
+        foreach (var entry in arguments.GetProperty("entries").EnumerateArray())
+        {
+            var table = entry.TryGetProperty("table", out var tableValue) ? tableValue.GetString() : null;
+            var id = entry.TryGetProperty("id", out var idValue) && Guid.TryParse(idValue.GetString(), out var parsed)
+                ? parsed
+                : Guid.Empty;
+            var kind = (table ?? string.Empty).Trim().ToLowerInvariant() switch
+            {
+                "block" => ResourceKind.RhinoBlockDefinition,
+                "dimstyle" => ResourceKind.RhinoDimensionStyle,
+                "linetype" => ResourceKind.RhinoLinetype,
+                "material" => ResourceKind.RhinoMaterial,
+                _ => (ResourceKind?)null,
+            };
+            if (kind is null || id == Guid.Empty)
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{operation.OperationId}' has an invalid purge entry.");
+            }
+            payload.Add((kind.Value, id.ToString("D")));
+        }
+        if (!declared.SetEquals(payload))
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operation.OperationId}' must declare exactly one write per purged entry " +
+                "(kinds rhinoBlockDefinition|rhinoDimensionStyle|rhinoLinetype|rhinoMaterial).");
+        }
     }
 
     private static IReadOnlyList<Guid> ReadItemGuids(

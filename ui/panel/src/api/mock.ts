@@ -438,6 +438,16 @@ const demoAudits: Record<RhinoAuditKind, RhinoAuditResult> = {
         proposedFixes: ["purgeBlockDefinition"],
       },
       {
+        // Exercises the quarantine path (the only purge fix that needs an object grant).
+        findingId: "bad-33cc",
+        kind: "badObject",
+        objectIds: ["c9d8e7f6-0003-4a4a-8b8b-000000000003"],
+        fingerprints: ["fp-b1"],
+        measure: null,
+        detail: "Invalid geometry (Brep): edge has no valid trim — quarantine, do not delete (often repairable).",
+        proposedFixes: ["quarantineToLayer"],
+      },
+      {
         findingId: "lay-22bb",
         kind: "emptyLayer",
         objectIds: ["c9d8e7f6-0002-4a4a-8b8b-000000000002"],

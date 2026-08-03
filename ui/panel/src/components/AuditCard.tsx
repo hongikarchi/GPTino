@@ -149,10 +149,11 @@ export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = tru
                       .finally(() => setApproving(false));
                   }}
                 >
-                  {approving ? "Approving…" : `Approve ${approved.length} fix${approved.length === 1 ? "" : "es"}`}
+                  {approving ? "Approving…" : `Approve ${approved.length} finding${approved.length === 1 ? "" : "s"}`}
                 </button>
                 <span className="audit-card-meta">
-                  Approval covers exactly the fixes' write targets at their audited fingerprints.
+                  Approval covers exactly the fixes' write targets at their audited fingerprints;
+                  document-table entries (unused blocks, empty layers) need no object approval.
                 </span>
               </footer>
             ) : (

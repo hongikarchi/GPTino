@@ -44,6 +44,8 @@ public enum OperationKind
     UpdateRhinoLayerProperties,
     DeleteRhinoLayer,
     SaveRhinoLayerState,
+    /// <summary>Creates or updates one layer by full path (the quarantine layer's creation path).</summary>
+    EnsureRhinoLayer,
 }
 
 public sealed record ResourceExpectation(

@@ -601,7 +601,10 @@ export default function App() {
                     fingerprint: finding.fingerprints[index] ?? "",
                   }));
                 });
-                const grant = await actions.mintApprovalGrant(items);
+                // Blocks and empty layers are document-table entries, not user geometry: an
+                // approval covering zero objects is a legitimate outcome, and minting an empty
+                // grant would just 400.
+                const grant = items.length > 0 ? await actions.mintApprovalGrant(items) : null;
                 const lines = approved
                   .map((finding) => {
                     if (finding.kind === "nearDuplicates") {
@@ -614,13 +617,13 @@ export default function App() {
                       return `- ${finding.findingId}: heal the endpoint gap (${finding.measure}) via fixRhinoEndpointPair: anchorObjectId=${finding.objectIds[0]}, anchorEnd=${ends[0] ?? 0}, moveObjectId=${finding.objectIds[1]}, moveEnd=${ends[1] ?? 0}; declare the anchor in the readSet with its audited fingerprint.`;
                     }
                     if (finding.kind === "unusedBlockDefinition") {
-                      return `- ${finding.findingId}: purgeTableEntries {table:"block", id:"${finding.objectIds[0]}"} (no object grant needed — it is a table entry).`;
+                      return `- ${finding.findingId}: purge block ${finding.objectIds[0]} — put it in the SINGLE purgeTableEntries operation's entries array as {"table":"block","id":"${finding.objectIds[0]}"}, and declare a matching rhinoBlockDefinition write for it.`;
                     }
                     if (finding.kind === "emptyLayer") {
                       return `- ${finding.findingId}: deleteRhinoLayer layerId=${finding.objectIds[0]} with expectedFingerprint=${finding.fingerprints[0]} (rhino_layers gives the current one if it drifted).`;
                     }
                     if (finding.kind === "badObject") {
-                      return `- ${finding.findingId}: QUARANTINE ${finding.objectIds[0]} — ensure the layer "GPTino::Quarantine" exists, then moveObjectsToLayer with expectedFingerprint=${finding.fingerprints[0]}. Do NOT delete it.`;
+                      return `- ${finding.findingId}: QUARANTINE ${finding.objectIds[0]} (expectedFingerprint=${finding.fingerprints[0]}) — do NOT delete it. If the layer "GPTino::Quarantine" does not exist yet, create it with ensureRhinoLayer in a FIRST ChangeSet, read its id back with rhino_layers, then moveObjectsToLayer in a second ChangeSet (the move needs the layer's real id, which only exists after the layer is created).`;
                     }
                     return `- ${finding.findingId}: ${finding.detail}`;
                   })
@@ -628,11 +631,14 @@ export default function App() {
                 requestNotifyPermissionOnce();
                 await actions.sendMessage(
                   curatorSession.id,
-                  `The user APPROVED these ${result.kind} findings on the approval card. ` +
-                    `Approval grant: ${grant.grantId} (bound to the audited fingerprints).\n${lines}\n` +
-                    `Apply exactly these fixes now — set "approvalGrantId": "${grant.grantId}" inside the ` +
-                    `changeSet object of change_submit. Re-run rhino_audit afterwards and report ` +
-                    `the verified result.`,
+                  `The user APPROVED these ${result.kind} findings on the approval card.\n${lines}\n` +
+                    (grant
+                      ? `Approval grant: ${grant.grantId} (bound to the audited fingerprints of the objects ` +
+                        `above). Set "approvalGrantId": "${grant.grantId}" inside the changeSet object of ` +
+                        `change_submit.\n`
+                      : `No approval grant is needed — these findings touch document-table entries, not the ` +
+                        `user's geometry.\n`) +
+                    `Apply exactly these fixes now, then re-run rhino_audit and report the verified result.`,
                 );
               }}
             />

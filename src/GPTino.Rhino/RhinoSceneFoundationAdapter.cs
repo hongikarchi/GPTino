@@ -242,6 +242,11 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         LockedObjects = true,
         DeletedObjects = false,
         IdefObjects = includeDefinitionMembers,
+        // Lights, page/phantom objects and linked-block references are still objects ON a layer:
+        // omitting them would report an occupied layer as an empty leaf and offer it for deletion.
+        IncludeLights = true,
+        IncludePhantoms = true,
+        ReferenceObjects = true,
         ObjectTypeFilter = typeFilter ?? ObjectType.AnyObject,
     };
 
@@ -1821,27 +1826,88 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             {
                 layer.IsLocked = locked;
             }
-            // Layer property changes are immediate in Rhino 8 (CommitChanges is obsolete); the
-            // re-read below is the verification that they actually landed.
+            // Layer property changes are immediate in Rhino 8 (CommitChanges is obsolete), and the
+            // setters return void — a rejected commit (Rhino refuses to hide or lock the CURRENT
+            // layer, and a parent layer's state can override a child's) is silent. So verify each
+            // REQUESTED field against the re-read layer: a fingerprint that merely differs would
+            // report "visible and unlocked" for a layer that is still hidden.
             var after = document.Layers[index];
-            var afterFingerprint = LayerFingerprint(after);
-            if (string.Equals(afterFingerprint, beforeFingerprint, StringComparison.Ordinal))
+            var mismatches = new List<string>();
+            if (request.ArgbColor is { } requestedArgb && after.Color.ToArgb() != requestedArgb)
+            {
+                mismatches.Add($"color (requested {requestedArgb:X8}, got {after.Color.ToArgb():X8})");
+            }
+            if (request.Visible is { } requestedVisible && after.IsVisible != requestedVisible)
+            {
+                mismatches.Add($"visible (requested {requestedVisible}, got {after.IsVisible})");
+            }
+            if (request.Locked is { } requestedLocked && after.IsLocked != requestedLocked)
+            {
+                mismatches.Add($"locked (requested {requestedLocked}, got {after.IsLocked})");
+            }
+            if (mismatches.Count > 0)
             {
                 throw new InvalidOperationException(
-                    $"Rhino did not apply any change to layer {request.LayerId:D}.");
+                    $"Rhino did not apply {string.Join(", ", mismatches)} to layer '{after.FullPath}'. " +
+                    "A parent layer's visibility/lock, or the layer being current, can override the request.");
             }
+            var afterFingerprint = LayerFingerprint(after);
             document.Views.Redraw();
             return Task.FromResult(new RhinoSceneMutationResult(
                 request.OperationId,
-                Changed: true,
+                // An idempotent request (setting a field to the value it already has) is a
+                // legitimate no-op, not a failure — the verification above already proved the
+                // requested state holds.
+                Changed: !string.Equals(afterFingerprint, beforeFingerprint, StringComparison.Ordinal),
                 beforeFingerprint,
                 afterFingerprint,
-                request.LayerId));
+                request.LayerId,
+                Diagnostics: DescribeCascadedLayerChanges(document, request.LayerId, index)));
         }
         finally
         {
             document.EndUndoRecord(undo);
         }
+    }
+
+    /// <summary>
+    /// Rhino cascades a parent layer's visibility/lock to its descendants, so one layer update can
+    /// change several layers' fingerprints. The caller is told which ones, instead of discovering
+    /// it as an unexplained CAS failure on the next layer operation.
+    /// </summary>
+    private static IReadOnlyList<BridgeDiagnostic>? DescribeCascadedLayerChanges(
+        global::Rhino.RhinoDoc document,
+        Guid layerId,
+        int layerIndex)
+    {
+        var descendants = new List<string>();
+        var frontier = new Queue<Guid>();
+        frontier.Enqueue(layerId);
+        while (frontier.Count > 0)
+        {
+            var parentId = frontier.Dequeue();
+            foreach (var candidate in document.Layers)
+            {
+                if (candidate is not null && !candidate.IsDeleted &&
+                    candidate.ParentLayerId == parentId && candidate.Index != layerIndex)
+                {
+                    descendants.Add(candidate.FullPath);
+                    frontier.Enqueue(candidate.Id);
+                }
+            }
+        }
+        return descendants.Count == 0
+            ? null
+            : new[]
+            {
+                new BridgeDiagnostic(
+                    BridgeDiagnosticSeverity.Warning,
+                    "layer_update_cascade",
+                    $"This layer has {descendants.Count} descendant layer(s) whose effective " +
+                    $"visibility/lock follow it: {string.Join(", ", descendants.Take(10))}" +
+                    (descendants.Count > 10 ? ", …" : "") +
+                    ". Re-read the layer table before operating on them; their fingerprints may have changed."),
+            };
     }
 
     protected override Task<RhinoSceneMutationResult> DeleteLayerCoreAsync(
@@ -1984,12 +2050,22 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             }
             document.Views.Redraw();
             var remaining = ReadLayerStateNames(document);
+            // The fingerprint must cover the LAYERS too: a restore rewrites every layer while the
+            // state-name list is unchanged, so hashing only the names would report an identical
+            // fingerprint for a document-wide change.
+            var layerTableFingerprint = Hash(
+                "layerTable\n" + string.Join(
+                    "\n",
+                    document.Layers
+                        .Where(layer => layer is not null && !layer.IsDeleted)
+                        .OrderBy(layer => layer.FullPath, StringComparer.OrdinalIgnoreCase)
+                        .Select(layer => $"{layer.Id:D}:{LayerFingerprint(layer)}")));
             return Task.FromResult(new RhinoLayerStateResult(
                 request.OperationId,
                 action,
                 name,
                 remaining,
-                Hash($"layerStates\n{string.Join("\n", remaining)}")));
+                Hash($"layerStates\n{string.Join("\n", remaining)}\n{layerTableFingerprint}")));
         }
         finally
         {
@@ -2010,6 +2086,73 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             throw new InvalidOperationException("At least one table entry is required for a purge.");
         }
 
+        // Phase 1 — prove every entry is purgeable BEFORE deleting anything. Interleaving checks
+        // and deletions would let a multi-entry purge half-apply on the first in-use entry.
+        foreach (var entry in request.Entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var table = (entry.Table ?? string.Empty).Trim().ToLowerInvariant();
+            switch (table)
+            {
+                case "block":
+                {
+                    var definition = document.InstanceDefinitions.FindId(entry.Id)
+                        ?? throw new KeyNotFoundException($"Block definition {entry.Id:D} was not found.");
+                    // Re-verified live: an entry that gained a reference since the audit is
+                    // refused rather than purged on the audit's word. InUse(1) covers top-level
+                    // and nested references in the document; InUse(2) covers references from
+                    // other definitions.
+                    if (definition.InUse(1) || definition.InUse(2))
+                    {
+                        throw new InvalidOperationException(
+                            $"Block definition '{definition.Name}' is in use and cannot be purged.");
+                    }
+                    break;
+                }
+                case "dimstyle":
+                {
+                    var style = document.DimStyles.FindId(entry.Id)
+                        ?? throw new KeyNotFoundException($"Dimension style {entry.Id:D} was not found.");
+                    if (document.DimStyles.CurrentIndex == style.Index)
+                    {
+                        throw new InvalidOperationException(
+                            $"Dimension style '{style.Name}' is the current style and cannot be purged.");
+                    }
+                    break;
+                }
+                case "linetype":
+                {
+                    var linetype = document.Linetypes.FindId(entry.Id)
+                        ?? throw new KeyNotFoundException($"Linetype {entry.Id:D} was not found.");
+                    // Delete() only refuses linetypes referenced by active geometry, so the
+                    // layer-reference check has to be ours: a layer's linetype would otherwise be
+                    // purged out from under it.
+                    if (document.Layers.Any(layer =>
+                            layer is not null && !layer.IsDeleted && layer.LinetypeIndex == linetype.Index))
+                    {
+                        throw new InvalidOperationException(
+                            $"Linetype '{linetype.Name}' is referenced by a layer and cannot be purged.");
+                    }
+                    break;
+                }
+                case "material":
+                {
+                    var material = document.Materials.FindId(entry.Id)
+                        ?? throw new KeyNotFoundException($"Material {entry.Id:D} was not found.");
+                    if (document.Layers.Any(layer =>
+                            layer is not null && !layer.IsDeleted && layer.RenderMaterialIndex == material.Index))
+                    {
+                        throw new InvalidOperationException(
+                            $"Material '{material.Name}' is referenced by a layer and cannot be purged.");
+                    }
+                    break;
+                }
+                default:
+                    throw new InvalidOperationException(
+                        $"Unknown purge table '{entry.Table}'. Use block|dimStyle|linetype|material.");
+            }
+        }
+
         var undo = document.BeginUndoRecord($"GPTino: {request.OperationId}");
         if (undo == 0)
         {
@@ -2018,6 +2161,8 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         var purged = new List<PurgedTableEntry>();
         try
         {
+            // Phase 2 — apply. Anything that still fails here reports what already went in the
+            // exception message, so a partial purge is never silent.
             foreach (var entry in request.Entries)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -2028,16 +2173,10 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                     {
                         var definition = document.InstanceDefinitions.FindId(entry.Id)
                             ?? throw new KeyNotFoundException($"Block definition {entry.Id:D} was not found.");
-                        // Re-verified at execution: an entry that gained a reference since the
-                        // audit is refused rather than purged on the audit's word.
-                        if (definition.InUse(1) || definition.InUse(2))
-                        {
-                            throw new InvalidOperationException(
-                                $"Block definition '{definition.Name}' is in use and cannot be purged.");
-                        }
                         var name = definition.Name;
-                        // (index, deleteOnlyIfReferenced: false, quiet: true) — the InUse checks
-                        // above are the authority on "unused"; this call must not silently skip.
+                        // Delete(index, deleteReferences, quiet): deleteReferences=false means
+                        // "do not destroy geometry that references this definition" — passing true
+                        // here would delete the user's instances along with the definition.
                         if (!document.InstanceDefinitions.Delete(definition.Index, false, true))
                         {
                             throw new InvalidOperationException($"Rhino could not purge block definition '{name}'.");
@@ -2094,6 +2233,15 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 request.OperationId,
                 purged,
                 Hash($"purge\n{string.Join("\n", purged.Select(item => $"{item.Table}:{item.Id:D}"))}")));
+        }
+        catch (Exception exception) when (purged.Count > 0 && exception is not OperationCanceledException)
+        {
+            // Never let a partial purge be reported as a bare failure: the caller must know which
+            // entries actually went before it re-audits.
+            throw new InvalidOperationException(
+                $"{exception.Message} Already purged before the failure: " +
+                string.Join(", ", purged.Select(item => $"{item.Table} '{item.Name}'")) + ".",
+                exception);
         }
         finally
         {
@@ -2160,8 +2308,15 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 attributes.LayerIndex = layerIndex;
                 if (!document.Objects.ModifyAttributes(rhinoObject, attributes, quiet: true))
                 {
+                    // Pre-validation cannot prove ModifyAttributes will succeed (a locked layer or
+                    // a locked object refuses at write time), so a mid-batch failure names what
+                    // already moved instead of leaving the caller to guess.
+                    var applied = results.Count == 0
+                        ? "none"
+                        : string.Join(", ", results.Select(item => item.ObjectId.ToString("D")));
                     throw new InvalidOperationException(
-                        $"Rhino could not move object {rhinoObject.Id:D} to the target layer.");
+                        $"Rhino could not move object {rhinoObject.Id:D} to the target layer. " +
+                        $"Already moved in this batch: {applied}.");
                 }
                 var afterObject = document.Objects.FindId(rhinoObject.Id)
                     ?? throw new InvalidOperationException(

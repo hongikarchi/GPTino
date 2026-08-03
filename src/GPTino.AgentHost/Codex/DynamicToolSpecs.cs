@@ -361,7 +361,7 @@ internal static class DynamicToolSpecs
                 "executePython", "readRuntimeMessages", "createRhinoPrimitive", "transformRhinoObject",
                 "referenceRhinoObjects", "fixRhinoEndpointPair", "purgeTableEntries",
                 "moveObjectsToLayer", "updateRhinoLayerProperties", "deleteRhinoLayer",
-                "saveRhinoLayerState"),
+                "saveRhinoLayerState", "ensureRhinoLayer"),
             owner = Enum("wireify", "cordyceps", "rhinoBridge"),
             reads = new { type = "array", items = ResourceAddressSchema() },
             writes = new { type = "array", items = ResourceAddressSchema() },
@@ -397,7 +397,9 @@ internal static class DynamicToolSpecs
             kind = Enum(
                 "document", "grasshopperComponent", "grasshopperComponentSource", "grasshopperComponentIo",
                 "grasshopperComponentValue", "grasshopperComponentLayout", "grasshopperWire", "grasshopperGroup",
-                "rhinoObject", "rhinoObjectGeometry", "rhinoObjectAttributes"),
+                "rhinoObject", "rhinoObjectGeometry", "rhinoObjectAttributes",
+                "rhinoLayer", "rhinoLayerTable", "rhinoBlockDefinition", "rhinoDimensionStyle",
+                "rhinoMaterial", "rhinoLinetype"),
             id = new { type = "string", minLength = 1 },
             field = new { type = "string", minLength = 1, description = "Use * for the whole conflict domain." }
         },
