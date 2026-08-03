@@ -72,7 +72,142 @@ public interface ICordycepsRhinoSceneAdapter
         DocumentTarget target,
         FixEndpointPairRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Full layer table with per-layer and whole-table fingerprints, plus the named layer states.
+    /// Read-only. Deterministic layer inspection is what makes layer mutation provable: presence
+    /// AND absence can both be shown against this listing.
+    /// </summary>
+    Task<RhinoLayerTableResult> ListLayersAsync(
+        DocumentTarget target,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Updates presentation-only layer fields (color/visible/locked) under a fingerprint CAS.
+    /// Rename and re-parent are deliberately absent: both rewrite every descendant's FullPath,
+    /// silently breaking Grasshopper name-pattern filters and path-string scripts.
+    /// </summary>
+    Task<RhinoSceneMutationResult> UpdateLayerAsync(
+        DocumentTarget target,
+        UpdateRhinoLayerRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes an empty leaf layer (no objects incl. hidden/block members, no children, not current).</summary>
+    Task<RhinoSceneMutationResult> DeleteLayerAsync(
+        DocumentTarget target,
+        DeleteRhinoLayerRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Saves or restores a named layer state (RhinoDoc.NamedLayerStates). Save is the curator's
+    /// pre-reorganization checkpoint: one call before a layer sweep makes the whole sweep
+    /// revertible without touching object geometry.
+    /// </summary>
+    Task<RhinoLayerStateResult> LayerStateAsync(
+        DocumentTarget target,
+        RhinoLayerStateRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes unused document-table entries (block definitions, dimension styles, linetypes,
+    /// materials). "Unused" is re-verified at execution against the live document — an entry that
+    /// gained a reference since the audit is refused, never purged on the audit's word.
+    /// </summary>
+    Task<RhinoPurgeResult> PurgeTableEntriesAsync(
+        DocumentTarget target,
+        PurgeTableEntriesRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Moves objects to a layer in one undo record. Attribute-only: geometry is untouched, so the
+    /// same op quarantines invalid objects (to a GPTino quarantine layer) instead of deleting
+    /// them. Per-item fingerprint CAS; user-made objects still need an approval grant.
+    /// </summary>
+    Task<RhinoBatchMutationResult> MoveObjectsToLayerAsync(
+        DocumentTarget target,
+        MoveObjectsToLayerRequest request,
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>Document table an entry belongs to: block | dimStyle | linetype | material.</summary>
+public sealed record PurgeTableEntry(string Table, Guid Id);
+
+public sealed record PurgeTableEntriesRequest(
+    string OperationId,
+    IReadOnlyList<PurgeTableEntry> Entries) : IRhinoSceneMutationRequest;
+
+public sealed record PurgedTableEntry(string Table, Guid Id, string Name);
+
+public sealed record RhinoPurgeResult(
+    string OperationId,
+    IReadOnlyList<PurgedTableEntry> Purged,
+    string Fingerprint,
+    IReadOnlyList<BridgeDiagnostic>? Diagnostics = null);
+
+public sealed record MoveObjectItem(Guid ObjectId, string ExpectedFingerprint);
+
+public sealed record MoveObjectsToLayerRequest(
+    string OperationId,
+    IReadOnlyList<MoveObjectItem> Items,
+    Guid TargetLayerId,
+    bool Approved = false) : IRhinoSceneMutationRequest;
+
+public sealed record BatchMutationItem(Guid ObjectId, string BeforeFingerprint, string AfterFingerprint);
+
+/// <summary>
+/// Result of a multi-object mutation: every item carries its own before/after fingerprint so the
+/// resource ledger and verification stay per-object even though one operation moved them all.
+/// </summary>
+public sealed record RhinoBatchMutationResult(
+    string OperationId,
+    bool Changed,
+    IReadOnlyList<BatchMutationItem> Items,
+    string Fingerprint,
+    IReadOnlyList<BridgeDiagnostic>? Diagnostics = null);
+
+public sealed record RhinoLayerSummary(
+    Guid LayerId,
+    string FullPath,
+    Guid ParentLayerId,
+    int Index,
+    int ArgbColor,
+    bool Visible,
+    bool Locked,
+    bool IsCurrent,
+    int ObjectCount,
+    bool HasChildren,
+    string Fingerprint);
+
+public sealed record RhinoLayerTableResult(
+    IReadOnlyList<RhinoLayerSummary> Layers,
+    IReadOnlyList<string> NamedLayerStates,
+    string Fingerprint);
+
+public sealed record UpdateRhinoLayerRequest(
+    string OperationId,
+    Guid LayerId,
+    string ExpectedFingerprint,
+    int? ArgbColor = null,
+    bool? Visible = null,
+    bool? Locked = null) : IRhinoSceneMutationRequest;
+
+public sealed record DeleteRhinoLayerRequest(
+    string OperationId,
+    Guid LayerId,
+    string ExpectedFingerprint) : IRhinoSceneMutationRequest;
+
+/// <summary>Action: save | restore | delete. Restore/delete require an existing state name.</summary>
+public sealed record RhinoLayerStateRequest(
+    string OperationId,
+    string Action,
+    string Name) : IRhinoSceneMutationRequest;
+
+public sealed record RhinoLayerStateResult(
+    string OperationId,
+    string Action,
+    string Name,
+    IReadOnlyList<string> States,
+    string Fingerprint);
 
 /// <summary>
 /// Bounded, deterministic scene query. Text filters are case-insensitive; IDs and logical entity

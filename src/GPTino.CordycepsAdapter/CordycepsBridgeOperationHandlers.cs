@@ -192,6 +192,12 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
             "rhino.ensureLayer" => await MutationAsync<EnsureRhinoLayerRequest>(target, request, _adapter.EnsureLayerAsync, cancellationToken).ConfigureAwait(false),
             "rhino.transform" => await TransformAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.fixEndpointPair" => await MutationAsync<FixEndpointPairRequest>(target, request, _adapter.FixEndpointPairAsync, cancellationToken).ConfigureAwait(false),
+            "rhino.listLayers" => await ListLayersAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "rhino.updateLayer" => await MutationAsync<UpdateRhinoLayerRequest>(target, request, _adapter.UpdateLayerAsync, cancellationToken).ConfigureAwait(false),
+            "rhino.deleteLayer" => await MutationAsync<DeleteRhinoLayerRequest>(target, request, _adapter.DeleteLayerAsync, cancellationToken).ConfigureAwait(false),
+            "rhino.layerState" => await LayerStateAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "rhino.purgeTableEntries" => await PurgeTableEntriesAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "rhino.moveObjectsToLayer" => await MoveObjectsToLayerAsync(target, request, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
                 "unknown_cordyceps_rhino_operation",
                 $"Unknown Cordyceps Rhino operation '{request.Operation}'."),
@@ -237,6 +243,75 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
             changed: false,
             result,
             afterFingerprint: result.Fingerprint);
+    }
+
+    private async Task<BridgeOperationResponse> ListLayersAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireAccess(request, BridgeOperationAccess.Read);
+        var result = await _adapter.ListLayersAsync(target, cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: false,
+            result,
+            afterFingerprint: result.Fingerprint);
+    }
+
+    private async Task<BridgeOperationResponse> LayerStateAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        // Saving/restoring/deleting a named state changes no geometry, but it does mutate the
+        // document's layer state table — a write, so it takes the writer lease like any mutation.
+        RequireAccess(request, BridgeOperationAccess.Write);
+        var result = await _adapter.LayerStateAsync(
+            target,
+            request.DeserializeArguments<RhinoLayerStateRequest>(),
+            cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: true,
+            result,
+            afterFingerprint: result.Fingerprint);
+    }
+
+    private async Task<BridgeOperationResponse> PurgeTableEntriesAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireAccess(request, BridgeOperationAccess.Write);
+        var result = await _adapter.PurgeTableEntriesAsync(
+            target,
+            request.DeserializeArguments<PurgeTableEntriesRequest>(),
+            cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: result.Purged.Count > 0,
+            result,
+            afterFingerprint: result.Fingerprint,
+            diagnostics: result.Diagnostics);
+    }
+
+    private async Task<BridgeOperationResponse> MoveObjectsToLayerAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireAccess(request, BridgeOperationAccess.Write);
+        var result = await _adapter.MoveObjectsToLayerAsync(
+            target,
+            request.DeserializeArguments<MoveObjectsToLayerRequest>(),
+            cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: result.Changed,
+            result,
+            afterFingerprint: result.Fingerprint,
+            diagnostics: result.Diagnostics);
     }
 
     private async Task<BridgeOperationResponse> AuditAsync(

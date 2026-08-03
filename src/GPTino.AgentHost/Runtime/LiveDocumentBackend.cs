@@ -625,6 +625,22 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             arguments,
             cancellationToken);
 
+    /// <summary>
+    /// Full layer table + named layer states (rhino_layers tool + GET /layers). Deterministic
+    /// layer inspection: every layer carries a fingerprint and the table carries one, so presence
+    /// AND absence are provable — the precondition layer mutation was gated on.
+    /// </summary>
+    public Task<object> ReadRhinoLayersAsync(CancellationToken cancellationToken)
+    {
+        using var empty = JsonDocument.Parse("{}");
+        return ReadBridgeQueryAsync(
+            RequireDefaultTargetState(),
+            BridgeAdapterOwner.CordycepsRhino,
+            "rhino.listLayers",
+            empty.RootElement.Clone(),
+            cancellationToken);
+    }
+
     /// <summary>Session-scoped agent read (data_flow_read tool): honors the session's doc binding.</summary>
     public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
         ReadDataFlowCoreAsync(ResolveSessionTargetState(session), cancellationToken);
@@ -3974,7 +3990,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         OperationKind.CreateRhinoObject or OperationKind.ModifyRhinoObject or
         OperationKind.DeleteRhinoObject or OperationKind.BakeGeometry or
         OperationKind.UpdateRhinoAttributes or OperationKind.UpdateRhinoLayer or
-        OperationKind.FixRhinoEndpointPair;
+        OperationKind.FixRhinoEndpointPair or OperationKind.PurgeTableEntries or
+        OperationKind.MoveObjectsToLayer or OperationKind.UpdateRhinoLayerProperties or
+        OperationKind.DeleteRhinoLayer or OperationKind.SaveRhinoLayerState;
 
     private static string ResolveBridgeOperation(TypedOperation operation, JsonElement payload)
     {
@@ -3998,6 +4016,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 OperationKind.BakeGeometry or OperationKind.UpdateRhinoAttributes => "rhino.upsert",
             OperationKind.DeleteRhinoObject => "rhino.delete",
             OperationKind.FixRhinoEndpointPair => "rhino.fixEndpointPair",
+            OperationKind.PurgeTableEntries => "rhino.purgeTableEntries",
+            OperationKind.MoveObjectsToLayer => "rhino.moveObjectsToLayer",
+            OperationKind.UpdateRhinoLayerProperties => "rhino.updateLayer",
+            OperationKind.DeleteRhinoLayer => "rhino.deleteLayer",
+            OperationKind.SaveRhinoLayerState => "rhino.layerState",
             OperationKind.UpdateRhinoLayer => throw new InvalidOperationException(
                 "UpdateRhinoLayer is reserved until deterministic layer inspection is available."),
             OperationKind.Read when operation.Owner == AdapterOwner.Wireify => "python.inspect",
@@ -4077,6 +4100,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 "operationId", "anchorObjectId", "anchorEnd", "moveObjectId", "moveEnd",
                 "expectedAnchorFingerprint", "expectedFingerprint", "tolerance"
             },
+            "rhino.purgeTableEntries" => new[] { "operationId", "entries" },
+            "rhino.moveObjectsToLayer" => new[] { "operationId", "items", "targetLayerId" },
+            "rhino.updateLayer" => new[] { "operationId", "layerId", "expectedFingerprint" },
+            "rhino.deleteLayer" => new[] { "operationId", "layerId", "expectedFingerprint" },
+            "rhino.layerState" => new[] { "operationId", "action", "name" },
             _ => throw new InvalidOperationException(
                 $"Bridge operation '{bridgeOperation}' is not supported by the preflight validator.")
         };
@@ -4261,6 +4289,45 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     ValidateFixEndpointPairArguments(
                         DeserializeArguments<FixEndpointPairRequest>(arguments, operation.OperationId),
                         operation.OperationId);
+                    return;
+                case "rhino.purgeTableEntries":
+                    ValidatePurgeArguments(
+                        DeserializeArguments<PurgeTableEntriesRequest>(arguments, operation.OperationId),
+                        operation.OperationId);
+                    return;
+                case "rhino.moveObjectsToLayer":
+                    ValidateMoveObjectsArguments(
+                        DeserializeArguments<MoveObjectsToLayerRequest>(arguments, operation.OperationId),
+                        operation.OperationId);
+                    return;
+                case "rhino.updateLayer":
+                    var layerUpdate = DeserializeArguments<UpdateRhinoLayerRequest>(arguments, operation.OperationId);
+                    if (layerUpdate.LayerId == Guid.Empty ||
+                        string.IsNullOrWhiteSpace(layerUpdate.ExpectedFingerprint) ||
+                        (layerUpdate.ArgbColor is null && layerUpdate.Visible is null && layerUpdate.Locked is null))
+                    {
+                        throw new InvalidOperationException(
+                            $"Operation '{operation.OperationId}' has an invalid Rhino layer-update payload " +
+                            "(it must change at least one of color, visible, locked).");
+                    }
+                    return;
+                case "rhino.deleteLayer":
+                    var layerDelete = DeserializeArguments<DeleteRhinoLayerRequest>(arguments, operation.OperationId);
+                    if (layerDelete.LayerId == Guid.Empty ||
+                        string.IsNullOrWhiteSpace(layerDelete.ExpectedFingerprint))
+                    {
+                        throw new InvalidOperationException(
+                            $"Operation '{operation.OperationId}' has an invalid Rhino layer-delete payload.");
+                    }
+                    return;
+                case "rhino.layerState":
+                    var layerState = DeserializeArguments<RhinoLayerStateRequest>(arguments, operation.OperationId);
+                    if (string.IsNullOrWhiteSpace(layerState.Name) ||
+                        layerState.Action is not ("save" or "restore" or "delete"))
+                    {
+                        throw new InvalidOperationException(
+                            $"Operation '{operation.OperationId}' needs a layer-state name and action save|restore|delete.");
+                    }
                     return;
             }
         }
@@ -4567,6 +4634,50 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
+    internal static void ValidatePurgeArguments(PurgeTableEntriesRequest request, string operationId)
+    {
+        if (request.Entries is null || request.Entries.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' must list at least one table entry to purge.");
+        }
+        foreach (var entry in request.Entries)
+        {
+            if (entry.Id == Guid.Empty ||
+                (entry.Table ?? string.Empty).Trim().ToLowerInvariant()
+                    is not ("block" or "dimstyle" or "linetype" or "material"))
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{operationId}' has an invalid purge entry; table must be " +
+                    "block|dimStyle|linetype|material with a non-empty id.");
+            }
+        }
+    }
+
+    internal static void ValidateMoveObjectsArguments(MoveObjectsToLayerRequest request, string operationId)
+    {
+        RequireNotPreApproved(request.Approved, operationId);
+        if (request.TargetLayerId == Guid.Empty || request.Items is null || request.Items.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' has an invalid layer-move payload.");
+        }
+        var seen = new HashSet<Guid>();
+        foreach (var item in request.Items)
+        {
+            if (item.ObjectId == Guid.Empty || string.IsNullOrWhiteSpace(item.ExpectedFingerprint))
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{operationId}' layer-move items need an objectId and expectedFingerprint.");
+            }
+            if (!seen.Add(item.ObjectId))
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{operationId}' lists Rhino object {item.ObjectId:D} more than once.");
+            }
+        }
+    }
+
     internal static void ValidateFixEndpointPairArguments(FixEndpointPairRequest request, string operationId)
     {
         RequireNotPreApproved(request.Approved, operationId);
@@ -4822,7 +4933,61 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     write: false,
                     ResourceKind.RhinoObject);
                 return;
+
+            case "rhino.moveObjectsToLayer":
+                // One operation, N object writes: every moved object must be declared, and every
+                // declared write must be moved — the same exactness single-target ops get.
+                RequireExactDeclaredGuidTargets(
+                    operation,
+                    ReadItemGuids(arguments, "items", "objectId", operation.OperationId).ToHashSet(),
+                    write: true,
+                    ResourceKind.RhinoObject);
+                return;
+
+            case "rhino.updateLayer":
+            case "rhino.deleteLayer":
+                RequireExactDeclaredGuidTarget(
+                    operation,
+                    RequireArgumentGuid(arguments, "layerId", operation.OperationId),
+                    write: true,
+                    ResourceKind.RhinoLayer);
+                return;
+
+            case "rhino.purgeTableEntries":
+            case "rhino.layerState":
+                // Document-table writes: the resources are table entries and the state table, not
+                // Rhino objects, so object-target alignment does not apply. The adapter re-proves
+                // "unused" (purge) and existence (layer state) at execution.
+                return;
         }
+    }
+
+    private static IReadOnlyList<Guid> ReadItemGuids(
+        JsonElement arguments,
+        string arrayProperty,
+        string idProperty,
+        string operationId)
+    {
+        if (!arguments.TryGetProperty(arrayProperty, out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' argument '{arrayProperty}' must be an array.");
+        }
+        var ids = new List<Guid>();
+        foreach (var item in array.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object ||
+                !item.TryGetProperty(idProperty, out var idValue) ||
+                idValue.ValueKind != JsonValueKind.String ||
+                !Guid.TryParse(idValue.GetString(), out var id) ||
+                id == Guid.Empty)
+            {
+                throw new InvalidOperationException(
+                    $"Operation '{operationId}' has an item without a valid '{idProperty}'.");
+            }
+            ids.Add(id);
+        }
+        return ids;
     }
 
     private static HashSet<Guid> ReadGuidPropertyNames(
@@ -4936,6 +5101,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         "canvas.inspect" or "rhino.inspect" or "rhino.createPrimitive" or
             "rhino.transform" or "rhino.upsert" or "rhino.delete" => ["objectId"],
         "rhino.fixEndpointPair" => ["anchorObjectId", "moveObjectId"],
+        "rhino.moveObjectsToLayer" => ["targetLayerId"],
+        "rhino.updateLayer" or "rhino.deleteLayer" => ["layerId"],
         _ => Array.Empty<string>()
     };
 
@@ -6607,6 +6774,40 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     RequireArgumentString(arguments, "expectedFingerprint", operation.OperationId));
                 return;
 
+            case "rhino.moveObjectsToLayer":
+                // Every moved object carries its own fingerprint, and each must match that
+                // object's writeSet expectation — a batch does not get to be vaguer than N
+                // single-object writes.
+                foreach (var item in arguments.GetProperty("items").EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object ||
+                        !item.TryGetProperty("objectId", out var itemId) ||
+                        !Guid.TryParse(itemId.GetString(), out var movedId) ||
+                        !item.TryGetProperty("expectedFingerprint", out var itemFingerprint) ||
+                        itemFingerprint.ValueKind != JsonValueKind.String)
+                    {
+                        throw new InvalidOperationException(
+                            $"Operation '{operation.OperationId}' has an invalid layer-move item.");
+                    }
+                    RequirePayloadFingerprint(
+                        changeSet,
+                        operation,
+                        new ResourceAddress(ResourceKind.RhinoObject, movedId.ToString("D")),
+                        itemFingerprint.GetString()!);
+                }
+                return;
+
+            case "rhino.updateLayer":
+            case "rhino.deleteLayer":
+                RequirePayloadFingerprint(
+                    changeSet,
+                    operation,
+                    new ResourceAddress(
+                        ResourceKind.RhinoLayer,
+                        RequireArgumentGuid(arguments, "layerId", operation.OperationId).ToString("D")),
+                    RequireArgumentString(arguments, "expectedFingerprint", operation.OperationId));
+                return;
+
             case "rhino.fixEndpointPair":
                 // The write expectation must pin the MOVE object at its audited fingerprint; the
                 // adapter re-verifies both fingerprints at execution.
@@ -6630,6 +6831,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                         "endpoint-fix anchor (the audited anchor fingerprint).");
                 var anchorPayload = RequireArgumentString(
                     arguments, "expectedAnchorFingerprint", operation.OperationId);
+                // (fall through to the shared anchor check below)
                 if (!string.Equals(
                         anchorExpectation.ExpectedFingerprint,
                         ResourceExpectation.AutoFingerprint,

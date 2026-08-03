@@ -131,6 +131,24 @@ public abstract class DocumentBoundRhinoSceneAdapter<TRhinoDocument> : ICordycep
     public Task<RhinoSceneMutationResult> FixEndpointPairAsync(DocumentTarget target, FixEndpointPairRequest request, CancellationToken cancellationToken = default) =>
         FixEndpointPairCoreAsync(Resolve(target), request, cancellationToken);
 
+    public Task<RhinoLayerTableResult> ListLayersAsync(DocumentTarget target, CancellationToken cancellationToken = default) =>
+        ListLayersCoreAsync(Resolve(target), cancellationToken);
+
+    public Task<RhinoSceneMutationResult> UpdateLayerAsync(DocumentTarget target, UpdateRhinoLayerRequest request, CancellationToken cancellationToken = default) =>
+        UpdateLayerCoreAsync(Resolve(target), request, cancellationToken);
+
+    public Task<RhinoSceneMutationResult> DeleteLayerAsync(DocumentTarget target, DeleteRhinoLayerRequest request, CancellationToken cancellationToken = default) =>
+        DeleteLayerCoreAsync(Resolve(target), request, cancellationToken);
+
+    public Task<RhinoLayerStateResult> LayerStateAsync(DocumentTarget target, RhinoLayerStateRequest request, CancellationToken cancellationToken = default) =>
+        LayerStateCoreAsync(Resolve(target), request, cancellationToken);
+
+    public Task<RhinoPurgeResult> PurgeTableEntriesAsync(DocumentTarget target, PurgeTableEntriesRequest request, CancellationToken cancellationToken = default) =>
+        PurgeTableEntriesCoreAsync(Resolve(target), request, cancellationToken);
+
+    public Task<RhinoBatchMutationResult> MoveObjectsToLayerAsync(DocumentTarget target, MoveObjectsToLayerRequest request, CancellationToken cancellationToken = default) =>
+        MoveObjectsToLayerCoreAsync(Resolve(target), request, cancellationToken);
+
     protected abstract Task<RhinoSceneListResult> ListObjectsCoreAsync(TRhinoDocument document, RhinoListObjectsRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoSceneObjectState> InspectObjectCoreAsync(TRhinoDocument document, Guid objectId, CancellationToken cancellationToken);
     protected abstract Task<StampedObjectsResult> ListStampedObjectsCoreAsync(TRhinoDocument document, CancellationToken cancellationToken);
@@ -142,6 +160,12 @@ public abstract class DocumentBoundRhinoSceneAdapter<TRhinoDocument> : ICordycep
     protected abstract Task<RhinoSceneMutationResult> EnsureLayerCoreAsync(TRhinoDocument document, EnsureRhinoLayerRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoSceneMutationResult> TransformObjectCoreAsync(TRhinoDocument document, TransformRhinoObjectRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoSceneMutationResult> FixEndpointPairCoreAsync(TRhinoDocument document, FixEndpointPairRequest request, CancellationToken cancellationToken);
+    protected abstract Task<RhinoLayerTableResult> ListLayersCoreAsync(TRhinoDocument document, CancellationToken cancellationToken);
+    protected abstract Task<RhinoSceneMutationResult> UpdateLayerCoreAsync(TRhinoDocument document, UpdateRhinoLayerRequest request, CancellationToken cancellationToken);
+    protected abstract Task<RhinoSceneMutationResult> DeleteLayerCoreAsync(TRhinoDocument document, DeleteRhinoLayerRequest request, CancellationToken cancellationToken);
+    protected abstract Task<RhinoLayerStateResult> LayerStateCoreAsync(TRhinoDocument document, RhinoLayerStateRequest request, CancellationToken cancellationToken);
+    protected abstract Task<RhinoPurgeResult> PurgeTableEntriesCoreAsync(TRhinoDocument document, PurgeTableEntriesRequest request, CancellationToken cancellationToken);
+    protected abstract Task<RhinoBatchMutationResult> MoveObjectsToLayerCoreAsync(TRhinoDocument document, MoveObjectsToLayerRequest request, CancellationToken cancellationToken);
 
     private TRhinoDocument Resolve(DocumentTarget target)
     {

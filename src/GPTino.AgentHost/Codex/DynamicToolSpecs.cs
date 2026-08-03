@@ -29,6 +29,11 @@ internal static class DynamicToolSpecs
         - Rhino create/modify/bake/attributes -> rhino.upsert {operationId,objectId,logicalEntityId,geometryType,geometryJson,attributesJson,expectedFingerprint}
         - deleteRhinoObject -> rhino.delete {operationId,objectId,expectedFingerprint}
         - fixRhinoEndpointPair -> rhino.fixEndpointPair {operationId,anchorObjectId,anchorEnd,moveObjectId,moveEnd,expectedAnchorFingerprint,expectedFingerprint,tolerance} — heals one audited near-miss pair: the anchor is declared as a READ (fingerprint from the audit finding), the move object is the single write; ends are 0=start/1=end; tolerance is the audit's reported value. Verified before the write — a failed strategy changes nothing.
+        - purgeTableEntries -> rhino.purgeTableEntries {operationId,entries:[{table:block|dimStyle|linetype|material,id}]} — deletes unused document-table entries; "unused" is re-verified live at execution, so an entry that gained a reference since the audit is refused. Declares no rhinoObject writes.
+        - moveObjectsToLayer -> rhino.moveObjectsToLayer {operationId,items:[{objectId,expectedFingerprint}],targetLayerId} — attribute-only batch (geometry untouched); this is ALSO the quarantine vehicle for invalid objects. Every item's objectId needs its own exact rhinoObject writeSet expectation whose fingerprint equals the item's.
+        - updateRhinoLayerProperties -> rhino.updateLayer {operationId,layerId,expectedFingerprint,argbColor?,visible?,locked?} — presentation only; rename/re-parent are NOT available (they rewrite descendant paths and break GH name filters). writeSet resource kind is rhinoLayer.
+        - deleteRhinoLayer -> rhino.deleteLayer {operationId,layerId,expectedFingerprint} — only an empty leaf layer (no objects incl. hidden and block members, no children, not current); emptiness is re-proved at execution. writeSet resource kind is rhinoLayer.
+        - saveRhinoLayerState -> rhino.layerState {operationId,action:save|restore|delete,name} — named layer states; save one BEFORE a layer sweep so the whole sweep is revertible without touching geometry. Declares no object/layer writes.
         - reads use {objectId} for canvas/Rhino or {componentId} for Wireify
         DECLARATIONS:
         - Every operation read needs a readSet fingerprint; every write needs an exact writeSet expectation. Unused expectations and payload-unrelated writes are rejected. Typed reads keep writes empty; a read-only ChangeSet keeps writeSet empty.
@@ -132,6 +137,20 @@ internal static class DynamicToolSpecs
                             limit = new { type = "integer", minimum = 1, maximum = 100, description = "Max findings; default 50." }
                         },
                         required = new[] { "kind" },
+                        additionalProperties = false
+                    }),
+                Function(
+                    "rhino_layers",
+                    "Read the bound Rhino document's full layer table (path, parent, color, visibility, lock, " +
+                    "object count including hidden and block members, whether it has children, per-layer " +
+                    "fingerprint) plus the saved named layer states. Read-only. Use it before any layer work: " +
+                    "the fingerprints are what layer updates and deletes must pin, and the object/children " +
+                    "counts are what prove a layer is safely deletable. Save a named layer state before a " +
+                    "layer sweep so the whole sweep can be reverted without touching geometry.",
+                    new
+                    {
+                        type = "object",
+                        properties = new { },
                         additionalProperties = false
                     }),
                 Function(
@@ -340,7 +359,9 @@ internal static class DynamicToolSpecs
                 "setLayout", "createRhinoObject", "modifyRhinoObject", "deleteRhinoObject",
                 "bakeGeometry", "updateRhinoAttributes", "setGroup",
                 "executePython", "readRuntimeMessages", "createRhinoPrimitive", "transformRhinoObject",
-                "referenceRhinoObjects", "fixRhinoEndpointPair"),
+                "referenceRhinoObjects", "fixRhinoEndpointPair", "purgeTableEntries",
+                "moveObjectsToLayer", "updateRhinoLayerProperties", "deleteRhinoLayer",
+                "saveRhinoLayerState"),
             owner = Enum("wireify", "cordyceps", "rhinoBridge"),
             reads = new { type = "array", items = ResourceAddressSchema() },
             writes = new { type = "array", items = ResourceAddressSchema() },

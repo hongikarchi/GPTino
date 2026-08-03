@@ -315,6 +315,12 @@ api.MapGet("/data-flow", async (
     CancellationToken cancellationToken) =>
     Results.Ok(await liveBackend.ReadDataFlowDetailAsync(doc, cancellationToken)));
 
+// Layer table + named layer states for the curator tab's layer view.
+api.MapGet("/layers", async (
+    LiveDocumentBackend liveBackend,
+    CancellationToken cancellationToken) =>
+    Results.Ok(await liveBackend.ReadRhinoLayersAsync(cancellationToken)));
+
 // Mints a user-approval grant for the audit card's Approve action: bound to exactly the
 // (objectId, fingerprint) pairs the user saw, expiring, and required before destructive ops can
 // touch objects without GPTino provenance stamps.

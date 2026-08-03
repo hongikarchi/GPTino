@@ -365,6 +365,24 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
         public Task<RhinoSceneMutationResult> FixEndpointPairAsync(DocumentTarget target, FixEndpointPairRequest request, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<RhinoLayerTableResult> ListLayersAsync(DocumentTarget target, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RhinoSceneMutationResult> UpdateLayerAsync(DocumentTarget target, UpdateRhinoLayerRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RhinoSceneMutationResult> DeleteLayerAsync(DocumentTarget target, DeleteRhinoLayerRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RhinoLayerStateResult> LayerStateAsync(DocumentTarget target, RhinoLayerStateRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RhinoPurgeResult> PurgeTableEntriesAsync(DocumentTarget target, PurgeTableEntriesRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RhinoBatchMutationResult> MoveObjectsToLayerAsync(DocumentTarget target, MoveObjectsToLayerRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         private static RhinoSceneObjectState State(Guid objectId) =>
             new(objectId, "logical", "Point", "{}", "{}", "fingerprint");
     }

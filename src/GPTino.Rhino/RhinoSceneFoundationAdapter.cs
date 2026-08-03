@@ -1703,8 +1703,494 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             fingerprint);
     }
 
+    protected override Task<RhinoLayerTableResult> ListLayersCoreAsync(
+        global::Rhino.RhinoDoc document,
+        CancellationToken cancellationToken)
+    {
+        // Object counts include hidden objects AND block-definition members: a layer holding only
+        // block geometry is in use, and deleteLayer's emptiness proof depends on this listing.
+        var objectCounts = new Dictionary<int, int>();
+        foreach (var rhinoObject in document.Objects.GetObjectList(
+                     AuditEnumerator(includeDefinitionMembers: true)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var index = rhinoObject.Attributes.LayerIndex;
+            objectCounts[index] = objectCounts.TryGetValue(index, out var count) ? count + 1 : 1;
+        }
+        var parentIds = new HashSet<Guid>();
+        foreach (var layer in document.Layers)
+        {
+            if (layer is not null && !layer.IsDeleted && layer.ParentLayerId != Guid.Empty)
+            {
+                parentIds.Add(layer.ParentLayerId);
+            }
+        }
+
+        var summaries = new List<RhinoLayerSummary>();
+        foreach (var layer in document.Layers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (layer is null || layer.IsDeleted)
+            {
+                continue;
+            }
+            summaries.Add(new RhinoLayerSummary(
+                layer.Id,
+                layer.FullPath,
+                layer.ParentLayerId,
+                layer.Index,
+                layer.Color.ToArgb(),
+                layer.IsVisible,
+                layer.IsLocked,
+                layer.Index == document.Layers.CurrentLayerIndex,
+                objectCounts.TryGetValue(layer.Index, out var objectCount) ? objectCount : 0,
+                parentIds.Contains(layer.Id),
+                LayerFingerprint(layer)));
+        }
+        var ordered = summaries
+            .OrderBy(summary => summary.FullPath, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var states = ReadLayerStateNames(document);
+        // The table fingerprint covers presence AND absence: adding or removing any layer changes
+        // it, which is what makes layerAbsent provable.
+        var fingerprint = Hash(
+            "layerTable\n" +
+            string.Join("\n", ordered.Select(layer => $"{layer.LayerId:D}:{layer.Fingerprint}")));
+        return Task.FromResult(new RhinoLayerTableResult(ordered, states, fingerprint));
+    }
+
+    private static IReadOnlyList<string> ReadLayerStateNames(global::Rhino.RhinoDoc document)
+    {
+        try
+        {
+            return document.NamedLayerStates.Names
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch
+        {
+            // Named layer states are a convenience surface; never fail a layer listing over them.
+            return Array.Empty<string>();
+        }
+    }
+
+    protected override Task<RhinoSceneMutationResult> UpdateLayerCoreAsync(
+        global::Rhino.RhinoDoc document,
+        UpdateRhinoLayerRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        RequireOperationId(request.OperationId);
+        if (request.LayerId == Guid.Empty || string.IsNullOrWhiteSpace(request.ExpectedFingerprint))
+        {
+            throw new InvalidOperationException("LayerId and ExpectedFingerprint are required for a layer update.");
+        }
+        if (request.ArgbColor is null && request.Visible is null && request.Locked is null)
+        {
+            throw new InvalidOperationException("A layer update must change at least one of color, visible, locked.");
+        }
+        var index = document.Layers.Find(request.LayerId, ignoreDeletedLayers: true, notFoundReturnValue: -1);
+        if (index < 0)
+        {
+            throw new KeyNotFoundException($"Rhino layer {request.LayerId:D} was not found.");
+        }
+        var layer = document.Layers[index];
+        var beforeFingerprint = LayerFingerprint(layer);
+        if (!string.Equals(beforeFingerprint, request.ExpectedFingerprint, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Rhino layer changed after the request snapshot.");
+        }
+
+        var undo = document.BeginUndoRecord($"GPTino: {request.OperationId}");
+        if (undo == 0)
+        {
+            throw new InvalidOperationException("Rhino could not start an undo record for the layer update.");
+        }
+        try
+        {
+            if (request.ArgbColor is { } argb)
+            {
+                layer.Color = System.Drawing.Color.FromArgb(argb);
+            }
+            if (request.Visible is { } visible)
+            {
+                layer.IsVisible = visible;
+            }
+            if (request.Locked is { } locked)
+            {
+                layer.IsLocked = locked;
+            }
+            // Layer property changes are immediate in Rhino 8 (CommitChanges is obsolete); the
+            // re-read below is the verification that they actually landed.
+            var after = document.Layers[index];
+            var afterFingerprint = LayerFingerprint(after);
+            if (string.Equals(afterFingerprint, beforeFingerprint, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Rhino did not apply any change to layer {request.LayerId:D}.");
+            }
+            document.Views.Redraw();
+            return Task.FromResult(new RhinoSceneMutationResult(
+                request.OperationId,
+                Changed: true,
+                beforeFingerprint,
+                afterFingerprint,
+                request.LayerId));
+        }
+        finally
+        {
+            document.EndUndoRecord(undo);
+        }
+    }
+
+    protected override Task<RhinoSceneMutationResult> DeleteLayerCoreAsync(
+        global::Rhino.RhinoDoc document,
+        DeleteRhinoLayerRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        RequireOperationId(request.OperationId);
+        if (request.LayerId == Guid.Empty || string.IsNullOrWhiteSpace(request.ExpectedFingerprint))
+        {
+            throw new InvalidOperationException("LayerId and ExpectedFingerprint are required for a layer delete.");
+        }
+        var index = document.Layers.Find(request.LayerId, ignoreDeletedLayers: true, notFoundReturnValue: -1);
+        if (index < 0)
+        {
+            throw new KeyNotFoundException($"Rhino layer {request.LayerId:D} was not found.");
+        }
+        var layer = document.Layers[index];
+        var beforeFingerprint = LayerFingerprint(layer);
+        if (!string.Equals(beforeFingerprint, request.ExpectedFingerprint, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Rhino layer changed after the request snapshot.");
+        }
+        // Emptiness is re-proved here, not taken from the audit: hidden objects and block members
+        // count, children count, and the current layer is never deletable.
+        if (index == document.Layers.CurrentLayerIndex)
+        {
+            throw new InvalidOperationException($"Layer '{layer.FullPath}' is the current layer and cannot be deleted.");
+        }
+        foreach (var candidate in document.Layers)
+        {
+            if (candidate is not null && !candidate.IsDeleted && candidate.ParentLayerId == layer.Id)
+            {
+                throw new InvalidOperationException(
+                    $"Layer '{layer.FullPath}' has child layers; delete or re-parent them first.");
+            }
+        }
+        foreach (var rhinoObject in document.Objects.GetObjectList(
+                     AuditEnumerator(includeDefinitionMembers: true)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rhinoObject.Attributes.LayerIndex == index)
+            {
+                throw new InvalidOperationException(
+                    $"Layer '{layer.FullPath}' still holds objects (including hidden or block members).");
+            }
+        }
+
+        var undo = document.BeginUndoRecord($"GPTino: {request.OperationId}");
+        if (undo == 0)
+        {
+            throw new InvalidOperationException("Rhino could not start an undo record for the layer delete.");
+        }
+        try
+        {
+            if (!document.Layers.Delete(index, quiet: true))
+            {
+                throw new InvalidOperationException($"Rhino could not delete layer '{layer.FullPath}'.");
+            }
+            // Absence is verified, not assumed — the deleted-layer lookup must now fail.
+            if (document.Layers.Find(request.LayerId, ignoreDeletedLayers: true, notFoundReturnValue: -1) >= 0)
+            {
+                throw new InvalidOperationException(
+                    $"Rhino reported success but layer {request.LayerId:D} is still present.");
+            }
+            document.Views.Redraw();
+            return Task.FromResult(new RhinoSceneMutationResult(
+                request.OperationId,
+                Changed: true,
+                beforeFingerprint,
+                null,
+                request.LayerId));
+        }
+        finally
+        {
+            document.EndUndoRecord(undo);
+        }
+    }
+
+    protected override Task<RhinoLayerStateResult> LayerStateCoreAsync(
+        global::Rhino.RhinoDoc document,
+        RhinoLayerStateRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        RequireOperationId(request.OperationId);
+        if (string.IsNullOrWhiteSpace(request.Name))
+        {
+            throw new InvalidOperationException("A layer state name is required.");
+        }
+        var name = request.Name.Trim();
+        var action = (request.Action ?? string.Empty).Trim().ToLowerInvariant();
+        var states = document.NamedLayerStates;
+
+        var undo = document.BeginUndoRecord($"GPTino: {request.OperationId}");
+        if (undo == 0)
+        {
+            throw new InvalidOperationException("Rhino could not start an undo record for the layer state.");
+        }
+        try
+        {
+            switch (action)
+            {
+                case "save":
+                    // Save overwrites an existing state of the same name — that is the intended
+                    // "refresh my checkpoint" behavior.
+                    if (states.Save(name) < 0)
+                    {
+                        throw new InvalidOperationException($"Rhino could not save layer state '{name}'.");
+                    }
+                    break;
+                case "restore":
+                    if (states.FindName(name) < 0)
+                    {
+                        throw new KeyNotFoundException($"Layer state '{name}' does not exist.");
+                    }
+                    // Restore everything the state captured: a partial restore would make the
+                    // checkpoint a half-truth ("layers restored" while lock/visibility drifted).
+                    if (!states.Restore(name, global::Rhino.DocObjects.Tables.RestoreLayerProperties.All))
+                    {
+                        throw new InvalidOperationException($"Rhino could not restore layer state '{name}'.");
+                    }
+                    break;
+                case "delete":
+                    if (states.FindName(name) < 0)
+                    {
+                        throw new KeyNotFoundException($"Layer state '{name}' does not exist.");
+                    }
+                    if (!states.Delete(name))
+                    {
+                        throw new InvalidOperationException($"Rhino could not delete layer state '{name}'.");
+                    }
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unknown layer-state action '{request.Action}'. Use save|restore|delete.");
+            }
+            document.Views.Redraw();
+            var remaining = ReadLayerStateNames(document);
+            return Task.FromResult(new RhinoLayerStateResult(
+                request.OperationId,
+                action,
+                name,
+                remaining,
+                Hash($"layerStates\n{string.Join("\n", remaining)}")));
+        }
+        finally
+        {
+            document.EndUndoRecord(undo);
+        }
+    }
+
+    protected override Task<RhinoPurgeResult> PurgeTableEntriesCoreAsync(
+        global::Rhino.RhinoDoc document,
+        PurgeTableEntriesRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        RequireOperationId(request.OperationId);
+        if (request.Entries is null || request.Entries.Count == 0)
+        {
+            throw new InvalidOperationException("At least one table entry is required for a purge.");
+        }
+
+        var undo = document.BeginUndoRecord($"GPTino: {request.OperationId}");
+        if (undo == 0)
+        {
+            throw new InvalidOperationException("Rhino could not start an undo record for the purge.");
+        }
+        var purged = new List<PurgedTableEntry>();
+        try
+        {
+            foreach (var entry in request.Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var table = (entry.Table ?? string.Empty).Trim().ToLowerInvariant();
+                switch (table)
+                {
+                    case "block":
+                    {
+                        var definition = document.InstanceDefinitions.FindId(entry.Id)
+                            ?? throw new KeyNotFoundException($"Block definition {entry.Id:D} was not found.");
+                        // Re-verified at execution: an entry that gained a reference since the
+                        // audit is refused rather than purged on the audit's word.
+                        if (definition.InUse(1) || definition.InUse(2))
+                        {
+                            throw new InvalidOperationException(
+                                $"Block definition '{definition.Name}' is in use and cannot be purged.");
+                        }
+                        var name = definition.Name;
+                        // (index, deleteOnlyIfReferenced: false, quiet: true) — the InUse checks
+                        // above are the authority on "unused"; this call must not silently skip.
+                        if (!document.InstanceDefinitions.Delete(definition.Index, false, true))
+                        {
+                            throw new InvalidOperationException($"Rhino could not purge block definition '{name}'.");
+                        }
+                        purged.Add(new PurgedTableEntry("block", entry.Id, name));
+                        break;
+                    }
+                    case "dimstyle":
+                    {
+                        var style = document.DimStyles.FindId(entry.Id)
+                            ?? throw new KeyNotFoundException($"Dimension style {entry.Id:D} was not found.");
+                        var name = style.Name;
+                        if (!document.DimStyles.Delete(style.Index, quiet: true))
+                        {
+                            throw new InvalidOperationException(
+                                $"Rhino could not purge dimension style '{name}' (it may still be in use).");
+                        }
+                        purged.Add(new PurgedTableEntry("dimStyle", entry.Id, name));
+                        break;
+                    }
+                    case "linetype":
+                    {
+                        var linetype = document.Linetypes.FindId(entry.Id)
+                            ?? throw new KeyNotFoundException($"Linetype {entry.Id:D} was not found.");
+                        var name = linetype.Name;
+                        if (!document.Linetypes.Delete(linetype.Index, quiet: true))
+                        {
+                            throw new InvalidOperationException(
+                                $"Rhino could not purge linetype '{name}' (it may still be in use).");
+                        }
+                        purged.Add(new PurgedTableEntry("linetype", entry.Id, name));
+                        break;
+                    }
+                    case "material":
+                    {
+                        var material = document.Materials.FindId(entry.Id)
+                            ?? throw new KeyNotFoundException($"Material {entry.Id:D} was not found.");
+                        var name = material.Name ?? string.Empty;
+                        if (!document.Materials.Delete(material))
+                        {
+                            throw new InvalidOperationException(
+                                $"Rhino could not purge material '{name}' (it may still be in use).");
+                        }
+                        purged.Add(new PurgedTableEntry("material", entry.Id, name));
+                        break;
+                    }
+                    default:
+                        throw new InvalidOperationException(
+                            $"Unknown purge table '{entry.Table}'. Use block|dimStyle|linetype|material.");
+                }
+            }
+            document.Views.Redraw();
+            return Task.FromResult(new RhinoPurgeResult(
+                request.OperationId,
+                purged,
+                Hash($"purge\n{string.Join("\n", purged.Select(item => $"{item.Table}:{item.Id:D}"))}")));
+        }
+        finally
+        {
+            document.EndUndoRecord(undo);
+        }
+    }
+
+    protected override Task<RhinoBatchMutationResult> MoveObjectsToLayerCoreAsync(
+        global::Rhino.RhinoDoc document,
+        MoveObjectsToLayerRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        RequireOperationId(request.OperationId);
+        if (request.Items is null || request.Items.Count == 0)
+        {
+            throw new InvalidOperationException("At least one object is required for a layer move.");
+        }
+        if (request.TargetLayerId == Guid.Empty)
+        {
+            throw new InvalidOperationException("TargetLayerId is required for a layer move.");
+        }
+        var layerIndex = document.Layers.Find(request.TargetLayerId, ignoreDeletedLayers: true, notFoundReturnValue: -1);
+        if (layerIndex < 0)
+        {
+            throw new KeyNotFoundException($"Target Rhino layer {request.TargetLayerId:D} was not found.");
+        }
+
+        // Everything is validated BEFORE the first write: a half-applied batch would leave the
+        // ChangeSet's per-object expectations partially true with no honest way to report it.
+        var prepared = new List<(RhinoObject Object, string BeforeFingerprint)>(request.Items.Count);
+        foreach (var item in request.Items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (item.ObjectId == Guid.Empty || string.IsNullOrWhiteSpace(item.ExpectedFingerprint))
+            {
+                throw new InvalidOperationException("Each layer-move item needs an objectId and expectedFingerprint.");
+            }
+            var rhinoObject = document.Objects.FindId(item.ObjectId)
+                ?? throw new KeyNotFoundException($"Rhino object {item.ObjectId:D} was not found.");
+            var before = ToState(rhinoObject);
+            if (!string.Equals(before.Fingerprint, item.ExpectedFingerprint, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Rhino object {item.ObjectId:D} changed after the request snapshot.");
+            }
+            RequireProvenanceOrApproval(rhinoObject, request.Approved, "moving");
+            prepared.Add((rhinoObject, before.Fingerprint));
+        }
+
+        var undo = document.BeginUndoRecord($"GPTino: {request.OperationId}");
+        if (undo == 0)
+        {
+            throw new InvalidOperationException("Rhino could not start an undo record for the layer move.");
+        }
+        try
+        {
+            var results = new List<BatchMutationItem>(prepared.Count);
+            foreach (var (rhinoObject, beforeFingerprint) in prepared)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var attributes = rhinoObject.Attributes.Duplicate();
+                attributes.LayerIndex = layerIndex;
+                if (!document.Objects.ModifyAttributes(rhinoObject, attributes, quiet: true))
+                {
+                    throw new InvalidOperationException(
+                        $"Rhino could not move object {rhinoObject.Id:D} to the target layer.");
+                }
+                var afterObject = document.Objects.FindId(rhinoObject.Id)
+                    ?? throw new InvalidOperationException(
+                        $"Rhino object {rhinoObject.Id:D} disappeared after the layer move.");
+                results.Add(new BatchMutationItem(
+                    rhinoObject.Id,
+                    beforeFingerprint,
+                    ToState(afterObject).Fingerprint));
+            }
+            document.Views.Redraw();
+            return Task.FromResult(new RhinoBatchMutationResult(
+                request.OperationId,
+                Changed: results.Count > 0,
+                results,
+                Hash($"moveToLayer\n{request.TargetLayerId:D}\n" +
+                    string.Join("\n", results.Select(item => $"{item.ObjectId:D}:{item.AfterFingerprint}")))));
+        }
+        finally
+        {
+            document.EndUndoRecord(undo);
+        }
+    }
+
+    // Widened beyond identity+color: visibility, lock, material and linetype are exactly the
+    // fields layer updates change, and a fingerprint that ignored them could not prove a layer
+    // was unchanged since it was inspected (the reason layer mutation stayed reserved).
     private static string LayerFingerprint(Layer layer) => Hash(
-        $"{layer.Id:D}\n{layer.FullPath}\n{layer.ParentLayerId:D}\n{layer.Color.ToArgb()}");
+        $"{layer.Id:D}\n{layer.FullPath}\n{layer.ParentLayerId:D}\n{layer.Color.ToArgb()}\n" +
+        $"{layer.IsVisible}\n{layer.IsLocked}\n{layer.RenderMaterialIndex}\n{layer.LinetypeIndex}");
 
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();

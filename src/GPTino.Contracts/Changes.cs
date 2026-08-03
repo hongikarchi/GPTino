@@ -36,6 +36,14 @@ public enum OperationKind
     TransformRhinoObject,
     ReferenceRhinoObjects,
     FixRhinoEndpointPair,
+    // Phase 4/5 curator surface. UpdateRhinoLayer above stays reserved (it bundled rename and
+    // re-parent, whose descendant-path rewrites are still out of scope); these are the narrow,
+    // provable operations that replace it.
+    PurgeTableEntries,
+    MoveObjectsToLayer,
+    UpdateRhinoLayerProperties,
+    DeleteRhinoLayer,
+    SaveRhinoLayerState,
 }
 
 public sealed record ResourceExpectation(

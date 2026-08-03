@@ -341,6 +341,9 @@ public sealed class DynamicToolDispatcherTests
         public Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken) =>
             Task.FromResult<object>(new { kind = "purgeCandidates", findings = Array.Empty<object>() });
 
+        public Task<object> ReadRhinoLayersAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<object>(new { layers = Array.Empty<object>(), namedLayerStates = Array.Empty<string>() });
+
         public Task StopCurrentAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

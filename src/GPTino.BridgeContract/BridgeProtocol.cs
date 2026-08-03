@@ -16,7 +16,7 @@ public static class BridgeProtocol
     // v7: CanvasObjectState gained BoundsOrigin (bounds top-left) feeding deterministic component
     //     auto-placement. It is EXCLUDED from every fingerprint, so it never churns the revision;
     //     the bump only guards the wire shape against a stale AgentHost, as SampleValues did in v4.
-    public const int Version = 9;
+    public const int Version = 10;
 
     public const int DefaultMaximumFrameBytes = 8 * 1024 * 1024;
 
