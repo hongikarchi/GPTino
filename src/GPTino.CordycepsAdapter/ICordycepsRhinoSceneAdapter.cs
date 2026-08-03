@@ -217,7 +217,10 @@ public sealed record RhinoAuditFinding(
     IReadOnlyList<string> Fingerprints,
     double? Measure,
     string Detail,
-    IReadOnlyList<string> ProposedFixes);
+    IReadOnlyList<string> ProposedFixes,
+    // nearMissEndpoints only: which end of each object (0=start, 1=end), parallel to ObjectIds —
+    // fixEndpointPair REQUIRES these; prose in Detail is not machine-readable.
+    IReadOnlyList<int>? EndIndices = null);
 
 public sealed record RhinoAuditResult(
     string Kind,

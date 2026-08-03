@@ -13,6 +13,8 @@ interface AuditCardProps {
   onClose(): void;
   /** False renders report-only (no checkboxes/Approve) — for kinds whose fix ops ship later. */
   approvable?: boolean;
+  /** True while the curator is busy/paused — Approve would mint a grant no turn could consume. */
+  busy?: boolean;
 }
 
 const KIND_TITLES: Record<RhinoAuditKind, string> = {
@@ -26,7 +28,7 @@ const KIND_TITLES: Record<RhinoAuditKind, string> = {
  * Approve action that mints a grant for exactly what was seen. This is the approve-what-you-saw
  * surface — the same card contract Plan mode's approval flow reuses.
  */
-export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = true }: AuditCardProps) {
+export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = true, busy = false }: AuditCardProps) {
   const [result, setResult] = useState<RhinoAuditResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -107,7 +109,10 @@ export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = tru
                   {finding.kind === "nearDuplicates" && (checked[finding.findingId] ?? false) ? (
                     <div className="audit-card-keep" role="radiogroup" aria-label="Which copy to keep">
                       {[true, false].map((first) => (
-                        <label key={String(first)}>
+                        <label
+                          key={String(first)}
+                          title={first ? finding.objectIds[0] : finding.objectIds[1]}
+                        >
                           <input
                             type="radio"
                             name={`keep-${finding.findingId}`}
@@ -129,19 +134,25 @@ export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = tru
                 <button
                   type="button"
                   className="secondary-button"
-                  disabled={approved.length === 0 || approving}
+                  disabled={approved.length === 0 || approving || busy}
+                  title={busy ? "The curator session is busy or paused" : undefined}
                   onClick={() => {
                     setApproving(true);
-                    void onApprove(result, approved, keepFirst).finally(() => {
-                      setApproving(false);
-                      onClose();
-                    });
+                    setError(null);
+                    // The card closes ONLY on success; a failed mint/send keeps it open with the
+                    // error visible — silently losing an approval is worse than asking again.
+                    onApprove(result, approved, keepFirst)
+                      .then(() => onClose())
+                      .catch((cause) => {
+                        setError(cause instanceof Error ? cause.message : String(cause));
+                      })
+                      .finally(() => setApproving(false));
                   }}
                 >
                   {approving ? "Approving…" : `Approve ${approved.length} fix${approved.length === 1 ? "" : "es"}`}
                 </button>
                 <span className="audit-card-meta">
-                  Approval covers exactly these findings at their audited fingerprints.
+                  Approval covers exactly the fixes' write targets at their audited fingerprints.
                 </span>
               </footer>
             ) : (

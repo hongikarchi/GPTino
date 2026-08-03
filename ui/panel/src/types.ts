@@ -125,6 +125,8 @@ export interface RhinoAuditFinding {
   measure?: number | null;
   detail: string;
   proposedFixes: string[];
+  /** nearMissEndpoints: which end of each object (0=start, 1=end), parallel to objectIds. */
+  endIndices?: number[] | null;
 }
 
 /** Server-computed audit (GET /audit): detection is deterministic server code, never the model. */

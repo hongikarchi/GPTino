@@ -187,8 +187,10 @@ export default function App() {
     });
   // Drawer target: undefined = closed; null = the only/legacy doc; string = explicit docKey.
   const [dataFlowDocId, setDataFlowDocId] = useState<string | null | undefined>(undefined);
-  // Open audit approval card on the curator tab (null = closed).
+  // Open audit approval card on the curator tab (null = closed). The nonce forces a fresh scan
+  // when the same preset is clicked again (the card remounts).
   const [auditKind, setAuditKind] = useState<RhinoAuditKind | null>(null);
+  const [auditNonce, setAuditNonce] = useState(0);
   // [Model | Curator] view switch inside the one panel: the tab is presentation only — the
   // curator underneath is an ordinary session flowing through the same broker.
   const [tab, setTab] = useState<"model" | "curator">(() => {
@@ -299,6 +301,12 @@ export default function App() {
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
   const modelUnread = modelSessions.some((session) => completion.unseen.has(session.id));
   const curatorUnread = curatorSession != null && completion.unseen.has(curatorSession.id);
+  const curatorBusy =
+    curatorSession?.status === "working" ||
+    curatorSession?.status === "drafting" ||
+    curatorSession?.status === "verifying" ||
+    curatorSession?.status === "queued" ||
+    curatorSession?.paused === true;
   const openSession = (id: string) => {
     if (curatorSession && id === curatorSession.id) {
       switchTab("curator");
@@ -543,46 +551,58 @@ export default function App() {
       </main>
       <main className="chat-region curator-region" hidden={tab !== "curator"}>
           <CuratorActions
-            busy={
-              curatorSession?.status === "working" ||
-              curatorSession?.status === "drafting" ||
-              curatorSession?.status === "verifying" ||
-              curatorSession?.status === "queued" ||
-              curatorSession?.paused === true
-            }
+            busy={curatorBusy}
             onRun={(prompt) => {
               if (!curatorSession) return;
               requestNotifyPermissionOnce();
               void actions.sendMessage(curatorSession.id, prompt);
             }}
-            onAudit={setAuditKind}
+            onAudit={(kind) => {
+              setAuditKind(kind);
+              setAuditNonce((nonce) => nonce + 1);
+            }}
           />
           {auditKind ? (
             <AuditCard
+              key={`${auditKind}-${auditNonce}`}
               kind={auditKind}
               runAudit={actions.getAudit}
               approvable={auditKind !== "purgeCandidates"}
+              busy={curatorBusy}
               onClose={() => setAuditKind(null)}
               onApprove={async (result, approved, keepFirst) => {
-                if (!curatorSession) return;
-                // Approve-what-you-saw: the grant binds exactly the (objectId, fingerprint)
-                // pairs shown on the card; the curator carries the grant into change_submit.
-                const items = approved.flatMap((finding) =>
-                  finding.objectIds.map((objectId, index) => ({
+                if (!curatorSession) {
+                  throw new Error("No curator session is available to apply the fixes.");
+                }
+                // Approve-what-you-saw, NARROWLY: the grant covers only the objects an approved
+                // fix may write. The endpoint-fix anchor and the duplicate copy the user chose to
+                // KEEP stay uncovered — a confused fix targeting them is denied, not approved.
+                const items = approved.flatMap((finding) => {
+                  if (finding.kind === "nearMissEndpoints") {
+                    return [{ objectId: finding.objectIds[1], fingerprint: finding.fingerprints[1] ?? "" }];
+                  }
+                  if (finding.kind === "nearDuplicates") {
+                    const remove = (keepFirst[finding.findingId] ?? true) ? 1 : 0;
+                    return [
+                      { objectId: finding.objectIds[remove], fingerprint: finding.fingerprints[remove] ?? "" },
+                    ];
+                  }
+                  return finding.objectIds.map((objectId, index) => ({
                     objectId,
                     fingerprint: finding.fingerprints[index] ?? "",
-                  })),
-                );
+                  }));
+                });
                 const grant = await actions.mintApprovalGrant(items);
                 const lines = approved
                   .map((finding) => {
                     if (finding.kind === "nearDuplicates") {
                       const keep = (keepFirst[finding.findingId] ?? true) ? 0 : 1;
                       const remove = keep === 0 ? 1 : 0;
-                      return `- ${finding.findingId}: DELETE duplicate ${finding.objectIds[remove]} and KEEP ${finding.objectIds[keep]} (deleteRhinoObject with the audited fingerprint).`;
+                      return `- ${finding.findingId}: DELETE duplicate ${finding.objectIds[remove]} and KEEP ${finding.objectIds[keep]} (deleteRhinoObject with the audited fingerprint; the grant covers only the deleted copy).`;
                     }
                     if (finding.kind === "nearMissEndpoints") {
-                      return `- ${finding.findingId}: heal the endpoint gap (${finding.measure}) between anchor ${finding.objectIds[0]} and move-target ${finding.objectIds[1]} via fixRhinoEndpointPair (audited fingerprints).`;
+                      const ends = finding.endIndices ?? [];
+                      return `- ${finding.findingId}: heal the endpoint gap (${finding.measure}) via fixRhinoEndpointPair: anchorObjectId=${finding.objectIds[0]}, anchorEnd=${ends[0] ?? 0}, moveObjectId=${finding.objectIds[1]}, moveEnd=${ends[1] ?? 0}; declare the anchor in the readSet with its audited fingerprint.`;
                     }
                     return `- ${finding.findingId}: ${finding.detail}`;
                   })

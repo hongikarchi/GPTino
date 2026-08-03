@@ -450,6 +450,73 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         return new { grantId, expiresAt };
     }
 
+    /// <summary>
+    /// The fix op verifies the anchor's audited fingerprint at execution; another operation in the
+    /// SAME ChangeSet writing that anchor would invalidate it mid-batch, and the writes-vs-writes
+    /// overlap rules do not see read/write collisions.
+    /// </summary>
+    internal static void RejectWritesOnEndpointFixAnchors(ChangeSet changeSet)
+    {
+        var anchorIds = changeSet.Operations
+            .Where(operation => operation.Kind == OperationKind.FixRhinoEndpointPair)
+            .SelectMany(operation => operation.Reads
+                .Where(read => read.Kind == ResourceKind.RhinoObject)
+                .Select(read => read.Id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (anchorIds.Count == 0)
+        {
+            return;
+        }
+        foreach (var operation in changeSet.Operations)
+        {
+            foreach (var write in operation.Writes)
+            {
+                if (write.Kind == ResourceKind.RhinoObject && anchorIds.Contains(write.Id))
+                {
+                    throw new InvalidOperationException(
+                        $"Operation '{operation.OperationId}' writes Rhino object {write.Id}, which " +
+                        "another operation in this ChangeSet uses as an endpoint-fix ANCHOR; the " +
+                        "anchor's audited fingerprint would be invalidated mid-batch. Submit the " +
+                        "anchor write in a separate ChangeSet.");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// An approval is consent for ONE application: once the covered objects' destructive writes
+    /// commit, the grant stops covering them — a user Undo restores the audited fingerprints, and
+    /// an unconsumed grant would let a replay override that human revert without fresh consent.
+    /// </summary>
+    private void ConsumeApprovalGrant(LiveJobEntry entry)
+    {
+        if (entry.ApprovalGrantId is null || entry.ApprovalItems is null ||
+            !_approvalGrants.TryGetValue(entry.ApprovalGrantId, out var grant))
+        {
+            return;
+        }
+        var writtenObjectIds = entry.Job.ChangeSet.WriteSet
+            .Where(expectation => expectation.Resource.Kind == ResourceKind.RhinoObject)
+            .Select(expectation => Guid.TryParse(expectation.Resource.Id, out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        if (writtenObjectIds.Count == 0)
+        {
+            return;
+        }
+        var remaining = grant.Items
+            .Where(item => !writtenObjectIds.Contains(item.Key))
+            .ToDictionary(item => item.Key, item => item.Value);
+        if (remaining.Count == 0)
+        {
+            _approvalGrants.TryRemove(grant.GrantId, out _);
+        }
+        else
+        {
+            _approvalGrants[grant.GrantId] = grant with { Items = remaining };
+        }
+    }
+
     private IReadOnlyDictionary<Guid, string>? ResolveApprovalGrant(string? grantId)
     {
         if (string.IsNullOrWhiteSpace(grantId))
@@ -1059,14 +1126,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             throw new InvalidOperationException("idempotencyKey cannot exceed 128 characters.");
         }
 
-        // Resolve the optional user-approval grant NOW (approve-what-you-saw): an unknown or
-        // expired grant fails the submit with a teaching message instead of a later silent deny.
-        // The resolved (objectId -> fingerprint) items ride the in-memory job entry only — jobs
-        // never execute after a restart (interrupted ones become RecoveryRequired), so grants
-        // need no durability.
-        var approvalItems = ResolveApprovalGrant(changeSet.ApprovalGrantId);
-
         ValidateChangeSet(changeSet, session);
+        RejectWritesOnEndpointFixAnchors(changeSet);
         var draftOperations = await PreflightDraftOperationsAsync(
             session.Id,
             changeSet,
@@ -1102,6 +1163,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 elapsed,
                 cancellationToken).ConfigureAwait(false);
         }
+
+        // Resolve the optional user-approval grant AFTER the duplicate fast path (like the target
+        // below): a matching request hash proves the request was already accepted with a
+        // then-valid grant, so an idempotent replay keeps answering even after grant expiry or a
+        // restart wiped the in-memory registry. An unknown/expired grant on a FRESH submit still
+        // fails with the teaching message. Items ride the in-memory job entry only — interrupted
+        // jobs never execute after a restart (they become RecoveryRequired).
+        var approvalItems = ResolveApprovalGrant(changeSet.ApprovalGrantId);
 
         // Session -> Grasshopper document resolution happens once at submit and is frozen into the
         // job (durably, for restart recovery): the queue and executor never re-derive it. Resolved
@@ -1197,6 +1266,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     targetState.DocKey)
                 {
                     ApprovalItems = approvalItems,
+                    ApprovalGrantId = changeSet.ApprovalGrantId,
                 };
                 DurableJobInsertResult insert;
                 try
@@ -1822,6 +1892,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             // summaries in the background (the refresh takes the read gate itself, so it waits for
             // this write epoch to release rather than extending it).
             ScheduleDataFlowRefresh();
+            ConsumeApprovalGrant(entry);
             return new JobExecutionResult(
                 job.JobId,
                 JobState.Committed,
@@ -6524,8 +6595,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
             case "rhino.fixEndpointPair":
                 // The write expectation must pin the MOVE object at its audited fingerprint; the
-                // anchor's declared read expectation is validated by snapshot conflict detection,
-                // and the adapter re-verifies both fingerprints at execution.
+                // adapter re-verifies both fingerprints at execution.
                 RequirePayloadFingerprint(
                     changeSet,
                     operation,
@@ -6533,6 +6603,29 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                         ResourceKind.RhinoObject,
                         RequireArgumentGuid(arguments, "moveObjectId", operation.OperationId).ToString("D")),
                     RequireArgumentString(arguments, "expectedFingerprint", operation.OperationId));
+                // The ANCHOR must have a declared readSet expectation, and a concrete declared
+                // fingerprint must match the payload's — the same submit-time teaching the move
+                // side gets, instead of a late execution failure. A gptino:auto declaration is
+                // allowed (the server resolves it; the adapter still verifies the concrete value).
+                var anchorResource = new ResourceAddress(
+                    ResourceKind.RhinoObject,
+                    RequireArgumentGuid(arguments, "anchorObjectId", operation.OperationId).ToString("D"));
+                var anchorExpectation = FindExpectation(changeSet.ReadSet, anchorResource)
+                    ?? throw new InvalidOperationException(
+                        $"Operation '{operation.OperationId}' requires a readSet expectation for its " +
+                        "endpoint-fix anchor (the audited anchor fingerprint).");
+                var anchorPayload = RequireArgumentString(
+                    arguments, "expectedAnchorFingerprint", operation.OperationId);
+                if (!string.Equals(
+                        anchorExpectation.ExpectedFingerprint,
+                        ResourceExpectation.AutoFingerprint,
+                        StringComparison.Ordinal) &&
+                    !string.Equals(anchorExpectation.ExpectedFingerprint, anchorPayload, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Operation '{operation.OperationId}' anchor fingerprint does not match its " +
+                        "declared readSet expectation; use the audited fingerprint in both.");
+                }
                 return;
 
             case "rhino.upsert":
@@ -7148,6 +7241,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         /// never execute after a restart, so grants need no durability.
         /// </summary>
         public IReadOnlyDictionary<Guid, string>? ApprovalItems { get; init; }
+
+        /// <summary>Source grant id, so a committed job can consume its covered objects.</summary>
+        public string? ApprovalGrantId { get; init; }
         public string Summary { get; } = summary;
         public string IdempotencyKey { get; } = idempotencyKey;
         public string RequestHash { get; } = requestHash;

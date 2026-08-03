@@ -336,7 +336,8 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 pair.Gap,
                 $"Curve endpoints {pair.Gap:G4} apart (doc tolerance {tolerance:G4}): " +
                 $"end {pair.EndA} of {pair.A:D} vs end {pair.EndB} of {pair.B:D}.",
-                new[] { "extendToIntersection", "setEndPoint", "averageMove" }))
+                new[] { "setEndPoint" },
+                new[] { pair.EndA, pair.EndB }))
             .ToList();
         if (findings.Count > limit)
         {
@@ -1089,29 +1090,40 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             {
                 throw new InvalidOperationException("Rhino could not start an undo record for the endpoint fix.");
             }
-            if (!document.Objects.Replace(new ObjRef(document, moveObject.Id), healed))
+            try
             {
-                throw new InvalidOperationException(
-                    $"Rhino could not replace curve {request.MoveObjectId:D} with the healed geometry.");
-            }
-            var afterObject = document.Objects.FindId(request.MoveObjectId)
-                ?? throw new InvalidOperationException("Rhino object disappeared after the endpoint fix.");
-            var after = ToState(afterObject);
-            document.Views.Redraw();
-            return Task.FromResult(new RhinoSceneMutationResult(
-                request.OperationId,
-                Changed: true,
-                before.Fingerprint,
-                after.Fingerprint,
-                request.MoveObjectId,
-                after,
-                new[]
+                // Guid-based Replace overload (like TransformObjectCoreAsync) — the ObjRef
+                // overload would leave a native CRhinoObjRef to the finalizer.
+                if (!document.Objects.Replace(moveObject.Id, healed))
                 {
-                    new BridgeDiagnostic(
-                        BridgeDiagnosticSeverity.Information,
-                        "endpoint_fix_verified",
-                        $"Endpoint gap closed to {resultingGap:G4} (tolerance {tolerance:G4}).")
-                }));
+                    throw new InvalidOperationException(
+                        $"Rhino could not replace curve {request.MoveObjectId:D} with the healed geometry.");
+                }
+                var afterObject = document.Objects.FindId(request.MoveObjectId)
+                    ?? throw new InvalidOperationException("Rhino object disappeared after the endpoint fix.");
+                var after = ToState(afterObject);
+                document.Views.Redraw();
+                return Task.FromResult(new RhinoSceneMutationResult(
+                    request.OperationId,
+                    Changed: true,
+                    before.Fingerprint,
+                    after.Fingerprint,
+                    request.MoveObjectId,
+                    after,
+                    new[]
+                    {
+                        new BridgeDiagnostic(
+                            BridgeDiagnosticSeverity.Information,
+                            "endpoint_fix_verified",
+                            $"Endpoint gap closed to {resultingGap:G4} (tolerance {tolerance:G4}).")
+                    }));
+            }
+            finally
+            {
+                // An orphaned open record would swallow the user's later edits into this undo step
+                // AND make every subsequent GPTino mutation hard-fail on BeginUndoRecord == 0.
+                document.EndUndoRecord(undo);
+            }
         }
         finally
         {
