@@ -56,6 +56,11 @@ public sealed record CreateSessionRequest(
 /// </summary>
 public sealed record SetSessionTargetRequest(string? GrasshopperDoc = null);
 
+/// <summary>One (objectId, fingerprint) pair the approval card displayed.</summary>
+public sealed record ApprovalGrantItem(Guid ObjectId, string Fingerprint);
+
+public sealed record MintApprovalGrantRequest(IReadOnlyList<ApprovalGrantItem> Items);
+
 public sealed record ReorderSessionsRequest(
     IReadOnlyList<Guid> OrderedSessionIds,
     long OrderVersion);

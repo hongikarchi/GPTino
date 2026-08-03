@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient, createMockApiClient, type GptinoApiClient } from "../api/client";
 import { moveById, shiftById } from "../order";
-import type { MessageAttachment, ModelInfo, ModelProfile, RuntimeState, SessionMode } from "../types";
+import type { MessageAttachment, ModelInfo, ModelProfile, RhinoAuditKind, RuntimeState, SessionMode } from "../types";
 
 type OptimisticUpdate = (current: RuntimeState) => RuntimeState;
 
@@ -151,6 +151,16 @@ export function useRuntime() {
     (docId?: string | null) => clientRef.current!.getDataFlowDetail(docId),
     [],
   );
+  // The audit card keys its fetch effect on this — stable identity required.
+  const getAudit = useCallback(
+    (kind: RhinoAuditKind, options?: { tolerance?: number; bandFactor?: number; limit?: number }) =>
+      clientRef.current!.getAudit(kind, options),
+    [],
+  );
+  const mintApprovalGrant = useCallback(
+    (items: { objectId: string; fingerprint: string }[]) => clientRef.current!.mintApprovalGrant(items),
+    [],
+  );
   const readArchiveMessages = useCallback(
     (fingerprint: string, sessionId: string, limit?: number) =>
       clientRef.current!.readArchiveMessages(fingerprint, sessionId, limit),
@@ -290,6 +300,8 @@ export function useRuntime() {
       listArchive,
       readArchiveMessages,
       getDataFlowDetail,
+      getAudit,
+      mintApprovalGrant,
       // Import mutates runtime state (a new session appears), so — unlike the read-only archive
       // callbacks — it goes through runAction whose post-action getRuntime() pulls the new session in.
       importArchiveSession(fingerprint: string, sessionId: string) {
@@ -300,7 +312,7 @@ export function useRuntime() {
         );
       },
     }),
-    [getDataFlowDetail, listArchive, listDeleted, readArchiveMessages, reorder, runAction, shift, updateSession],
+    [getAudit, getDataFlowDetail, listArchive, listDeleted, mintApprovalGrant, readArchiveMessages, reorder, runAction, shift, updateSession],
   );
 
   return {

@@ -35,6 +35,7 @@ public enum OperationKind
     CreateRhinoPrimitive,
     TransformRhinoObject,
     ReferenceRhinoObjects,
+    FixRhinoEndpointPair,
 }
 
 public sealed record ResourceExpectation(
@@ -130,7 +131,12 @@ public sealed record ChangeSet(
     IReadOnlyList<TypedOperation> Operations,
     IReadOnlyList<VerificationPredicate> AcceptancePredicates,
     IReadOnlyList<RollbackBeforeImage> RollbackBeforeImages,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    // Optional user-approval reference (panel-issued): authorizes destructive operations on
+    // objects WITHOUT GPTino provenance stamps, bound server-side to the exact
+    // (objectId, fingerprint) pairs the user saw. Rides the ChangeSet so it is covered by the
+    // idempotency hash; absent on GPTino-created objects (autonomy-by-default).
+    string? ApprovalGrantId = null);
 
 public enum JobState
 {

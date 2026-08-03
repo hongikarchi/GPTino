@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArchiveBrowser } from "./components/ArchiveBrowser";
+import { AuditCard } from "./components/AuditCard";
 import { ChatPane } from "./components/ChatPane";
 import { CuratorActions } from "./components/CuratorActions";
 import { DataFlowDrawer } from "./components/DataFlowDrawer";
@@ -10,7 +11,7 @@ import { ToastStack } from "./components/Toast";
 import { useRuntime } from "./hooks/useRuntime";
 import { useSessionCompletion } from "./hooks/useSessionCompletion";
 import { ensureNotificationPermission } from "./notifications";
-import type { CodexAuth, GrasshopperDocInfo } from "./types";
+import type { CodexAuth, GrasshopperDocInfo, RhinoAuditKind } from "./types";
 import "./styles.css";
 
 const NOTIFY_ASKED_KEY = "gptino.notify.asked";
@@ -186,6 +187,8 @@ export default function App() {
     });
   // Drawer target: undefined = closed; null = the only/legacy doc; string = explicit docKey.
   const [dataFlowDocId, setDataFlowDocId] = useState<string | null | undefined>(undefined);
+  // Open audit approval card on the curator tab (null = closed).
+  const [auditKind, setAuditKind] = useState<RhinoAuditKind | null>(null);
   // [Model | Curator] view switch inside the one panel: the tab is presentation only — the
   // curator underneath is an ordinary session flowing through the same broker.
   const [tab, setTab] = useState<"model" | "curator">(() => {
@@ -552,7 +555,50 @@ export default function App() {
               requestNotifyPermissionOnce();
               void actions.sendMessage(curatorSession.id, prompt);
             }}
+            onAudit={setAuditKind}
           />
+          {auditKind ? (
+            <AuditCard
+              kind={auditKind}
+              runAudit={actions.getAudit}
+              approvable={auditKind !== "purgeCandidates"}
+              onClose={() => setAuditKind(null)}
+              onApprove={async (result, approved, keepFirst) => {
+                if (!curatorSession) return;
+                // Approve-what-you-saw: the grant binds exactly the (objectId, fingerprint)
+                // pairs shown on the card; the curator carries the grant into change_submit.
+                const items = approved.flatMap((finding) =>
+                  finding.objectIds.map((objectId, index) => ({
+                    objectId,
+                    fingerprint: finding.fingerprints[index] ?? "",
+                  })),
+                );
+                const grant = await actions.mintApprovalGrant(items);
+                const lines = approved
+                  .map((finding) => {
+                    if (finding.kind === "nearDuplicates") {
+                      const keep = (keepFirst[finding.findingId] ?? true) ? 0 : 1;
+                      const remove = keep === 0 ? 1 : 0;
+                      return `- ${finding.findingId}: DELETE duplicate ${finding.objectIds[remove]} and KEEP ${finding.objectIds[keep]} (deleteRhinoObject with the audited fingerprint).`;
+                    }
+                    if (finding.kind === "nearMissEndpoints") {
+                      return `- ${finding.findingId}: heal the endpoint gap (${finding.measure}) between anchor ${finding.objectIds[0]} and move-target ${finding.objectIds[1]} via fixRhinoEndpointPair (audited fingerprints).`;
+                    }
+                    return `- ${finding.findingId}: ${finding.detail}`;
+                  })
+                  .join("\n");
+                requestNotifyPermissionOnce();
+                await actions.sendMessage(
+                  curatorSession.id,
+                  `The user APPROVED these ${result.kind} findings on the approval card. ` +
+                    `Approval grant: ${grant.grantId} (bound to the audited fingerprints).\n${lines}\n` +
+                    `Apply exactly these fixes now — set "approvalGrantId": "${grant.grantId}" inside the ` +
+                    `changeSet object of change_submit. Re-run rhino_audit afterwards and report ` +
+                    `the verified result.`,
+                );
+              }}
+            />
+          ) : null}
           <ChatPane
             key={curatorSession?.id ?? "curator-none"}
             session={curatorSession}

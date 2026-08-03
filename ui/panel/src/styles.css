@@ -1557,6 +1557,32 @@ button.llm-auth:hover strong {
   background: var(--lime);
 }
 
+/* Audit approval card: server-computed findings + approve-what-you-saw. */
+.audit-card {
+  margin: 6px 16px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 10px 12px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.audit-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.audit-card-header h3 { margin: 0; font-size: var(--fs-sec); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.audit-card-meta { color: var(--dim); font-size: var(--fs-meta); text-transform: none; letter-spacing: normal; }
+.audit-card-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: var(--fs-sec); }
+.audit-card-list > li { margin-bottom: 8px; }
+.audit-card-list label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.audit-card-detail { color: var(--fg, #e8eaea); }
+.audit-card-keep { display: flex; gap: 14px; padding: 4px 0 0 24px; color: var(--muted); font-size: var(--fs-meta); }
+.audit-card-keep label { display: inline-flex; gap: 4px; align-items: center; font-family: var(--mono); }
+.audit-card-footer { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+
 /* Curator tab: preset row above the chat. */
 .curator-region { display: flex; flex-direction: column; min-height: 0; }
 .curator-actions {

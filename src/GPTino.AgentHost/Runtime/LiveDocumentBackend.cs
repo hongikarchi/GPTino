@@ -410,6 +410,110 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         };
     }
 
+    private sealed record ApprovalGrantRecord(
+        string GrantId,
+        IReadOnlyDictionary<Guid, string> Items,
+        DateTimeOffset ExpiresAt);
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ApprovalGrantRecord> _approvalGrants =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Mints a user-approval grant bound to exactly the (objectId, fingerprint) pairs the panel's
+    /// approval card displayed. Grants are the ONLY way destructive ops reach objects the user
+    /// made (no GPTino provenance stamp); they expire so a stale card cannot authorize later work,
+    /// and coverage is per-object AND per-fingerprint, so anything that changed since the card was
+    /// shown simply is not covered (approve-what-you-saw, TOCTOU-safe on top of CAS).
+    /// </summary>
+    public object MintApprovalGrant(IReadOnlyList<(Guid ObjectId, string Fingerprint)> items)
+    {
+        if (items is null || items.Count == 0)
+        {
+            throw new ArgumentException("An approval grant needs at least one (objectId, fingerprint) item.");
+        }
+        var bound = new Dictionary<Guid, string>();
+        foreach (var (objectId, fingerprint) in items)
+        {
+            if (objectId == Guid.Empty || string.IsNullOrWhiteSpace(fingerprint))
+            {
+                throw new ArgumentException("Approval grant items need a non-empty objectId and fingerprint.");
+            }
+            bound[objectId] = fingerprint;
+        }
+        foreach (var stale in _approvalGrants.Values.Where(grant => grant.ExpiresAt < DateTimeOffset.UtcNow).ToArray())
+        {
+            _approvalGrants.TryRemove(stale.GrantId, out _);
+        }
+        var grantId = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(15);
+        _approvalGrants[grantId] = new ApprovalGrantRecord(grantId, bound, expiresAt);
+        return new { grantId, expiresAt };
+    }
+
+    private IReadOnlyDictionary<Guid, string>? ResolveApprovalGrant(string? grantId)
+    {
+        if (string.IsNullOrWhiteSpace(grantId))
+        {
+            return null;
+        }
+        if (!_approvalGrants.TryGetValue(grantId.Trim(), out var grant) ||
+            grant.ExpiresAt < DateTimeOffset.UtcNow)
+        {
+            throw new InvalidOperationException(
+                $"Approval grant '{grantId}' is unknown or expired. Ask the user to re-approve on the " +
+                "panel's audit card and resubmit with the fresh grant id.");
+        }
+        return grant.Items;
+    }
+
+    // Destructive rhino ops that honor the user-approval flag; the flag is injected ONLY when the
+    // grant covers the op's target object at its exact audited fingerprint.
+    private static readonly string[] ApprovableOperations =
+    {
+        "rhino.delete", "rhino.transform", "rhino.upsert", "rhino.fixEndpointPair",
+    };
+
+    internal static IReadOnlyList<PreparedOperation> InjectApprovalFlags(
+        IReadOnlyList<PreparedOperation> operations,
+        IReadOnlyDictionary<Guid, string>? approvalItems)
+    {
+        if (approvalItems is null || approvalItems.Count == 0 ||
+            !operations.Any(operation => ApprovableOperations.Contains(operation.BridgeOperation)))
+        {
+            return operations;
+        }
+        var result = new List<PreparedOperation>(operations.Count);
+        foreach (var operation in operations)
+        {
+            if (!ApprovableOperations.Contains(operation.BridgeOperation))
+            {
+                result.Add(operation);
+                continue;
+            }
+            var node = System.Text.Json.Nodes.JsonNode.Parse(operation.Arguments.GetRawText())?.AsObject()
+                ?? throw new InvalidOperationException(
+                    $"{operation.BridgeOperation} arguments must be a JSON object.");
+            var idProperty = operation.BridgeOperation == "rhino.fixEndpointPair" ? "moveObjectId" : "objectId";
+            var covered =
+                node[idProperty]?.GetValue<string>() is { } idText &&
+                Guid.TryParse(idText, out var objectId) &&
+                approvalItems.TryGetValue(objectId, out var approvedFingerprint) &&
+                node["expectedFingerprint"]?.GetValue<string>() is { } fingerprint &&
+                string.Equals(fingerprint, approvedFingerprint, StringComparison.Ordinal);
+            if (!covered)
+            {
+                result.Add(operation);
+                continue;
+            }
+            node["approved"] = true;
+            result.Add(operation with
+            {
+                Arguments = JsonSerializer.SerializeToElement(node, BridgeProtocol.JsonOptions)
+            });
+        }
+        return result;
+    }
+
     /// <summary>
     /// One data-flow summary per registered GH document: what it references from the Rhino
     /// document (with broken-reference count) and what it has baked back. Eventually consistent —
@@ -955,6 +1059,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             throw new InvalidOperationException("idempotencyKey cannot exceed 128 characters.");
         }
 
+        // Resolve the optional user-approval grant NOW (approve-what-you-saw): an unknown or
+        // expired grant fails the submit with a teaching message instead of a later silent deny.
+        // The resolved (objectId -> fingerprint) items ride the in-memory job entry only — jobs
+        // never execute after a restart (interrupted ones become RecoveryRequired), so grants
+        // need no durability.
+        var approvalItems = ResolveApprovalGrant(changeSet.ApprovalGrantId);
+
         ValidateChangeSet(changeSet, session);
         var draftOperations = await PreflightDraftOperationsAsync(
             session.Id,
@@ -1083,7 +1194,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     idempotencyKey,
                     requestHash,
                     conflicts,
-                    targetState.DocKey);
+                    targetState.DocKey)
+                {
+                    ApprovalItems = approvalItems,
+                };
                 DurableJobInsertResult insert;
                 try
                 {
@@ -1463,6 +1577,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             // carry the field (ValidateUpsertArguments rejects it at submit); like auto-pivot
             // resolution below, only the dispatched Arguments change — FrozenPayload is untouched.
             preparedOperations = InjectRhinoUpsertSourceDocKey(preparedOperations, targetState.DocKey);
+            // User-approval injection: only ops whose target object AND audited fingerprint the
+            // grant covers gain approved=true; everything else keeps the default-deny.
+            preparedOperations = InjectApprovalFlags(preparedOperations, entry.ApprovalItems);
             await PreflightBridgePayloadsAsync(
                 targetState,
                 preparedOperations,
@@ -3771,7 +3888,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         OperationKind.CreateRhinoPrimitive or OperationKind.TransformRhinoObject or
         OperationKind.CreateRhinoObject or OperationKind.ModifyRhinoObject or
         OperationKind.DeleteRhinoObject or OperationKind.BakeGeometry or
-        OperationKind.UpdateRhinoAttributes or OperationKind.UpdateRhinoLayer;
+        OperationKind.UpdateRhinoAttributes or OperationKind.UpdateRhinoLayer or
+        OperationKind.FixRhinoEndpointPair;
 
     private static string ResolveBridgeOperation(TypedOperation operation, JsonElement payload)
     {
@@ -3794,6 +3912,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             OperationKind.CreateRhinoObject or OperationKind.ModifyRhinoObject or
                 OperationKind.BakeGeometry or OperationKind.UpdateRhinoAttributes => "rhino.upsert",
             OperationKind.DeleteRhinoObject => "rhino.delete",
+            OperationKind.FixRhinoEndpointPair => "rhino.fixEndpointPair",
             OperationKind.UpdateRhinoLayer => throw new InvalidOperationException(
                 "UpdateRhinoLayer is reserved until deterministic layer inspection is available."),
             OperationKind.Read when operation.Owner == AdapterOwner.Wireify => "python.inspect",
@@ -3868,6 +3987,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 "attributesJson", "expectedFingerprint"
             },
             "rhino.delete" => new[] { "operationId", "objectId", "expectedFingerprint" },
+            "rhino.fixEndpointPair" => new[]
+            {
+                "operationId", "anchorObjectId", "anchorEnd", "moveObjectId", "moveEnd",
+                "expectedAnchorFingerprint", "expectedFingerprint", "tolerance"
+            },
             _ => throw new InvalidOperationException(
                 $"Bridge operation '{bridgeOperation}' is not supported by the preflight validator.")
         };
@@ -4040,12 +4164,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     return;
                 case "rhino.delete":
                     var rhinoDelete = DeserializeArguments<DeleteRhinoObjectRequest>(arguments, operation.OperationId);
+                    RequireNotPreApproved(rhinoDelete.Approved, operation.OperationId);
                     if (rhinoDelete.ObjectId == Guid.Empty ||
                         string.IsNullOrWhiteSpace(rhinoDelete.ExpectedFingerprint))
                     {
                         throw new InvalidOperationException(
                             $"Operation '{operation.OperationId}' has an invalid Rhino delete payload.");
                     }
+                    return;
+                case "rhino.fixEndpointPair":
+                    ValidateFixEndpointPairArguments(
+                        DeserializeArguments<FixEndpointPairRequest>(arguments, operation.OperationId),
+                        operation.OperationId);
                     return;
             }
         }
@@ -4337,10 +4467,41 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private static void RequirePoint3(JsonElement value, string operationId) =>
         RequireOnlyProperties(value, operationId, "x", "y", "z");
 
-    private static void ValidateTransformArguments(
+    /// <summary>
+    /// The Approved flag is server-injected at execution when a user approval grant covers the
+    /// object; a model-authored payload carrying it would let the human-wins default-deny be
+    /// bypassed by prompt alone. (Disallow no longer catches this — the member is mapped.)
+    /// </summary>
+    internal static void RequireNotPreApproved(bool approved, string operationId)
+    {
+        if (approved)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' must not set approved; user approval is granted through " +
+                "the panel and injected by the server.");
+        }
+    }
+
+    internal static void ValidateFixEndpointPairArguments(FixEndpointPairRequest request, string operationId)
+    {
+        RequireNotPreApproved(request.Approved, operationId);
+        if (request.AnchorObjectId == Guid.Empty || request.MoveObjectId == Guid.Empty ||
+            request.AnchorObjectId == request.MoveObjectId ||
+            string.IsNullOrWhiteSpace(request.ExpectedAnchorFingerprint) ||
+            string.IsNullOrWhiteSpace(request.ExpectedFingerprint) ||
+            request.AnchorEnd is not (0 or 1) || request.MoveEnd is not (0 or 1) ||
+            double.IsNaN(request.Tolerance) || double.IsInfinity(request.Tolerance) || request.Tolerance < 0)
+        {
+            throw new InvalidOperationException(
+                $"Operation '{operationId}' has an invalid Rhino endpoint-fix payload.");
+        }
+    }
+
+    internal static void ValidateTransformArguments(
         TransformRhinoObjectRequest request,
         string operationId)
     {
+        RequireNotPreApproved(request.Approved, operationId);
         if (request.ObjectId == Guid.Empty || string.IsNullOrWhiteSpace(request.ExpectedFingerprint) ||
             request.Matrix is null)
         {
@@ -4365,6 +4526,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     internal static void ValidateUpsertArguments(UpsertRhinoObjectRequest request, string operationId)
     {
+        RequireNotPreApproved(request.Approved, operationId);
         if (request.SourceDocKey is not null)
         {
             // Provenance is server-injected at execution; a model-authored payload carrying it
@@ -4560,6 +4722,21 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     write: true,
                     ResourceKind.RhinoObject);
                 return;
+
+            case "rhino.fixEndpointPair":
+                // The move object is the single declared write; the untouched anchor must still be
+                // declared as a read so its fingerprint expectation guards the pair.
+                RequireExactDeclaredGuidTarget(
+                    operation,
+                    RequireArgumentGuid(arguments, "moveObjectId", operation.OperationId),
+                    write: true,
+                    ResourceKind.RhinoObject);
+                RequireExactDeclaredGuidTarget(
+                    operation,
+                    RequireArgumentGuid(arguments, "anchorObjectId", operation.OperationId),
+                    write: false,
+                    ResourceKind.RhinoObject);
+                return;
         }
     }
 
@@ -4673,6 +4850,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         "python.setTyping" => ["componentId", "inputParameterId"],
         "canvas.inspect" or "rhino.inspect" or "rhino.createPrimitive" or
             "rhino.transform" or "rhino.upsert" or "rhino.delete" => ["objectId"],
+        "rhino.fixEndpointPair" => ["anchorObjectId", "moveObjectId"],
         _ => Array.Empty<string>()
     };
 
@@ -6344,6 +6522,19 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     RequireArgumentString(arguments, "expectedFingerprint", operation.OperationId));
                 return;
 
+            case "rhino.fixEndpointPair":
+                // The write expectation must pin the MOVE object at its audited fingerprint; the
+                // anchor's declared read expectation is validated by snapshot conflict detection,
+                // and the adapter re-verifies both fingerprints at execution.
+                RequirePayloadFingerprint(
+                    changeSet,
+                    operation,
+                    new ResourceAddress(
+                        ResourceKind.RhinoObject,
+                        RequireArgumentGuid(arguments, "moveObjectId", operation.OperationId).ToString("D")),
+                    RequireArgumentString(arguments, "expectedFingerprint", operation.OperationId));
+                return;
+
             case "rhino.upsert":
                 var resource = TargetResource(operation, arguments, ResourceKind.RhinoObject);
                 var expectation = FindExpectation(changeSet.WriteSet, resource)
@@ -6950,6 +7141,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         public QueuedJob Job { get; } = job;
         public SessionRecord Session { get; } = session;
+
+        /// <summary>
+        /// Resolved user-approval items (objectId -> audited fingerprint) from the ChangeSet's
+        /// approvalGrantId; null when no grant was supplied. In-memory only: interrupted jobs
+        /// never execute after a restart, so grants need no durability.
+        /// </summary>
+        public IReadOnlyDictionary<Guid, string>? ApprovalItems { get; init; }
         public string Summary { get; } = summary;
         public string IdempotencyKey { get; } = idempotencyKey;
         public string RequestHash { get; } = requestHash;

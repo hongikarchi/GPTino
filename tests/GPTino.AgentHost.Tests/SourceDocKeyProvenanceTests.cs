@@ -34,6 +34,67 @@ public sealed class SourceDocKeyProvenanceTests
     }
 
     [Fact]
+    public void ValidatorsRejectModelAuthoredApprovedFlag()
+    {
+        // The human-wins default-deny would be bypassable by prompt alone if a model payload
+        // could carry approved:true — Disallow no longer catches it (the member is mapped).
+        Assert.Throws<InvalidOperationException>(
+            () => LiveDocumentBackend.ValidateUpsertArguments(
+                ValidUpsert() with { Approved = true }, "op-1"));
+        Assert.Throws<InvalidOperationException>(
+            () => LiveDocumentBackend.ValidateTransformArguments(
+                new TransformRhinoObjectRequest(
+                    "op-1", Guid.NewGuid(), "fp", new RhinoTransformMatrix(
+                        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1), Approved: true),
+                "op-1"));
+        Assert.Throws<InvalidOperationException>(
+            () => LiveDocumentBackend.ValidateFixEndpointPairArguments(
+                new FixEndpointPairRequest(
+                    "op-1", Guid.NewGuid(), 0, Guid.NewGuid(), 1, "fp-a", "fp-b", 0.001, Approved: true),
+                "op-1"));
+        // The same payloads without the flag pass their approval gates.
+        LiveDocumentBackend.ValidateFixEndpointPairArguments(
+            new FixEndpointPairRequest("op-1", Guid.NewGuid(), 0, Guid.NewGuid(), 1, "fp-a", "fp-b", 0.001),
+            "op-1");
+    }
+
+    [Fact]
+    public void InjectApprovalFlagsCoversOnlyGrantedObjectAtAuditedFingerprint()
+    {
+        var covered = Guid.NewGuid();
+        var wrongFingerprint = Guid.NewGuid();
+        var deleteCovered = JsonSerializer.SerializeToElement(
+            new { operationId = "op-1", objectId = covered, expectedFingerprint = "fp-good" },
+            BridgeProtocol.JsonOptions);
+        var deleteWrongFp = JsonSerializer.SerializeToElement(
+            new { operationId = "op-2", objectId = wrongFingerprint, expectedFingerprint = "fp-stale" },
+            BridgeProtocol.JsonOptions);
+        var fixPair = JsonSerializer.SerializeToElement(
+            new { operationId = "op-3", moveObjectId = covered, anchorObjectId = Guid.NewGuid(), expectedFingerprint = "fp-good" },
+            BridgeProtocol.JsonOptions);
+        var frozen = new byte[] { 1 };
+        var operations = new[]
+        {
+            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.CordycepsRhino, "rhino.delete", deleteCovered, frozen, "s1"),
+            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.CordycepsRhino, "rhino.delete", deleteWrongFp, frozen, "s2"),
+            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.CordycepsRhino, "rhino.fixEndpointPair", fixPair, frozen, "s3"),
+        };
+        var grant = new Dictionary<Guid, string>
+        {
+            [covered] = "fp-good",
+            [wrongFingerprint] = "fp-fresh", // the object changed since the card was shown
+        };
+
+        var injected = LiveDocumentBackend.InjectApprovalFlags(operations, grant);
+
+        Assert.True(injected[0].Arguments.GetProperty("approved").GetBoolean());
+        // Fingerprint mismatch = the user did NOT approve this state — no flag.
+        Assert.False(injected[1].Arguments.TryGetProperty("approved", out _));
+        // fixEndpointPair keys coverage on the MOVE object.
+        Assert.True(injected[2].Arguments.GetProperty("approved").GetBoolean());
+    }
+
+    [Fact]
     public void ValidatePrimitiveRejectsModelAuthoredSourceDocKey()
     {
         var request = new CreateRhinoPrimitiveRequest(

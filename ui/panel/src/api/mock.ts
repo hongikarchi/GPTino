@@ -9,6 +9,8 @@ import type {
   MessageRole,
   ModelInfo,
   ModelProfile,
+  RhinoAuditKind,
+  RhinoAuditResult,
   RuntimeState,
   SessionMode,
   SessionOrderRequest,
@@ -362,6 +364,90 @@ const demoState: RuntimeState = {
   lastUpdatedAt: now.toISOString(),
 };
 
+const demoAudits: Record<RhinoAuditKind, RhinoAuditResult> = {
+  nearMissEndpoints: {
+    kind: "nearMissEndpoints",
+    docTolerance: 0.001,
+    docUnits: "Millimeters",
+    toleranceUsed: 0.001,
+    bandUsed: 0.01,
+    scannedObjects: 24,
+    truncated: false,
+    fingerprint: "audit-fixture-gaps",
+    findings: [
+      {
+        findingId: "gap-42a1",
+        kind: "nearMissEndpoints",
+        objectIds: ["a0b1c2d3-0001-4e4e-9f9f-000000000001", "a0b1c2d3-0002-4e4e-9f9f-000000000002"],
+        fingerprints: ["fp-a1", "fp-a2"],
+        measure: 0.42,
+        detail: "Curve endpoints 0.42 apart (doc tolerance 0.001): end 1 of a0b1c2d3… vs end 0 of a0b1c2d3….",
+        proposedFixes: ["setEndPoint"],
+      },
+      {
+        findingId: "gap-07c3",
+        kind: "nearMissEndpoints",
+        objectIds: ["a0b1c2d3-0003-4e4e-9f9f-000000000003", "a0b1c2d3-0004-4e4e-9f9f-000000000004"],
+        fingerprints: ["fp-a3", "fp-a4"],
+        measure: 0.07,
+        detail: "Curve endpoints 0.07 apart (doc tolerance 0.001): end 0 of a0b1c2d3… vs end 1 of a0b1c2d3….",
+        proposedFixes: ["setEndPoint"],
+      },
+    ],
+  },
+  nearDuplicates: {
+    kind: "nearDuplicates",
+    docTolerance: 0.001,
+    docUnits: "Millimeters",
+    toleranceUsed: 0.001,
+    bandUsed: null,
+    scannedObjects: 24,
+    truncated: false,
+    fingerprint: "audit-fixture-dups",
+    findings: [
+      {
+        findingId: "dup-9b2e",
+        kind: "nearDuplicates",
+        objectIds: ["7f2a4c31-9a41-4c8e-b6a1-2f6d3a5e9c01", "b2416cd8-55f7-4f39-a9d3-08a1c4e7d992"],
+        fingerprints: ["fp-d1", "fp-d2"],
+        measure: 0,
+        detail: "Position-coincident duplicates (max deviation 0 ≤ tolerance 0.001): 7f2a4c31… and b2416cd8…. Which copy to keep is a human decision.",
+        proposedFixes: ["deleteOneDuplicate"],
+      },
+    ],
+  },
+  purgeCandidates: {
+    kind: "purgeCandidates",
+    docTolerance: 0.001,
+    docUnits: "Millimeters",
+    toleranceUsed: 0.001,
+    bandUsed: null,
+    scannedObjects: 31,
+    truncated: false,
+    fingerprint: "audit-fixture-purge",
+    findings: [
+      {
+        findingId: "blk-11aa",
+        kind: "unusedBlockDefinition",
+        objectIds: ["c9d8e7f6-0001-4a4a-8b8b-000000000001"],
+        fingerprints: [],
+        measure: null,
+        detail: "Block definition 'OldHardware' has no references anywhere (not placed, not nested in another definition); 12 member object(s).",
+        proposedFixes: ["purgeBlockDefinition"],
+      },
+      {
+        findingId: "lay-22bb",
+        kind: "emptyLayer",
+        objectIds: ["c9d8e7f6-0002-4a4a-8b8b-000000000002"],
+        fingerprints: ["fp-l1"],
+        measure: null,
+        detail: "Layer 'Scratch::Temp' is an empty leaf (no objects — including hidden and block members — and no children).",
+        proposedFixes: ["deleteLayer"],
+      },
+    ],
+  },
+};
+
 const demoDataFlowDetails: Record<string, DataFlowDetail> = {
   [DOC_FACADE]: {
     docId: DOC_FACADE,
@@ -578,6 +664,18 @@ export function createMockApiClient(): GptinoApiClient {
     subscribe(onState) {
       listeners.add(onState);
       return () => listeners.delete(onState);
+    },
+    async getAudit(kind: RhinoAuditKind) {
+      await delay(200);
+      const detail = demoAudits[kind];
+      return clone(detail);
+    },
+    async mintApprovalGrant(items: { objectId: string; fingerprint: string }[]) {
+      await delay(80);
+      return {
+        grantId: `grant-${items.length}-${Math.abs(items.length * 7919).toString(16)}`,
+        expiresAt: minutesAgo(-10),
+      };
     },
     async getDataFlowDetail(docId?: string | null) {
       await delay(160);

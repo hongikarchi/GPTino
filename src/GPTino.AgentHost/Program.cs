@@ -315,6 +315,17 @@ api.MapGet("/data-flow", async (
     CancellationToken cancellationToken) =>
     Results.Ok(await liveBackend.ReadDataFlowDetailAsync(doc, cancellationToken)));
 
+// Mints a user-approval grant for the audit card's Approve action: bound to exactly the
+// (objectId, fingerprint) pairs the user saw, expiring, and required before destructive ops can
+// touch objects without GPTino provenance stamps.
+api.MapPost("/approval-grants", (
+    MintApprovalGrantRequest request,
+    LiveDocumentBackend liveBackend) =>
+    Results.Ok(liveBackend.MintApprovalGrant(
+        (request.Items ?? throw new ArgumentException("items is required."))
+            .Select(item => (item.ObjectId, item.Fingerprint))
+            .ToArray())));
+
 // Document-hygiene audit for the curator tab's preset buttons. Read-only; detection is server
 // code in the Rhino adapter, so the same findings render in the panel card and reach the agent.
 api.MapGet("/audit", async (

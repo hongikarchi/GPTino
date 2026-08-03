@@ -17,6 +17,7 @@ bridgeOperation mapping:
 - transformRhinoObject -> rhino.transform {operationId,objectId,expectedFingerprint,matrix:{m00..m33}}
 - Rhino create/modify/bake/attributes -> rhino.upsert {operationId,objectId,logicalEntityId,geometryType,geometryJson,attributesJson,expectedFingerprint}
 - deleteRhinoObject -> rhino.delete {operationId,objectId,expectedFingerprint}
+- fixRhinoEndpointPair -> rhino.fixEndpointPair {operationId,anchorObjectId,anchorEnd,moveObjectId,moveEnd,expectedAnchorFingerprint,expectedFingerprint,tolerance} — heals one audited near-miss pair: the anchor is declared as a READ (fingerprint from the audit finding), the move object is the single write; ends are 0=start/1=end; tolerance is the audit's reported value. Verified before the write — a failed strategy changes nothing.
 - reads use {objectId} for canvas/Rhino or {componentId} for Wireify
 DECLARATIONS:
 - Every operation read needs a readSet fingerprint; every write needs an exact writeSet expectation. Unused expectations and payload-unrelated writes are rejected. Typed reads keep writes empty; a read-only ChangeSet keeps writeSet empty.
@@ -30,3 +31,4 @@ BOOKKEEPING (server-owned):
 - Creates (createComponent, createRhinoPrimitive, createRhinoObject, bakeGeometry, connectWire, a new setGroup) use writeSet expectedFingerprint='gptino:absent'.
 - Value/geometry payload+writeSet fingerprints (setNumberSlider, move, delete, rhino transform/upsert) must be the concrete value, not gptino:auto; payload fingerprints for existing resources must exactly match writeSet. For createRhinoObject/bakeGeometry only, payload arguments.expectedFingerprint is null.
 - acceptancePredicates may be [] — the server attaches the standard set (creates/bakes objectExists, deletes objectAbsent, wires wireExists/wireAbsent, everything else runtimeErrorAbsent).
+- APPROVAL: destructive ops (delete/modify/transform/fixEndpointPair) on objects WITHOUT GPTino provenance stamps — the user's own geometry — are refused unless changeSet.approvalGrantId carries the id the user minted by approving on the panel's audit card. GPTino-created objects need no grant. Never invent a grant id and never author approved/sourceDocKey fields — the server injects them.

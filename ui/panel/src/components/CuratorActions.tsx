@@ -1,7 +1,11 @@
+import type { RhinoAuditKind } from "../types";
+
 interface CuratorActionsProps {
   /** True while the curator session is running a turn — presets disable instead of queueing. */
   busy: boolean;
   onRun(prompt: string): void;
+  /** Audit presets open the approval card (server-computed findings + Approve) instead of a turn. */
+  onAudit(kind: RhinoAuditKind): void;
 }
 
 /**
@@ -18,27 +22,8 @@ const PRESETS: { label: string; title: string; prompt: string }[] = [
       "purgeCandidates, plus data_flow_read. Summarize every finding with its measure, tolerance, " +
       "and units; propose fixes but change nothing yet.",
   },
-  {
-    label: "Endpoint gaps",
-    title: "Open-curve endpoints that almost meet",
-    prompt:
-      "Run rhino_audit kind=nearMissEndpoints and report each near-miss pair with its gap, " +
-      "tolerance, and units. Propose a fix per pair; change nothing yet.",
-  },
-  {
-    label: "Duplicates",
-    title: "Near-duplicate curves/points SelDup cannot catch",
-    prompt:
-      "Run rhino_audit kind=nearDuplicates and report each candidate pair with its deviation. " +
-      "Remind me that which copy to keep is my decision; change nothing yet.",
-  },
-  {
-    label: "Purge candidates",
-    title: "Unused block definitions, empty layers, invalid objects",
-    prompt:
-      "Run rhino_audit kind=purgeCandidates and report unused block definitions, empty leaf " +
-      "layers, and invalid objects (quarantine candidates). Change nothing yet.",
-  },
+  // The three audit presets are card-first (see AUDIT_PRESETS): server-computed findings render
+  // with checkboxes, and Approve mints the grant — a chat turn only happens after approval.
   {
     label: "Data ledger",
     title: "What Grasshopper references and bakes",
@@ -48,7 +33,13 @@ const PRESETS: { label: string; title: string; prompt: string }[] = [
   },
 ];
 
-export function CuratorActions({ busy, onRun }: CuratorActionsProps) {
+const AUDIT_PRESETS: { label: string; title: string; kind: RhinoAuditKind }[] = [
+  { label: "Endpoint gaps", title: "Open-curve endpoints that almost meet", kind: "nearMissEndpoints" },
+  { label: "Duplicates", title: "Near-duplicate curves/points SelDup cannot catch", kind: "nearDuplicates" },
+  { label: "Purge candidates", title: "Unused blocks, empty layers, invalid objects", kind: "purgeCandidates" },
+];
+
+export function CuratorActions({ busy, onRun, onAudit }: CuratorActionsProps) {
   return (
     <div className="curator-actions" role="toolbar" aria-label="Document care presets">
       {PRESETS.map((preset) => (
@@ -59,6 +50,18 @@ export function CuratorActions({ busy, onRun }: CuratorActionsProps) {
           title={preset.title}
           disabled={busy}
           onClick={() => onRun(preset.prompt)}
+        >
+          {preset.label}
+        </button>
+      ))}
+      {AUDIT_PRESETS.map((preset) => (
+        <button
+          key={preset.label}
+          type="button"
+          className="secondary-button"
+          title={preset.title}
+          disabled={busy}
+          onClick={() => onAudit(preset.kind)}
         >
           {preset.label}
         </button>

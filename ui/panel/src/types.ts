@@ -114,6 +114,42 @@ export interface DataFlowBakeGroup {
   objectIds: string[];
 }
 
+export type RhinoAuditKind = "nearMissEndpoints" | "nearDuplicates" | "purgeCandidates";
+
+export interface RhinoAuditFinding {
+  findingId: string;
+  /** Request kind, or a purge subkind (unusedBlockDefinition | emptyLayer | badObject). */
+  kind: string;
+  objectIds: string[];
+  fingerprints: string[];
+  measure?: number | null;
+  detail: string;
+  proposedFixes: string[];
+}
+
+/** Server-computed audit (GET /audit): detection is deterministic server code, never the model. */
+export interface RhinoAuditResult {
+  kind: RhinoAuditKind;
+  docTolerance: number;
+  docUnits: string;
+  toleranceUsed: number;
+  bandUsed?: number | null;
+  scannedObjects: number;
+  findings: RhinoAuditFinding[];
+  truncated: boolean;
+  fingerprint: string;
+}
+
+/**
+ * A user approval minted by the panel's audit card: bound to the exact (objectId, fingerprint)
+ * pairs the user saw (approve-what-you-saw). The agent passes grantId in change_submit so the
+ * executor can authorize destructive ops on the user's own geometry.
+ */
+export interface ApprovalGrant {
+  grantId: string;
+  expiresAt: string;
+}
+
 /** On-demand GET /data-flow payload; writerActive=true means retry after the queue drains. */
 export interface DataFlowDetail {
   docId?: string;

@@ -1,8 +1,11 @@
 import type {
+  ApprovalGrant,
   ArchiveMessage,
   ArchiveProject,
   DataFlowDetail,
   DeletedSession,
+  RhinoAuditKind,
+  RhinoAuditResult,
   MessageRequest,
   ModelInfo,
   ModelProfile,
@@ -24,6 +27,10 @@ export interface GptinoApiClient {
   createSession(name: string, grasshopperDoc?: string, role?: SessionRole): Promise<void>;
   /** On-demand Rhino<->GH data-flow detail for one GH doc (omit docId when only one is open). */
   getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail>;
+  /** Server-computed document-hygiene audit (deterministic; the card renders it verbatim). */
+  getAudit(kind: RhinoAuditKind, options?: { tolerance?: number; bandFactor?: number; limit?: number }): Promise<RhinoAuditResult>;
+  /** Mint a user approval bound to the exact (objectId, fingerprint) pairs shown on the card. */
+  mintApprovalGrant(items: { objectId: string; fingerprint: string }[]): Promise<ApprovalGrant>;
   reorderSessions(request: SessionOrderRequest): Promise<void>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   /** Stop the current turn and pull the last user message back for editing; returns its text. */
@@ -174,6 +181,26 @@ class HttpApiClient implements GptinoApiClient {
   getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail> {
     const query = docId ? `?doc=${encodeURIComponent(docId)}` : "";
     return this.request<DataFlowDetail>(`/data-flow${query}`);
+  }
+
+  async getAudit(
+    kind: RhinoAuditKind,
+    options?: { tolerance?: number; bandFactor?: number; limit?: number },
+  ): Promise<RhinoAuditResult> {
+    const query = new URLSearchParams({ kind });
+    if (options?.tolerance != null) query.set("tolerance", String(options.tolerance));
+    if (options?.bandFactor != null) query.set("bandFactor", String(options.bandFactor));
+    if (options?.limit != null) query.set("limit", String(options.limit));
+    // The backend wraps bridge reads as { result, fingerprint, diagnostics }.
+    const wrapped = await this.request<{ result: RhinoAuditResult }>(`/audit?${query}`);
+    return wrapped.result;
+  }
+
+  mintApprovalGrant(items: { objectId: string; fingerprint: string }[]): Promise<ApprovalGrant> {
+    return this.request<ApprovalGrant>("/approval-grants", {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    });
   }
 
   setSessionPaused(sessionId: string, paused: boolean): Promise<void> {
