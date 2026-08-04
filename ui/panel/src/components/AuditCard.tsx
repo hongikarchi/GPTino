@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   FocusMode,
   FocusResult,
@@ -6,6 +6,7 @@ import type {
   RhinoAuditKind,
   RhinoAuditResult,
 } from "../types";
+import { useFocusTarget } from "./useFocusTarget";
 
 interface AuditCardProps {
   kind: RhinoAuditKind;
@@ -95,47 +96,15 @@ export function AuditCard({
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [keepFirst, setKeepFirst] = useState<Record<string, boolean>>({});
   // How "Show in Rhino" treats everything else. Kept per card, because a user inspecting a list of
-  // findings wants the same treatment for each one they press.
+  // findings wants the same treatment for each one they press. Everything else about focusing —
+  // busy/result/isolation bookkeeping, phrasing, unmount restore — comes from the shared
+  // useFocusTarget contract that chat focus chips also use.
   const [focusMode, setFocusMode] = useState<FocusMode>("select");
-  const [focusBusy, setFocusBusy] = useState<string | null>(null);
-  const [focusResults, setFocusResults] = useState<Record<string, string>>({});
-  const [isolating, setIsolating] = useState(false);
-
-  const focus = async (findingId: string, objectIds: string[]) => {
-    if (!onFocus) return;
-    setFocusBusy(findingId);
-    try {
-      const outcome = await onFocus(objectIds, focusMode);
-      setIsolating(outcome.hiddenCount > 0 || outcome.lockedCount > 0);
-      const parts = [`${outcome.selectedCount} selected`];
-      // A finding can outlive its objects; saying so beats an empty zoom the user has to interpret.
-      if (outcome.missingCount > 0) parts.push(`${outcome.missingCount} already gone`);
-      if (outcome.hiddenCount > 0) parts.push(`${outcome.hiddenCount} hidden`);
-      if (outcome.lockedCount > 0) parts.push(`${outcome.lockedCount} locked`);
-      setFocusResults((current) => ({ ...current, [findingId]: parts.join(" · ") }));
-    } catch (cause) {
-      setFocusResults((current) => ({
-        ...current,
-        [findingId]: cause instanceof Error ? cause.message : String(cause),
-      }));
-    } finally {
-      setFocusBusy(null);
-    }
-  };
-
-  const restore = async () => {
-    if (!onFocus) return;
-    setFocusBusy("restore");
-    try {
-      await onFocus([], "restore");
-      setIsolating(false);
-      setFocusResults({});
-    } finally {
-      setFocusBusy(null);
-    }
-  };
-
-  const focusNote = (findingId: string) => focusResults[findingId] ?? "";
+  const focusTarget = useFocusTarget(onFocus);
+  const { restore, busyKey: focusBusy, isolating } = focusTarget;
+  const focus = (findingId: string, objectIds: string[]) =>
+    focusTarget.focus(findingId, objectIds, focusMode);
+  const focusNote = (findingId: string) => focusTarget.notes[findingId] ?? "";
 
   useEffect(() => {
     let disposed = false;
@@ -161,16 +130,8 @@ export function AuditCard({
     };
   }, [kind, runAudit]);
 
-  // Closing the card must not strand the document with everything else hidden. The ref keeps the
-  // cleanup from re-running on every focus press.
-  const isolatingRef = useRef(false);
-  isolatingRef.current = isolating;
-  useEffect(
-    () => () => {
-      if (isolatingRef.current) void onFocus?.([], "restore");
-    },
-    [onFocus],
-  );
+  // (Closing the card must not strand the document with everything else hidden — that cleanup
+  // now lives in useFocusTarget, shared with the chat focus chips.)
 
   const approved = useMemo(
     () => (result?.findings ?? []).filter((finding) => checked[finding.findingId]),

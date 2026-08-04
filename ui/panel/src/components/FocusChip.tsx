@@ -1,14 +1,14 @@
 import { useState } from "react";
 import type { FocusMode, FocusResult } from "../types";
+import { useFocusTarget } from "./useFocusTarget";
 
 /**
  * The clickable half of GPTino's focus-reference primitive: one chip = one set of Rhino
- * objects the conversation is talking about. Click cycles the viewport onto them
- * (select+zoom by default; isolate via the small mode toggle), mirroring the audit
- * card's Show-in-Rhino state machine so the two surfaces feel identical. The chip only
- * reports whether it left the document isolated — restore policy (header button,
- * unmount cleanup) belongs to the owner, because several chips share one server-side
- * restore stack.
+ * objects the conversation is talking about. Click points the viewport at them (select+
+ * zoom by default; isolate via the small toggle). Behaviour comes from useFocusTarget so
+ * chat chips and audit-card rows stay identical; restore policy belongs to the owner
+ * (several chips share one server-side restore stack), which is why isolation is
+ * reported upward rather than handled here.
  */
 interface FocusChipProps {
   objectIds: string[];
@@ -19,24 +19,13 @@ interface FocusChipProps {
 }
 
 export function FocusChip({ objectIds, label, onFocus, onIsolated }: FocusChipProps) {
-  const [busy, setBusy] = useState(false);
   const [isolate, setIsolate] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
+  const target = useFocusTarget(onFocus);
+  const busy = target.busyKey !== null;
+  const note = target.notes.chip;
 
   const activate = async () => {
-    setBusy(true);
-    try {
-      const outcome = await onFocus(objectIds, isolate ? "isolate" : "select");
-      onIsolated?.(outcome.hiddenCount > 0 || outcome.lockedCount > 0);
-      const parts = [`${outcome.selectedCount} selected`];
-      if (outcome.missingCount > 0) parts.push(`${outcome.missingCount} already gone`);
-      if (outcome.hiddenCount > 0) parts.push(`${outcome.hiddenCount} hidden`);
-      setNote(parts.join(" · "));
-    } catch (cause) {
-      setNote(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(false);
-    }
+    await target.focus("chip", objectIds, isolate ? "isolate" : "select");
   };
 
   return (
@@ -45,7 +34,9 @@ export function FocusChip({ objectIds, label, onFocus, onIsolated }: FocusChipPr
         type="button"
         className="focus-chip"
         disabled={busy}
-        onClick={() => void activate()}
+        onClick={() => {
+          void activate().then(() => onIsolated?.(isolate));
+        }}
         title={`${objectIds.length}개 객체를 뷰포트에서 확인`}
       >
         <span aria-hidden="true">◎</span>
