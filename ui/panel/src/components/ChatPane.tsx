@@ -26,6 +26,7 @@ import type {
 import { Icon } from "./Icons";
 import { StatusBadge } from "./StatusBadge";
 import { FocusChip } from "./FocusChip";
+import { AltChip } from "./AltChip";
 import { parseMessageSegments } from "../messageMarkers";
 
 interface ChatPaneProps {
@@ -58,6 +59,11 @@ interface ChatPaneProps {
    * Optional — without it markers degrade to their plain-text labels.
    */
   onFocus?(objectIds: string[], mode: FocusMode): Promise<FocusResult>;
+  /**
+   * Show a proposed alternative ([[alt:id|label]] markers). Optional — without it alt
+   * markers degrade to their labels, exactly like focus markers without a viewport.
+   */
+  onSelectAlt?(altId: string): void;
 }
 
 /** One staged composer attachment; the bytes stay in the File until send encodes them. */
@@ -234,8 +240,11 @@ function UsageStatusLine({ usage, limits }: { usage?: SessionUsage; limits?: Cod
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onGoal, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onGoal, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
+  // Which proposed alternative the user last asked to see, so the chips show what is on
+  // screen right now (the preview itself lives wherever the owner renders it).
+  const [activeAlt, setActiveAlt] = useState<string | null>(null);
   // True while a focus chip has left the document isolated/locked. Chips share ONE
   // server-side restore stack, so restore policy lives here, not in the chip: a header
   // button plus an unmount cleanup (session switch remounts via key={session.id}).
@@ -538,10 +547,25 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
                 <time dateTime={item.message.createdAt}>{formatTime(item.message.createdAt)}</time>
               </div>
               <p>
-                {parseMessageSegments(item.message.content).map((segment, index) =>
-                  segment.kind === "text" ? (
-                    <span key={index}>{segment.text}</span>
-                  ) : onFocus ? (
+                {parseMessageSegments(item.message.content).map((segment, index) => {
+                  if (segment.kind === "text") return <span key={index}>{segment.text}</span>;
+                  if (segment.kind === "alt") {
+                    return onSelectAlt ? (
+                      <AltChip
+                        key={index}
+                        altId={segment.altId}
+                        label={segment.label}
+                        active={activeAlt === segment.altId}
+                        onSelect={(altId) => {
+                          setActiveAlt(altId);
+                          onSelectAlt(altId);
+                        }}
+                      />
+                    ) : (
+                      <span key={index}>{segment.label}</span>
+                    );
+                  }
+                  return onFocus ? (
                     <FocusChip
                       key={index}
                       objectIds={segment.objectIds}
@@ -552,8 +576,8 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
                   ) : (
                     // No viewport in this context: the marker degrades to its label.
                     <span key={index}>{segment.label}</span>
-                  ),
-                )}
+                  );
+                })}
               </p>
               {item.message.pending ? <span className="pending-label">Sending…</span> : null}
             </article>

@@ -1120,6 +1120,32 @@ button.llm-auth:hover strong {
   font-family: var(--mono);
 }
 
+/* Alternative chips: same inline chip language as focus, warm accent so "show me this
+   option" reads differently from "point at that geometry". */
+.alt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 2px;
+  padding: 1px 8px;
+  border: 1px solid var(--warn, #d9a441);
+  border-radius: 10px;
+  color: var(--warn, #d9a441);
+  background: color-mix(in srgb, var(--warn, #d9a441) 8%, transparent);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.alt-chip:hover {
+  background: color-mix(in srgb, var(--warn, #d9a441) 18%, transparent);
+}
+
+.alt-chip.active {
+  color: var(--bg, #10120f);
+  background: var(--warn, #d9a441);
+}
+
 .attachment-chip .chip-name {
   max-width: 160px;
   overflow: hidden;

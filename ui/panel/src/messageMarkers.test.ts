@@ -41,6 +41,25 @@ describe("parseMessageSegments", () => {
     expect(parseMessageSegments(raw)).toEqual([{ kind: "text", text: raw }]);
   });
 
+  it("parses alt markers and keeps document order alongside focus markers", () => {
+    const out = parseMessageSegments(`대안: [[alt:alt-upsize|단면 확대]] 또는 [[focus:${A}|여기]]`);
+    expect(out[1]).toEqual({ kind: "alt", altId: "alt-upsize", label: "단면 확대" });
+    expect(out[3]).toEqual({ kind: "focus", objectIds: [A], label: "여기" });
+  });
+
+  it("falls back to the alt id when the label is omitted", () => {
+    expect(parseMessageSegments("[[alt:base|]]")[0]).toEqual({
+      kind: "alt",
+      altId: "base",
+      label: "base",
+    });
+  });
+
+  it("rejects alt ids with unsafe characters", () => {
+    const raw = "[[alt:../etc|나쁨]]";
+    expect(parseMessageSegments(raw)).toEqual([{ kind: "text", text: raw }]);
+  });
+
   it("trims whitespace inside the id list", () => {
     const out = parseMessageSegments(`[[focus: ${A} , ${B} |쌍]]`);
     expect(out[0]).toEqual({ kind: "focus", objectIds: [A, B], label: "쌍" });

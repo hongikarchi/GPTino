@@ -92,6 +92,16 @@ class HttpApiClient implements GptinoApiClient {
     });
 
     if (!response.ok) {
+      // A 401 here is never something the user did wrong: the panel authenticates with a
+      // cookie minted by a one-time bootstrap nonce, so the session goes stale whenever the
+      // AgentHost it was minted for is gone (Rhino restarted, another instance took the
+      // port). Raw server JSON told the user nothing actionable; name the fix instead.
+      if (response.status === 401) {
+        throw new Error(
+          "패널 세션이 만료됐습니다 (이 런타임의 토큰이 아닙니다). 패널을 닫았다가 " +
+            "GPTinoOpenPanel로 다시 열면 복구됩니다.",
+        );
+      }
       const detail = await response.text();
       throw new Error(detail || `GPTino API returned ${response.status}`);
     }
