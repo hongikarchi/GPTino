@@ -1,0 +1,7 @@
+실무 파일 위 구조 스켈레톤 오버레이: 지금 열린 문서가 실제 건물 모델이야. 해석 결과 스켈레톤을 실제 철골 솔리드 위에 겹쳐 그려줘.
+- Python 3 스크립트 컴포넌트, 컴포넌트 자체의 닉네임(출력 소켓 아님)에 "RealModelViz"를 포함.
+- 입력: vizPath (item, str — Panel로 "C:\Users\user\Desktop\GPTino\artifacts\viz-base.json"), scale (슬라이더 1~500, 기본 20), colorCapMm (슬라이더 1~200, 기본 50), dispCapMm (슬라이더 1~200, 기본 30)
+- 동작: json 로드 → 각 부재에 대해 원형 선(a.xyz→b.xyz, mm 실좌표 그대로 — 재배치 금지! 실제 솔리드와 겹쳐야 함)과 변형 선(변위 방향 유지·크기 min(|d|,dispCapMm)×scale) → dispMm(실변위 평균), tColor(colorCapMm 클램프 0~1)
+- 출력: origLines, defLines, dispMm, tColor, status
+- Gradient(0=파랑→1=빨강) + Custom Preview로 defLines 색칠, origLines는 회색 흐리게 별도 Preview
+- 완료 후 defLines 개수와 바운딩박스 크기를 보고해줘.
