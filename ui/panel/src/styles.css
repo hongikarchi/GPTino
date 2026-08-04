@@ -1598,6 +1598,18 @@ button.llm-auth:hover strong {
 .audit-card-keep { display: flex; gap: 14px; padding: 4px 0 0 24px; color: var(--muted); font-size: var(--fs-meta); }
 .audit-card-keep label { display: inline-flex; gap: 4px; align-items: center; font-family: var(--mono); }
 .audit-card-footer { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+/* "Nothing was in scope" is a warning, not a result: it must not read like the calm grey of a
+   clean scan, because the two are exactly what the user must be able to tell apart. */
+.audit-card-nothing-scanned {
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  border-left: 3px solid var(--amber, #e6b85c);
+  border-radius: 0 6px 6px 0;
+  background: rgb(230 184 92 / 0.08);
+  color: #ecd3a1;
+  font-size: var(--fs-sec);
+  line-height: 1.5;
+}
 
 /* Curator tab: preset row above the chat. */
 .curator-region { display: flex; flex-direction: column; min-height: 0; }

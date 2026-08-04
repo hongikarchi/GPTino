@@ -218,12 +218,20 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             case "nearDuplicates":
                 outcome = AuditNearDuplicates(document, tolerance, limit, cancellationToken);
                 break;
+            case "openBrepEdges":
+            {
+                var bandFactor = request.BandFactor is > 1 ? Math.Min(request.BandFactor.Value, 100.0) : 10.0;
+                bandUsed = tolerance * bandFactor;
+                outcome = AuditOpenBrepEdges(document, tolerance, bandUsed.Value, limit, cancellationToken);
+                break;
+            }
             case "purgeCandidates":
                 outcome = AuditPurgeCandidates(document, limit, cancellationToken);
                 break;
             default:
                 throw new InvalidOperationException(
-                    $"Unknown audit kind '{request.Kind}'. Use nearMissEndpoints|nearDuplicates|purgeCandidates.");
+                    $"Unknown audit kind '{request.Kind}'. " +
+                    "Use nearMissEndpoints|nearDuplicates|openBrepEdges|purgeCandidates.");
         }
         var fingerprint = Hash(
             $"audit|{kind}|{tolerance:R}|" +
@@ -399,10 +407,185 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         return (findings, scanned, truncated);
     }
 
+    private static bool IsSolidGeometry(GeometryBase geometry) =>
+        geometry is Brep or Extrusion;
+
+    /// <summary>
+    /// A Brep view of solid geometry. Extrusions are a compact representation of a Brep, so this is
+    /// how an extruded box and the same box as a Brep become comparable at all.
+    /// </summary>
+    private static Brep? AsBrep(GeometryBase geometry) => geometry switch
+    {
+        Brep brep => brep,
+        Extrusion extrusion => extrusion.ToBrep(),
+        _ => null
+    };
+
+    /// <summary>
+    /// Max distance between the two solids' vertex sets, or null when they are not the same solid.
+    /// Vertices are sorted canonically (x, then y, then z) and compared pairwise: the same corners
+    /// in the same places means the same occupied space, whichever representation each side uses.
+    /// A differing vertex COUNT is a definitive no — this analyzer reports occupied-space copies,
+    /// and it does not try to decide whether two differently-built shells are "the same".
+    /// </summary>
+    private static double? SolidVertexDeviation(GeometryBase a, GeometryBase b, double tolerance)
+    {
+        var brepA = AsBrep(a);
+        var brepB = AsBrep(b);
+        if (brepA is null || brepB is null || brepA.Vertices.Count != brepB.Vertices.Count ||
+            brepA.Vertices.Count == 0)
+        {
+            return null;
+        }
+        static List<Point3d> SortedVertices(Brep brep) => brep.Vertices
+            .Select(vertex => vertex.Location)
+            .OrderBy(point => point.X)
+            .ThenBy(point => point.Y)
+            .ThenBy(point => point.Z)
+            .ToList();
+        var pointsA = SortedVertices(brepA);
+        var pointsB = SortedVertices(brepB);
+        var deviation = 0.0;
+        for (var index = 0; index < pointsA.Count; index++)
+        {
+            var distance = pointsA[index].DistanceTo(pointsB[index]);
+            if (distance > tolerance)
+            {
+                return null;
+            }
+            deviation = Math.Max(deviation, distance);
+        }
+        return deviation;
+    }
+
+    /// <summary>
+    /// Solids that are NOT closed, ranked by how close they are to closing. A Brep with naked edges
+    /// is the solid-modelling analogue of a curve gap: it looks like a solid, reports no volume, and
+    /// fails boolean operations for a reason nothing on screen shows. The measure is the largest gap
+    /// between naked-edge endpoints that ALMOST meet (gap in (tolerance, band]) — that is the number
+    /// a user needs, because joining at a slightly larger tolerance closes exactly those.
+    ///
+    /// Deliberately reports NO fix. Rebuilding a shell is a modelling decision with many valid
+    /// answers, and offering a one-click "close it" here would be the kind of confident guess this
+    /// project refuses to make. Quarantine stays available for the ones that are genuinely broken.
+    /// </summary>
+    private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditOpenBrepEdges(
+        global::Rhino.RhinoDoc document,
+        double tolerance,
+        double band,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const int MaxSolids = 4000;
+        const int MaxNakedEdgesPerSolid = 512;
+        var scanned = 0;
+        var truncated = false;
+        var open = new List<(RhinoObject Object, int NakedEdges, double? ClosableGap)>();
+        foreach (var rhinoObject in document.Objects
+                     .GetObjectList(AuditEnumerator(ObjectType.Brep | ObjectType.Extrusion))
+                     .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rhinoObject.Geometry is null || AsBrep(rhinoObject.Geometry) is not { } brep)
+            {
+                continue;
+            }
+            if (++scanned > MaxSolids)
+            {
+                truncated = true;
+                break;
+            }
+            // A surface (single face, open by nature) is not a failed solid — only shells that
+            // enclose nothing while looking like they should are worth a user's attention.
+            if (brep.IsSolid || brep.Faces.Count < 2)
+            {
+                continue;
+            }
+            var nakedEdges = brep.Edges
+                .Where(edge => edge.Valence == EdgeAdjacency.Naked)
+                .Take(MaxNakedEdgesPerSolid)
+                .ToList();
+            if (nakedEdges.Count == 0)
+            {
+                continue;
+            }
+            open.Add((rhinoObject, nakedEdges.Count, ClosableGap(nakedEdges, tolerance, band)));
+        }
+
+        // Closable first (an actionable number), then the widest-open shells; both ascending by id
+        // so repeated scans of an unchanged document return an identical list.
+        var findings = open
+            .OrderBy(item => item.ClosableGap is null)
+            .ThenBy(item => item.ClosableGap ?? double.MaxValue)
+            .ThenBy(item => item.Object.Id.ToString("D"), StringComparer.Ordinal)
+            .Take(limit + 1)
+            .Select(item => new RhinoAuditFinding(
+                Hash($"openBrep|{item.Object.Id:D}")[..16],
+                "openBrepEdges",
+                new[] { item.Object.Id },
+                new[] { ToState(item.Object).Fingerprint },
+                item.ClosableGap,
+                item.ClosableGap is { } gap
+                    ? $"Open solid with {item.NakedEdges} naked edge(s); the widest gap that would " +
+                      $"close is {gap:G4} (doc tolerance {tolerance:G4}). Joining at a tolerance " +
+                      $"above that gap would close it — verify the shape first."
+                    : $"Open solid with {item.NakedEdges} naked edge(s), none within {band:G4} of " +
+                      $"closing. This shell is missing geometry, not just tolerance.",
+                Array.Empty<string>(),
+                null))
+            .ToList();
+        if (findings.Count > limit)
+        {
+            findings.RemoveAt(findings.Count - 1);
+            truncated = true;
+        }
+        return (findings, scanned, truncated);
+    }
+
+    /// <summary>
+    /// The largest naked-edge endpoint gap in (tolerance, band], or null when no two naked ends are
+    /// that close. "Largest" on purpose: it is the join tolerance that would close every one of
+    /// them, so it is the number the user would actually type.
+    /// </summary>
+    private static double? ClosableGap(
+        IReadOnlyList<BrepEdge> nakedEdges,
+        double tolerance,
+        double band)
+    {
+        var ends = new List<Point3d>(nakedEdges.Count * 2);
+        foreach (var edge in nakedEdges)
+        {
+            ends.Add(edge.PointAtStart);
+            ends.Add(edge.PointAtEnd);
+        }
+        double? widest = null;
+        for (var i = 0; i < ends.Count; i++)
+        {
+            for (var j = i + 1; j < ends.Count; j++)
+            {
+                var gap = ends[i].DistanceTo(ends[j]);
+                if (gap > tolerance && gap <= band)
+                {
+                    widest = Math.Max(widest ?? 0, gap);
+                }
+            }
+        }
+        return widest;
+    }
+
     // Position-coincident near-duplicates SelDup cannot catch (SelDup requires exact matches).
-    // Scope: curves and points — deterministic deviation math exists for both. Transform-invariant
-    // (rotated/mirrored) duplicate detection is explicitly out of scope. Deletion is ALWAYS a
-    // human triage: bake_manager's append mode stacks design options on purpose.
+    // Scope: points, curves, and SOLIDS (Brep + Extrusion). The solid scope was added after a real
+    // production model turned out to be Brep/Extrusion/block geometry with two top-level curves —
+    // a curve-only analyzer scanned one object out of 2484 and reported nothing, which is
+    // indistinguishable from "the document is clean".
+    //
+    // Solids compare across representations on purpose: an extruded box and the same box as a Brep
+    // are the same occupied space, and that is exactly the copy a user cannot see. The predicate is
+    // the vertex set (same count, same positions within tolerance after a canonical sort) — cheap,
+    // deterministic, and it does NOT claim to catch different-topology coincidences (a box built
+    // from six trimmed surfaces vs one solid), which stay out of scope rather than being guessed at.
+    // Transform-invariant (rotated/mirrored) duplicate detection is also explicitly out of scope.
+    // Deletion is ALWAYS a human triage: bake_manager's append mode stacks design options on purpose.
     private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditNearDuplicates(
         global::Rhino.RhinoDoc document,
         double tolerance,
@@ -414,7 +597,9 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         var items = new List<(Guid Id, RhinoObject Obj, Point3d Center, double Diagonal)>();
         var scanned = 0;
         var truncated = false;
-        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator(ObjectType.Curve | ObjectType.Point))
+        foreach (var rhinoObject in document.Objects
+                     .GetObjectList(AuditEnumerator(
+                         ObjectType.Curve | ObjectType.Point | ObjectType.Brep | ObjectType.Extrusion))
                      .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -455,8 +640,11 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                     continue;
                 }
                 var (idB, objectB, _, diagonalB) = items[hit];
-                if (objectA.Geometry.ObjectType != objectB.Geometry.ObjectType ||
-                    Math.Abs(diagonalA - diagonalB) > tolerance * 4)
+                // Solids compare across Brep/Extrusion (same space, different representation); every
+                // other kind must match exactly, so a point never pairs with a curve.
+                var sameKind = objectA.Geometry.ObjectType == objectB.Geometry.ObjectType ||
+                    (IsSolidGeometry(objectA.Geometry) && IsSolidGeometry(objectB.Geometry));
+                if (!sameKind || Math.Abs(diagonalA - diagonalB) > tolerance * 4)
                 {
                     continue;
                 }
@@ -482,6 +670,10 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                     maxDistance <= tolerance)
                 {
                     measure = maxDistance;
+                }
+                else if (IsSolidGeometry(objectA.Geometry) && IsSolidGeometry(objectB.Geometry))
+                {
+                    measure = SolidVertexDeviation(objectA.Geometry, objectB.Geometry, tolerance);
                 }
                 if (measure is null)
                 {
@@ -511,7 +703,8 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 pair.Measure,
                 $"Position-coincident duplicates (max deviation {pair.Measure:G4} ≤ tolerance {tolerance:G4}): " +
                 $"{pair.A:D} and {pair.B:D}. Which copy to keep is a human decision.",
-                new[] { "deleteOneDuplicate" }))
+                new[] { "deleteOneDuplicate" },
+                null))
             .ToList();
         if (findings.Count > limit)
         {

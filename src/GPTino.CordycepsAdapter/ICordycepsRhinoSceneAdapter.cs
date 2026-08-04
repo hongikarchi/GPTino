@@ -334,7 +334,7 @@ public sealed record UpsertRhinoObjectRequest(
     bool Approved = false) : IRhinoSceneMutationRequest;
 
 /// <summary>
-/// Audit query. Kind: nearMissEndpoints | nearDuplicates | purgeCandidates. Tolerance defaults to
+/// Audit query. Kind: nearMissEndpoints | nearDuplicates | openBrepEdges | purgeCandidates. Tolerance defaults to
 /// the document's absolute tolerance; the near-miss band is (tolerance, tolerance * BandFactor].
 /// Limit bounds returned findings (1..100); analyzers also carry internal scan caps and report
 /// Truncated honestly instead of silently sampling.

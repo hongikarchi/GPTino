@@ -397,6 +397,19 @@ const demoAudits: Record<RhinoAuditKind, RhinoAuditResult> = {
       },
     ],
   },
+  // Deliberately scannedObjects 0: the demo must exercise the "nothing was in scope" branch,
+  // which is the one state a clean-looking "no findings" would misreport.
+  openBrepEdges: {
+    kind: "openBrepEdges",
+    docTolerance: 0.001,
+    docUnits: "Millimeters",
+    toleranceUsed: 0.001,
+    bandUsed: 0.01,
+    scannedObjects: 0,
+    truncated: false,
+    fingerprint: "audit-fixture-open-brep",
+    findings: [],
+  },
   nearDuplicates: {
     kind: "nearDuplicates",
     docTolerance: 0.001,

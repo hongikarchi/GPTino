@@ -118,10 +118,15 @@ internal static class DynamicToolSpecs
                     "Deterministic document-hygiene audit of the bound Rhino document. Detection is server " +
                     "code — never eyeball geometry yourself; call this and TRIAGE the findings. Kinds: " +
                     "nearMissEndpoints (open-curve endpoints almost meeting, gap in (tolerance, " +
-                    "tolerance*bandFactor]), nearDuplicates (position-coincident curves/points SelDup cannot " +
-                    "catch; which copy to keep is always the user's call — design-option stacks are " +
-                    "intentional), purgeCandidates (unused block definitions, empty leaf layers, invalid " +
-                    "objects — quarantine bad objects, never delete them). Every finding carries object " +
+                    "tolerance*bandFactor]), nearDuplicates (position-coincident points, curves and SOLIDS — " +
+                    "Brep and Extrusion compare across representations, so an extruded box and the same box " +
+                    "as a Brep pair up; which copy to keep is always the user's call, design-option stacks " +
+                    "are intentional), openBrepEdges (solids that are not closed, ranked by the gap that " +
+                    "would close them — REPORT ONLY, rebuilding a shell is the user's modelling decision), " +
+                    "purgeCandidates (unused block definitions, empty leaf layers, invalid objects — " +
+                    "quarantine bad objects, never delete them). scannedObjects tells you how many objects " +
+                    "were IN SCOPE: zero scanned means this document holds nothing this kind looks at, which " +
+                    "is NOT the same as a clean document — say which it was. Every finding carries object " +
                     "fingerprints for CAS-pinned follow-up fixes; results name the tolerance and units used. " +
                     "Read-only and parallel-safe.",
                     new
@@ -132,10 +137,10 @@ internal static class DynamicToolSpecs
                             kind = new
                             {
                                 type = "string",
-                                @enum = new[] { "nearMissEndpoints", "nearDuplicates", "purgeCandidates" },
+                                @enum = new[] { "nearMissEndpoints", "nearDuplicates", "openBrepEdges", "purgeCandidates" },
                             },
                             tolerance = new { type = "number", description = "Override; default = document absolute tolerance." },
-                            bandFactor = new { type = "number", description = "nearMissEndpoints band multiplier; default 10." },
+                            bandFactor = new { type = "number", description = "nearMissEndpoints/openBrepEdges band multiplier; default 10." },
                             limit = new { type = "integer", minimum = 1, maximum = 100, description = "Max findings; default 50." }
                         },
                         required = new[] { "kind" },

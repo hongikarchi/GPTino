@@ -20,7 +20,23 @@ interface AuditCardProps {
 const KIND_TITLES: Record<RhinoAuditKind, string> = {
   nearMissEndpoints: "Endpoint gaps",
   nearDuplicates: "Near-duplicates",
+  openBrepEdges: "Open solids",
   purgeCandidates: "Purge candidates",
+};
+
+/** What each kind actually looks at, so "0 scanned" can name what was missing. */
+const KIND_SCOPES: Record<RhinoAuditKind, string> = {
+  nearMissEndpoints: "open curves",
+  nearDuplicates: "points, curves or solids",
+  openBrepEdges: "multi-face solids",
+  purgeCandidates: "document entries",
+};
+
+/** Where to look instead when a kind has nothing in scope. */
+const KIND_ALTERNATIVES: Partial<Record<RhinoAuditKind, string>> = {
+  nearMissEndpoints: "Open solids",
+  nearDuplicates: "Open solids or Purge candidates",
+  openBrepEdges: "Purge candidates",
 };
 
 /**
@@ -86,9 +102,20 @@ export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = tru
       {error ? <p className="archive-error">{error}</p> : null}
       {result && !loading ? (
         result.findings.length === 0 ? (
-          <p className="archive-note">
-            No findings — {result.scannedObjects} object{result.scannedObjects === 1 ? "" : "s"} scanned clean.
-          </p>
+          // Nothing scanned is NOT a clean document: this check looks at particular geometry, and a
+          // solids- or block-heavy model can hold none of it. Saying "clean" there would be a false
+          // all-clear — the one thing this project must never report.
+          result.scannedObjects === 0 ? (
+            <p className="audit-card-nothing-scanned">
+              Nothing to check — this document holds no {KIND_SCOPES[kind]} at the top level, so this
+              check looked at 0 objects. That is not the same as clean.
+              {KIND_ALTERNATIVES[kind] ? ` Try ${KIND_ALTERNATIVES[kind]} instead.` : ""}
+            </p>
+          ) : (
+            <p className="archive-note">
+              No findings — {result.scannedObjects} {KIND_SCOPES[kind]} scanned clean.
+            </p>
+          )
         ) : (
           <>
             <ul className="audit-card-list">

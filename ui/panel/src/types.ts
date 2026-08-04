@@ -114,7 +114,11 @@ export interface DataFlowBakeGroup {
   objectIds: string[];
 }
 
-export type RhinoAuditKind = "nearMissEndpoints" | "nearDuplicates" | "purgeCandidates";
+export type RhinoAuditKind =
+  | "nearMissEndpoints"
+  | "nearDuplicates"
+  | "openBrepEdges"
+  | "purgeCandidates";
 
 export interface RhinoAuditFinding {
   findingId: string;

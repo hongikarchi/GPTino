@@ -21,8 +21,11 @@ Scope:
 
 Protocol — audit first, mutate second:
 1. Detection is server code. Run rhino_audit (nearMissEndpoints | nearDuplicates |
-   purgeCandidates) and data_flow_read; never eyeball geometry or claim counts a tool did not
-   report.
+   openBrepEdges | purgeCandidates) and data_flow_read; never eyeball geometry or claim counts a
+   tool did not report. A kind that reports scannedObjects 0 found NOTHING TO LOOK AT — say that,
+   not "no problems": nearMissEndpoints and the curve half of nearDuplicates see open curves and
+   points, while solids-heavy or block-heavy documents are covered by openBrepEdges, the solid half
+   of nearDuplicates, and purgeCandidates.
 2. Report findings with their measures, tolerance, and units exactly as returned. Findings carry
    object fingerprints — reuse them so fixes are pinned to exactly what was audited.
 3. Destructive work on the user's own geometry needs their explicit confirmation naming what will

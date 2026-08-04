@@ -51,7 +51,8 @@ const PRESETS: { label: string; title: string; prompt: string }[] = [
 
 const AUDIT_PRESETS: { label: string; title: string; kind: RhinoAuditKind }[] = [
   { label: "Endpoint gaps", title: "Open-curve endpoints that almost meet", kind: "nearMissEndpoints" },
-  { label: "Duplicates", title: "Near-duplicate curves/points SelDup cannot catch", kind: "nearDuplicates" },
+  { label: "Duplicates", title: "Position-coincident points, curves and solids SelDup cannot catch", kind: "nearDuplicates" },
+  { label: "Open solids", title: "Breps/extrusions that are not closed, ranked by the gap that would close them", kind: "openBrepEdges" },
   { label: "Purge candidates", title: "Unused blocks, empty layers, invalid objects", kind: "purgeCandidates" },
 ];
 
