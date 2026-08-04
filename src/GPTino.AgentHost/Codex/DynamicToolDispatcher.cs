@@ -109,6 +109,7 @@ public sealed class DynamicToolDispatcher
     private readonly ILiveDocumentBackend _backend;
     private readonly string _artifactRoot;
     private readonly SkillLibrary? _skills;
+    private readonly DataLibrary? _data;
     private readonly SessionActivityLog? _activity;
     private readonly ProjectContextStore? _context;
     private readonly ProblemLog? _problems;
@@ -120,11 +121,13 @@ public sealed class DynamicToolDispatcher
         SkillLibrary? skills = null,
         SessionActivityLog? activity = null,
         ProjectContextStore? context = null,
-        ProblemLog? problems = null)
+        ProblemLog? problems = null,
+        DataLibrary? data = null)
     {
         _store = store;
         _backend = backend;
         _skills = skills;
+        _data = data;
         _activity = activity;
         _context = context;
         _problems = problems;
@@ -166,6 +169,7 @@ public sealed class DynamicToolDispatcher
                     await _backend.ReadJobAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "skill_read" => DynamicToolResult.Ok(RequireSkills().Read(TryString(call.Arguments, "name"))),
                 "memory_append" => AppendMemory(call),
+                "data_read" => DynamicToolResult.Ok(RequireData().Read(TryString(call.Arguments, "name"))),
                 _ => DynamicToolResult.Fail($"Unsupported GPTino tool: {call.Tool}")
             };
             // Dev-only latency stream: EVERY call (incl. job_status polls, which RecordActivityAsync
@@ -200,6 +204,9 @@ public sealed class DynamicToolDispatcher
 
     private SkillLibrary RequireSkills() =>
         _skills ?? throw new InvalidOperationException("The skill library is not available in this runtime.");
+
+    private DataLibrary RequireData() =>
+        _data ?? throw new InvalidOperationException("The data library is not available in this runtime.");
 
     private DynamicToolResult AppendMemory(DynamicToolCall call)
     {
@@ -268,6 +275,7 @@ public sealed class DynamicToolDispatcher
         "job_status" => "Polling job status",
         "skill_read" => $"Reading skill {TryString(call.Arguments, "name")}",
         "memory_append" => "Saving a project memory note",
+        "data_read" => $"Reading data {TryString(call.Arguments, "name")}",
         _ => call.Tool
     };
 

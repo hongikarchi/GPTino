@@ -1,6 +1,6 @@
 # GPTino 구조해석 구현 계획 (세션 단위, file:line 확정)
 
-**작성일**: 2026-07-30 · **상태**: 세션 0·1·2·3 + M1 스모크 완료 (2026-08-04 라이브 검증: bare-name `#r` 확정·net8.0-windows, AnalyzeThI 시그니처, kN/m²+cm 단위 함정 백필; V2 이론해 7.634mm 정확 일치·평형·GH_Model→ModelView 수락 확정; 세션 3 게이트는 지지-제거 교란으로 FAIL, 복원으로 PASS 왕복 실증. structural_check.py 라이브 배선 검증은 후속 벤치마크에서) · **상위 문서**: `structural-analysis-plan.md` (전략·검증)
+**작성일**: 2026-07-30 · **상태**: **전 세션(0~4) 완료** — 세션 4는 DataLibrary/data_read/카탈로그 Phase 1 + V1 자기일관성 92관계 통과(2026-08-04, It·Iw는 Karamba 테이블 3-way 임포트로 이연). 이전 진행: 세션 0·1·2·3 + M1 스모크 완료 (2026-08-04 라이브 검증: bare-name `#r` 확정·net8.0-windows, AnalyzeThI 시그니처, kN/m²+cm 단위 함정 백필; V2 이론해 7.634mm 정확 일치·평형·GH_Model→ModelView 수락 확정; 세션 3 게이트는 지지-제거 교란으로 FAIL, 복원으로 PASS 왕복 실증. structural_check.py 라이브 배선 검증은 후속 벤치마크에서) · **상위 문서**: `structural-analysis-plan.md` (전략·검증)
 · 세션 0 비고: 트리거 포인터는 gh-karamba-cookbook.md만 지목(미존재 스킬 참조 방지 — structural-analysis.md·structural_check.py 포인터는 세션 3에서 확장)
 · **근거**: 4-에이전트 read-only 코드 조사 (스킬 통로 / data_read 신설 지점 / 벤치마크 하네스 /
 스크립트 실행·배선 경로)로 접점을 file:line까지 확정.

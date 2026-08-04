@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "description": "Structural material constants, Phase 1: structural steel per EN 10025.",
+    "units": "Moduli and strengths in kN/m2 (matches Karamba's IsotropicMaterial inputs directly: E=210000000 means 210 GPa); density in kg/m3; thickness bounds in mm",
+    "source": "EN 1993-1-1 / EN 10025 nominal values",
+    "note": "fy is thickness-dependent; rows give the t<=40mm nominal value with the 40<t<=80mm value alongside. gammaM0/gammaM1 are EC3 recommended values (national annexes may differ)."
+  },
+  "materials": [
+    {
+      "name": "S235", "kind": "steel",
+      "E_kNm2": 210000000, "G_kNm2": 80770000, "density_kgm3": 7850,
+      "fy_kNm2_t40": 235000, "fy_kNm2_t80": 215000, "fu_kNm2_t40": 360000,
+      "gammaM0": 1.0, "gammaM1": 1.0,
+      "thermalExpansion_perK": 1.2e-05
+    },
+    {
+      "name": "S355", "kind": "steel",
+      "E_kNm2": 210000000, "G_kNm2": 80770000, "density_kgm3": 7850,
+      "fy_kNm2_t40": 355000, "fy_kNm2_t80": 335000, "fu_kNm2_t40": 490000,
+      "gammaM0": 1.0, "gammaM1": 1.0,
+      "thermalExpansion_perK": 1.2e-05
+    }
+  ]
+}

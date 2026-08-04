@@ -323,6 +323,22 @@ internal static class DynamicToolSpecs
                         },
                         required = new[] { "entry" },
                         additionalProperties = false
+                    }),
+                Function(
+                    "data_read",
+                    "Read a shipped GPTino reference data file, such as the structural catalogs " +
+                    "structural/sections.json (steel profile properties) and structural/materials.json " +
+                    "(material constants). Read-only. Extract the rows you need and inject the values into " +
+                    "script payloads — Rhino-side scripts must never depend on these file paths.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            name = new { type = "string", description = "Data file path relative to the data root, for example structural/sections.json." }
+                        },
+                        required = new[] { "name" },
+                        additionalProperties = false
                     })
             }
         }

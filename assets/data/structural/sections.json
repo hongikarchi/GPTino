@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "description": "Steel section catalog, Phase 1: IPE full series + HEA/HEB representatives. European standard hot-rolled profiles.",
+    "units": { "h": "mm", "b": "mm", "tw": "mm", "tf": "mm", "r": "mm", "A": "cm2", "m": "kg/m", "Iy": "cm4", "Wely": "cm3", "Wply": "cm3", "ry": "cm", "Iz": "cm4", "Welz": "cm3", "Wplz": "cm3", "rz": "cm", "Avz": "cm2" },
+    "axes": "y = strong axis (bending about y), z = weak axis; EC3 convention",
+    "source": "Published European steel profile tables (standard catalog values); verify with scripts/verify-structural-data.ps1 (self-consistency) and 3-way against the Karamba3D bundled table before relying on a new row",
+    "phase1b_pending": "It (torsion) and Iw (warping) columns deferred until the 3-way import from the Karamba table (LTB checks need them)",
+    "significantDigits": 3
+  },
+  "sections": [
+    { "family": "IPE", "name": "IPE80",  "h": 80,  "b": 46,  "tw": 3.8,  "tf": 5.2,  "r": 5,  "A": 7.64,  "m": 6.0,   "Iy": 80.1,   "Wely": 20.0,  "Wply": 23.2,  "ry": 3.24, "Iz": 8.49,  "Welz": 3.69,  "Wplz": 5.82,  "rz": 1.05, "Avz": 3.58 },
+    { "family": "IPE", "name": "IPE100", "h": 100, "b": 55,  "tw": 4.1,  "tf": 5.7,  "r": 7,  "A": 10.3,  "m": 8.1,   "Iy": 171,    "Wely": 34.2,  "Wply": 39.4,  "ry": 4.07, "Iz": 15.9,  "Welz": 5.79,  "Wplz": 9.15,  "rz": 1.24, "Avz": 5.08 },
+    { "family": "IPE", "name": "IPE120", "h": 120, "b": 64,  "tw": 4.4,  "tf": 6.3,  "r": 7,  "A": 13.2,  "m": 10.4,  "Iy": 318,    "Wely": 53.0,  "Wply": 60.7,  "ry": 4.90, "Iz": 27.7,  "Welz": 8.65,  "Wplz": 13.6,  "rz": 1.45, "Avz": 6.31 },
+    { "family": "IPE", "name": "IPE140", "h": 140, "b": 73,  "tw": 4.7,  "tf": 6.9,  "r": 7,  "A": 16.4,  "m": 12.9,  "Iy": 541,    "Wely": 77.3,  "Wply": 88.3,  "ry": 5.74, "Iz": 44.9,  "Welz": 12.3,  "Wplz": 19.2,  "rz": 1.65, "Avz": 7.64 },
+    { "family": "IPE", "name": "IPE160", "h": 160, "b": 82,  "tw": 5.0,  "tf": 7.4,  "r": 9,  "A": 20.1,  "m": 15.8,  "Iy": 869,    "Wely": 109,   "Wply": 124,   "ry": 6.58, "Iz": 68.3,  "Welz": 16.7,  "Wplz": 26.1,  "rz": 1.84, "Avz": 9.66 },
+    { "family": "IPE", "name": "IPE180", "h": 180, "b": 91,  "tw": 5.3,  "tf": 8.0,  "r": 9,  "A": 23.9,  "m": 18.8,  "Iy": 1317,   "Wely": 146,   "Wply": 166,   "ry": 7.42, "Iz": 101,   "Welz": 22.2,  "Wplz": 34.6,  "rz": 2.05, "Avz": 11.3 },
+    { "family": "IPE", "name": "IPE200", "h": 200, "b": 100, "tw": 5.6,  "tf": 8.5,  "r": 12, "A": 28.5,  "m": 22.4,  "Iy": 1943,   "Wely": 194,   "Wply": 221,   "ry": 8.26, "Iz": 142,   "Welz": 28.5,  "Wplz": 44.6,  "rz": 2.24, "Avz": 14.0 },
+    { "family": "IPE", "name": "IPE220", "h": 220, "b": 110, "tw": 5.9,  "tf": 9.2,  "r": 12, "A": 33.4,  "m": 26.2,  "Iy": 2772,   "Wely": 252,   "Wply": 285,   "ry": 9.11, "Iz": 205,   "Welz": 37.3,  "Wplz": 58.1,  "rz": 2.48, "Avz": 15.9 },
+    { "family": "IPE", "name": "IPE240", "h": 240, "b": 120, "tw": 6.2,  "tf": 9.8,  "r": 15, "A": 39.1,  "m": 30.7,  "Iy": 3892,   "Wely": 324,   "Wply": 367,   "ry": 9.97, "Iz": 284,   "Welz": 47.3,  "Wplz": 73.9,  "rz": 2.69, "Avz": 19.1 },
+    { "family": "IPE", "name": "IPE270", "h": 270, "b": 135, "tw": 6.6,  "tf": 10.2, "r": 15, "A": 45.9,  "m": 36.1,  "Iy": 5790,   "Wely": 429,   "Wply": 484,   "ry": 11.2, "Iz": 420,   "Welz": 62.2,  "Wplz": 97.0,  "rz": 3.02, "Avz": 22.1 },
+    { "family": "IPE", "name": "IPE300", "h": 300, "b": 150, "tw": 7.1,  "tf": 10.7, "r": 15, "A": 53.8,  "m": 42.2,  "Iy": 8356,   "Wely": 557,   "Wply": 628,   "ry": 12.5, "Iz": 604,   "Welz": 80.5,  "Wplz": 125,   "rz": 3.35, "Avz": 25.7 },
+    { "family": "IPE", "name": "IPE330", "h": 330, "b": 160, "tw": 7.5,  "tf": 11.5, "r": 18, "A": 62.6,  "m": 49.1,  "Iy": 11770,  "Wely": 713,   "Wply": 804,   "ry": 13.7, "Iz": 788,   "Welz": 98.5,  "Wplz": 154,   "rz": 3.55, "Avz": 30.8 },
+    { "family": "IPE", "name": "IPE360", "h": 360, "b": 170, "tw": 8.0,  "tf": 12.7, "r": 18, "A": 72.7,  "m": 57.1,  "Iy": 16270,  "Wely": 904,   "Wply": 1019,  "ry": 15.0, "Iz": 1043,  "Welz": 123,   "Wplz": 191,   "rz": 3.79, "Avz": 35.1 },
+    { "family": "IPE", "name": "IPE400", "h": 400, "b": 180, "tw": 8.6,  "tf": 13.5, "r": 21, "A": 84.5,  "m": 66.3,  "Iy": 23130,  "Wely": 1156,  "Wply": 1307,  "ry": 16.5, "Iz": 1318,  "Welz": 146,   "Wplz": 229,   "rz": 3.95, "Avz": 42.7 },
+    { "family": "IPE", "name": "IPE450", "h": 450, "b": 190, "tw": 9.4,  "tf": 14.6, "r": 21, "A": 98.8,  "m": 77.6,  "Iy": 33740,  "Wely": 1500,  "Wply": 1702,  "ry": 18.5, "Iz": 1676,  "Welz": 176,   "Wplz": 276,   "rz": 4.12, "Avz": 50.8 },
+    { "family": "IPE", "name": "IPE500", "h": 500, "b": 200, "tw": 10.2, "tf": 16.0, "r": 21, "A": 116,   "m": 90.7,  "Iy": 48200,  "Wely": 1928,  "Wply": 2194,  "ry": 20.4, "Iz": 2142,  "Welz": 214,   "Wplz": 336,   "rz": 4.31, "Avz": 59.9 },
+    { "family": "IPE", "name": "IPE550", "h": 550, "b": 210, "tw": 11.1, "tf": 17.2, "r": 24, "A": 134,   "m": 106,   "Iy": 67120,  "Wely": 2441,  "Wply": 2787,  "ry": 22.3, "Iz": 2668,  "Welz": 254,   "Wplz": 401,   "rz": 4.45, "Avz": 72.3 },
+    { "family": "IPE", "name": "IPE600", "h": 600, "b": 220, "tw": 12.0, "tf": 19.0, "r": 24, "A": 156,   "m": 122,   "Iy": 92080,  "Wely": 3069,  "Wply": 3512,  "ry": 24.3, "Iz": 3387,  "Welz": 308,   "Wplz": 486,   "rz": 4.66, "Avz": 83.8 },
+    { "family": "HEA", "name": "HEA100", "h": 96,  "b": 100, "tw": 5.0,  "tf": 8.0,  "r": 12, "A": 21.2,  "m": 16.7,  "Iy": 349.2,  "Wely": 72.8,  "Wply": 83.0,  "ry": 4.06, "Iz": 133.8, "Welz": 26.8,  "Wplz": 41.1,  "rz": 2.51, "Avz": 7.56 },
+    { "family": "HEA", "name": "HEA200", "h": 190, "b": 200, "tw": 6.5,  "tf": 10.0, "r": 18, "A": 53.8,  "m": 42.3,  "Iy": 3692,   "Wely": 388.6, "Wply": 429.5, "ry": 8.28, "Iz": 1336,  "Welz": 133.6, "Wplz": 203.8, "rz": 4.98, "Avz": 18.1 },
+    { "family": "HEA", "name": "HEA300", "h": 290, "b": 300, "tw": 8.5,  "tf": 14.0, "r": 27, "A": 112.5, "m": 88.3,  "Iy": 18260,  "Wely": 1260,  "Wply": 1383,  "ry": 12.7, "Iz": 6310,  "Welz": 420.6, "Wplz": 641.2, "rz": 7.49, "Avz": 37.3 },
+    { "family": "HEB", "name": "HEB200", "h": 200, "b": 200, "tw": 9.0,  "tf": 15.0, "r": 18, "A": 78.1,  "m": 61.3,  "Iy": 5696,   "Wely": 569.6, "Wply": 642.5, "ry": 8.54, "Iz": 2003,  "Welz": 200.3, "Wplz": 305.8, "rz": 5.07, "Avz": 24.8 },
+    { "family": "HEB", "name": "HEB300", "h": 300, "b": 300, "tw": 11.0, "tf": 19.0, "r": 27, "A": 149.1, "m": 117,   "Iy": 25170,  "Wely": 1678,  "Wply": 1869,  "ry": 13.0, "Iz": 8563,  "Welz": 570.9, "Wplz": 870.1, "rz": 7.58, "Avz": 47.4 }
+  ]
+}

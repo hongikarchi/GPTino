@@ -75,6 +75,7 @@ builder.Services.AddSingleton(new ProjectArchiveReader(
     ProjectArchiveReader.DefaultProjectsParentDirectory(),
     options.ResolveDataDirectory()));
 builder.Services.AddSingleton<SkillLibrary>();
+builder.Services.AddSingleton<DataLibrary>();
 builder.Services.AddSingleton<SessionActivityLog>();
 builder.Services.AddSingleton<IThreadInstructionComposer, InstructionAssembler>();
 builder.Services.AddSingleton<RuntimeControl>();
