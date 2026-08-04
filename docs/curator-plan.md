@@ -302,6 +302,38 @@ listReferencedRhinoIds 추가분.
 7. structural-analysis(Karamba) 트랙과는 도메인이 분리(GH vs Rhino 어댑터)되어 위험이
    낮지만, 그 트랙이 op을 추가하면 같은 배관 테이블에서 만난다 — 상호 append 규칙 준수.
 
+## 라이브 게이트 기록 (Phase 4/5, 2026-08-04 완료)
+
+전부 dev-loop 실Rhino에서 curator 세션을 통해 구동. 통과 = 브로커 잡 상태와 서버가
+재관측한 문서 상태 양쪽으로 확인(모델 자기보고 불인정).
+
+| 게이트 | 결과 |
+| --- | --- |
+| `ensureRhinoLayer` 중첩 경로 `GPTino::Quarantine` | 통과 — 부모 `GPTino` 자동 생성, 최상위 `Quarantine` 오생성 없음 |
+| `moveObjectsToLayer` 무승인 | 통과 — `approval_required` → **Failed**(RecoveryRequired 아님) |
+| `moveObjectsToLayer` + grant | 통과 — Default 6→5, Quarantine 1 |
+| `deleteRhinoLayer` 점유 레이어 | 통과 — `precondition_refused` → Failed |
+| `saveRhinoLayerState` save→숨김→restore | 통과 — visible 복구 확인 |
+| `deleteRhinoLayer` 진짜 빈 leaf | 통과 — committed |
+| `purgeTableEntries` 미사용 블록 정의 | 통과 — committed, 재감사 시 finding 소멸 |
+| `deleteRhinoLayer` **블록 멤버만 있는 레이어** | **최초 실패 → 수정 후 통과** (아래) |
+
+**게이트가 잡은 결함**: 레이어 인구조사가 블록 정의 멤버를 센다는 주장이 거짓이었다.
+직전 수정은 `ObjectEnumeratorSettings.IdefObjects`를 2패스로 토글했는데, 그때까지 게이트가
+돌린 모든 씬의 InstanceDefinitions가 **0개**여서 2패스가 실제로 무언가를 반환한 적이 없었다.
+정의가 실재하는 씬을 만들자 멤버만 있는 레이어가 여전히 "빈 leaf"로 집계됐다 —
+deleteLayer의 공허 증명이 사용자에게 보이지 않는 블록 기하를 파괴하도록 승인할 수 있는
+거짓 증명. `EnumerateLayerOccupants`가 `document.InstanceDefinitions`를 순회하며
+`GetObjects()`를 합집합하도록 교체(모드 필터로 무력화 불가, 중첩 정의는 테이블 순회로 자동
+커버). 재게이트에서 `BlockLib` objectCount=1, purgeCandidates 미보고, 삭제 거부 확인.
+
+**부수 마찰**: payload guide가 op별 adapter owner를 명시하지 않아 `deleteRhinoLayer`를
+Cordyceps로 선언했다가 왕복 1회 손실. owner는 kind에서 완전히 파생되므로 선언은 틀릴 수만
+있다 — 두 사본에 매핑 1줄 추가(장기적으로는 서버 파생으로 필드 제거가 옳다).
+
+**미검증**: 3탭 패널의 실제 렌더. 번들 배포는 확인(호스트가 Data 탭 코드를 서빙, 구
+dataLayer 토글 0건)했으나 Chrome 확장이 연결되지 않아 화면 검증은 못 했다.
+
 ## 검증 방법
 
 - 각 phase는 기존 벤치 루프(dev-mode 실Rhino 자율 측정)로 라이브 게이트 통과 후 다음 단계.
