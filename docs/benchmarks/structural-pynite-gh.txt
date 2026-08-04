@@ -1,0 +1,11 @@
+오픈소스 엔진 통합 테스트: Python 3 스크립트 컴포넌트 하나로 PyNite 구조해석을 캔버스 안에서 실행해줘. 컴포넌트 닉네임에 "PyNiteBeam"을 포함해.
+- 소스 맨 위에서 그냥 "from Pynite import FEModel3D" 하면 됨 (Rhino Python 환경에 이미 설치됨 — '# r:' 헤더는 절대 금지)
+- 모델은 코드로 직접: 8m 단순보 (0,0,0)-(4,0,0)-(8,0,0) 노드 3개, 부재 2개
+  - 재료: add_material("s", 2.1e8, 8.076e7, 0.3, 78.5)  [kN/m² 단위계]
+  - 단면: add_section("r", 0.02, 6.667e-5, 1.667e-5, 4.58e-6)  — 주의: PyNite의 Iy 인자가 강축임 (100x200mm 사각: 강축 6.667e-5 먼저)
+  - 지지: 시점 핀(회전 중 비틀림 RX만 추가 고정: True,True,True,True,False,False), 종점 롤러(False,True,True,False,False,False)
+  - 하중: 중앙 노드 -Z 10 kN (add_node_load, case="L") + add_load_combo("L", {"L":1.0})
+  - analyze(check_statics=False) 후 중앙 노드의 DZ["L"]을 읽어
+- results 출력(한 줄 JSON): {"solved":true,"midDzM":<중앙 Z변위, m, 부호 포함>,"engine":"PyNite"} — solved는 성공 시에만
+- 이론 정답: -7.619mm (PyNite는 전단변형 미포함 Euler-Bernoulli라 정확히 이 값 근처여야 함)
+- 완료 후 midDzM 값과, 임포트가 문제없이 됐는지 보고해줘.

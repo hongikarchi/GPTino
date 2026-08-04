@@ -72,6 +72,15 @@ Never compute pass/fail thresholds in ad-hoc script code or in your head. Your j
 - Karamba reports many model problems via warning strings, not exceptions — quote the
   warning in your report; an empty warning plus equilibrium is your "model is sane" signal.
 
+## Engine routing
+
+- Karamba (licensed session, or trial <= 20 beam elements): native views, built-in EC3
+  checks, the cross-validation oracle. gh-karamba-cookbook.md.
+- PyNite (open source, no cap, in-canvas or host-side): real-size models past the trial
+  cap. gh-pynite-cookbook.md — mind its section-axis trap (Iy argument = strong axis).
+- Same model on both engines within the cap = the trust label for the open-source path
+  (displacement ~1%, reactions ~2% agreement expected).
+
 ## Scope honesty
 
 - Trial license: 20 beam / 50 shell ELEMENTS (subdivision counts). Past the cap, tell the
