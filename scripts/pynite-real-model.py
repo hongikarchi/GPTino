@@ -35,7 +35,7 @@ KS = {
     "H-350x175x7x11":  (350, 175, 7, 11, 63.14, 13600, 984),
     "H-300x150x6.5x9": (300, 150, 6.5, 9, 46.78, 7210, 508),
     "H-194x150x6x9":   (194, 150, 6, 9, 39.01, 2690, 507),
-    "H-900x300x16x28": (900, 300, 16, 28, 309.8, 404000, 12600),
+    "H-900x300x16x28": (900, 300, 16, 28, 309.8, 411000, 12600),
     "H-800x300x14x26": (800, 300, 14, 26, 267.4, 292000, 11700),
     "H-700x300x13x24": (700, 300, 13, 24, 235.5, 201000, 10800),
     "H-390x300x10x16": (390, 300, 10, 16, 136.0, 38700, 7210),
@@ -214,7 +214,10 @@ fe = FEModel3D()
 fe.add_material("steel", E, G, 0.3, RHO_KNM3)
 sections_added = set()
 for name, (H, B, tw, tf, A, Ix, Iy) in KS.items():
-    fe.add_section(name, A / 1e4, Iy / 1e8, Ix / 1e8, torsion_J_cm4(H, B, tw, tf) / 1e8)
+    # Pynite add_section(A, Iy, Iz, J): Iy = STRONG axis (governs vertical bending in the
+    # default member orientation) — verified live against the 7.62mm beam oracle both for
+    # X- and Y-running members; the swapped order under-stiffens vertical bending 4x.
+    fe.add_section(name, A / 1e4, Ix / 1e8, Iy / 1e8, torsion_J_cm4(H, B, tw, tf) / 1e8)
 
 for n in used_nodes:
     x, y, z = node_xyz[n]
