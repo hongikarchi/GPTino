@@ -981,6 +981,11 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         {
             tree.Insert(solids[index].Box.Center, index);
         }
+        // Mass properties on a heavy Brep cost whole seconds each, and the deadline can only stop
+        // BETWEEN calls — so the count is capped too. Without this the pass ran 25 seconds past an
+        // 8-second budget on a real model, because a handful of expensive solids is enough.
+        const int MaxVolumeComputations = 120;
+        var volumeComputations = 0;
         var volumes = new double?[solids.Count];
         double? VolumeOf(int index)
         {
@@ -988,11 +993,16 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             {
                 return cached;
             }
+            if (volumeComputations >= MaxVolumeComputations)
+            {
+                return null;
+            }
             var brep = AsBrep(solids[index].Object.Geometry);
             if (brep is null)
             {
                 return null;
             }
+            volumeComputations++;
             var properties = VolumeMassProperties.Compute(brep);
             if (properties is null || properties.Volume <= 0)
             {
