@@ -334,6 +334,42 @@ Cordyceps로 선언했다가 왕복 1회 손실. owner는 kind에서 완전히 �
 **미검증**: 3탭 패널의 실제 렌더. 번들 배포는 확인(호스트가 Data 탭 코드를 서빙, 구
 dataLayer 토글 0건)했으나 Chrome 확장이 연결되지 않아 화면 검증은 못 했다.
 
+## 실사용 모델 검증 (2026-08-04, `260803 main ms.3dm` 사본)
+
+합성 dev 씬이 아니라 **사용자의 실제 프로덕션 모델**(33MB, 레이어 70, 최상위 객체 2484)에서
+전 기능을 돌렸다. 모든 판정은 잡 상태 + 서버 재관측 양쪽으로 확인.
+
+| 항목 | 결과 |
+| --- | --- |
+| 레이어 테이블 읽기 | 통과 — 70 레이어/2484 객체, 62ms |
+| `purgeCandidates` | 통과 — 94ms, 실제 결함 3건 발견(깨진 Brep 2 + 미사용 블록 '1 02') |
+| `saveRhinoLayerState` (70 레이어) | 통과 — committed |
+| `ensureRhinoLayer` 중첩 | 통과 — `GPTino::Quarantine` committed |
+| `deleteRhinoLayer` 점유 레이어 | 통과 — Failed, "still holds objects" |
+| `moveObjectsToLayer` 무승인 (실제 사용자 기하) | 통과 — Failed, approval_required |
+| grant 발급 후 재시도 | 통과 — committed, 격리 2건 |
+| `purgeTableEntries` 실제 미사용 블록 | 통과 — committed |
+| data-flow read | 통과 — 200, 참조/bake 0 (GH 빈 문서) |
+
+**블록 멤버 인구조사 교차검증**: purge 후 총 객체가 2484 → **2477**로 정확히 7 감소했고,
+이는 블록 '1 02'의 멤버 객체 수와 일치한다. 인구조사가 블록 멤버를 실제로 세고 있다는
+독립적인 확인(합성 픽스처가 아닌 실데이터에서).
+
+### 발견: 감사 2종이 실사용 모델에서 무력
+
+`nearMissEndpoints`는 scanned **0**, `nearDuplicates`는 scanned **1**이었다. 버그가 아니라
+**스코프 불일치**다 — 두 분석기의 타입 필터가 `ObjectType.Curve | ObjectType.Point`인데,
+이 모델의 최상위 구성은 Brep 304 / Extrusion 13 / **InstanceReference 181** / Curve 2
+(표본 500 기준)이다. 즉 사용자의 실제 작업물에서 오늘 가치를 내는 감사는 `purgeCandidates`
+하나뿐이다.
+
+두 갈래의 후속이 필요하다:
+1. **솔리드 대상 확장** — Brep/Extrusion 근사 중복(같은 표현·같은 위치의 복제), 열린 Brep
+   가장자리 near-miss. bbox 프리필터는 그대로 쓰되 비교 술어가 커브용과 다르다.
+2. **블록 내부** — 최상위 181개가 InstanceReference라는 건 기하 상당수가 정의 안에 있다는
+   뜻이다. 감사는 의도적으로 최상위만 본다(v1 결정). 실모델에서는 이 결정이 커버리지의
+   대부분을 잘라낸다 — 정의 단위 감사(정의당 1회, 인스턴스 수와 무관)를 재검토할 것.
+
 ## 검증 방법
 
 - 각 phase는 기존 벤치 루프(dev-mode 실Rhino 자율 측정)로 라이브 게이트 통과 후 다음 단계.
