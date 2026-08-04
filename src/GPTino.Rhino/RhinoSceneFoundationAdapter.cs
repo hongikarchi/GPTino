@@ -495,6 +495,10 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         const int MaxNakedEdgesPerSolid = 512;
         var scanned = 0;
         var truncated = false;
+        // Same wall clock as the QC sweeps: a UI-thread analyzer that outlives the bridge budget
+        // returns nothing AND leaves Rhino wedged for the next call.
+        var budget = Stopwatch.StartNew();
+        var deadline = TimeSpan.FromSeconds(12);
         var open = new List<(RhinoObject Object, int NakedEdges, double? ClosableGap)>();
         foreach (var rhinoObject in document.Objects
                      .GetObjectList(AuditEnumerator(ObjectType.Brep | ObjectType.Extrusion))
@@ -505,7 +509,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             {
                 continue;
             }
-            if (++scanned > MaxSolids)
+            if (++scanned > MaxSolids || budget.Elapsed > deadline)
             {
                 truncated = true;
                 break;
@@ -573,12 +577,27 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             ends.Add(edge.PointAtStart);
             ends.Add(edge.PointAtEnd);
         }
-        double? widest = null;
-        for (var i = 0; i < ends.Count; i++)
+        // RTree, not a double loop: a shell with the 512-edge cap has 1024 ends, and the all-pairs
+        // version is half a million distance checks PER SOLID — on a few hundred solids that alone
+        // exhausted the bridge budget. Only ends within the band can matter, which is what the tree
+        // answers directly.
+        var tree = new RTree();
+        for (var index = 0; index < ends.Count; index++)
         {
-            for (var j = i + 1; j < ends.Count; j++)
+            tree.Insert(ends[index], index);
+        }
+        double? widest = null;
+        for (var index = 0; index < ends.Count; index++)
+        {
+            var hits = new List<int>();
+            tree.Search(new Sphere(ends[index], band), (_, args) => hits.Add(args.Id));
+            foreach (var hit in hits)
             {
-                var gap = ends[i].DistanceTo(ends[j]);
+                if (hit <= index)
+                {
+                    continue;
+                }
+                var gap = ends[index].DistanceTo(ends[hit]);
                 if (gap > tolerance && gap <= band)
                 {
                     widest = Math.Max(widest ?? 0, gap);
@@ -751,8 +770,12 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         // The bridge gives a UI-thread operation 45 seconds. A sweep that blows through it freezes
         // Rhino and returns nothing at all, which is strictly worse than partial results — so the
         // whole sweep runs against a wall clock and reports Truncated when it stops early.
+        // Checked INSIDE every pass, not merely between them: the first version only tested at
+        // pass boundaries, so one slow pass still ran past the bridge budget and left the UI thread
+        // wedged for the next call. 12s leaves the bridge's 45s room to answer.
         var budget = Stopwatch.StartNew();
-        var deadline = TimeSpan.FromSeconds(20);
+        var deadline = TimeSpan.FromSeconds(12);
+        bool Expired() => budget.Elapsed > deadline;
 
         // ESTIMATED boxes here on purpose. An accurate box evaluates every surface, and 2484 of
         // them alone exhausted the bridge budget on a real model. The estimate is a superset of the
@@ -767,7 +790,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             {
                 continue;
             }
-            if (++scanned > MaxObjects || budget.Elapsed > deadline)
+            if (++scanned > MaxObjects || Expired())
             {
                 truncated = true;
                 break;
@@ -784,20 +807,21 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         // findings most likely to matter rather than whichever ran fastest by accident.
         foreach (var pass in new Func<IEnumerable<RhinoAuditFinding>>[]
         {
-            () => FindTinyAndSliverObjects(items, tolerance, perKind, cancellationToken),
+            () => FindTinyAndSliverObjects(items, tolerance, perKind, Expired, cancellationToken),
             () => FindStrayObjects(items, perKind, cancellationToken),
-            () => FindMappingHazards(items, perKind, cancellationToken),
-            () => FindPartialDuplicates(items, tolerance, perKind, cancellationToken),
-            () => FindAdjacentFaceGaps(items, tolerance, band, perKind, cancellationToken),
+            () => FindMappingHazards(items, perKind, Expired, cancellationToken),
+            () => FindPartialDuplicates(items, tolerance, perKind, Expired, cancellationToken),
+            () => FindAdjacentFaceGaps(items, tolerance, band, perKind, Expired, cancellationToken),
         })
         {
-            if (budget.Elapsed > deadline)
+            if (Expired())
             {
                 truncated = true;
                 break;
             }
             findings.AddRange(pass());
         }
+        truncated = truncated || Expired();
         return (Bounded(findings, limit, ref truncated), scanned, truncated);
     }
 
@@ -811,6 +835,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         IReadOnlyList<(RhinoObject Object, BoundingBox Box)> items,
         double tolerance,
         int limit,
+        Func<bool> expired,
         CancellationToken cancellationToken)
     {
         var tiny = new List<RhinoAuditFinding>();
@@ -819,7 +844,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         foreach (var (rhinoObject, box) in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (tiny.Count >= limit && slivers.Count >= limit)
+            if (expired() || (tiny.Count >= limit && slivers.Count >= limit))
             {
                 break;
             }
@@ -939,6 +964,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         IReadOnlyList<(RhinoObject Object, BoundingBox Box)> items,
         double tolerance,
         int limit,
+        Func<bool> expired,
         CancellationToken cancellationToken)
     {
         const int MaxPairChecks = 4000;
@@ -978,7 +1004,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         var pairChecks = 0;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var findings = new List<RhinoAuditFinding>();
-        for (var index = 0; index < solids.Count && findings.Count < limit; index++)
+        for (var index = 0; index < solids.Count && findings.Count < limit && !expired(); index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (objectA, boxA) = solids[index];
@@ -1058,6 +1084,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         double tolerance,
         double band,
         int limit,
+        Func<bool> expired,
         CancellationToken cancellationToken)
     {
         const int MaxEnds = 40000;
@@ -1067,6 +1094,10 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         foreach (var (rhinoObject, _) in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (expired())
+            {
+                break;
+            }
             if (ends.Count >= MaxEnds || AsBrep(rhinoObject.Geometry) is not { } brep || brep.IsSolid)
             {
                 continue;
@@ -1094,7 +1125,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         }
         var pairChecks = 0;
         var pairs = new Dictionary<string, (Guid A, Guid B, double Gap)>(StringComparer.Ordinal);
-        for (var index = 0; index < ends.Count && pairs.Count < limit; index++)
+        for (var index = 0; index < ends.Count && pairs.Count < limit && !expired(); index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (idA, pointA) = ends[index];
@@ -1151,6 +1182,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
     private static IEnumerable<RhinoAuditFinding> FindMappingHazards(
         IReadOnlyList<(RhinoObject Object, BoundingBox Box)> items,
         int limit,
+        Func<bool> expired,
         CancellationToken cancellationToken)
     {
         var multiple = new List<RhinoAuditFinding>();
@@ -1158,7 +1190,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         foreach (var (rhinoObject, _) in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (multiple.Count >= limit && missing.Count >= limit)
+            if (expired() || (multiple.Count >= limit && missing.Count >= limit))
             {
                 break;
             }
