@@ -78,6 +78,17 @@ standardizes the solver plumbing.
   `elems[middle].crosec.name` (a MIDDLE element — element 0 can be the only correct one, see
   broadcast trap) and prefer position-anchored supports/loads (Point3 overloads) over node
   indices when geometry is available.
+- **Utilization (confirmed live)**: `Karamba.Results.Utilization.solve(model, resultIds,
+  loadCaseIndex, resultCount, elasticDesign, gammaM0, gammaM1, withDetails, out var
+  utilization, out var msg)` — `resultIds` must repeat the beam id PER ELEMENT (broadcast
+  trap again); an unmatched selector returns EMPTY results, not an error.
+- **BUCKLING LENGTH DEFAULTS TO THE ELEMENT LENGTH (confirmed live)**: after subdivision, a
+  3 m column split in 2 gets Ly/Lz/Llt = 1.5 m by default — the physical member length must
+  be set explicitly via `beam.BucklingLength_Set(new Vector3(L, L, L))` on the builder
+  (IsUserValue flips to true). CAUTION: in the live probe, utilization DECREASED when the
+  buckling length was increased (0.066 -> 0.025), which is counter-physical — member-buckling
+  utilization is NOT yet oracle-validated; trust the deflection/strength paths, and flag any
+  buckling-governed verdict as unverified until a dedicated oracle case lands.
 
 ## Solver source scaffold
 

@@ -4,19 +4,17 @@
 # Vetted check code in the bake_manager.py mold: GPTino creates this as a Python 3
 # component and WIRES it — the model never rewrites the verdict math (house rules).
 #
-# Input sockets (declare via setComponentIo, names exact, access in parens):
+# Input sockets (declare via setComponentIo, EXACTLY these four, names exact, all WIRED —
+# Grasshopper treats unwired script inputs as required and will not run the component, so
+# this payload declares no optional sockets):
 #   resultsJson (item, str)   solver's one-line results JSON; must contain the key named
 #                             by deflectionKey below (meters, absolute value used)
 #   memberKind  (item, str)   "simply_supported" | "cantilever" — picks the limit rule
 #   spanM       (item, float) span L in meters (cantilever: the overhang length a)
 #   deflectionKey (item, str) key in resultsJson holding max deflection, e.g.
 #                             "maxDeflectionM" / "maxDisplacementM"
-#   utilizations (list, float) OPTIONAL: member utilizations from Karamba Utilization
-#                             (leave unwired to skip the strength check)
-#   limitDivisor (item, float) OPTIONAL override of the deflection divisor; 0/unwired =
-#                             use the memberKind default (250 simply supported, 125
-#                             cantilever-equivalent). Only override when the user names
-#                             a different code limit.
+# (utilization pass-through returns in a later revision as an explicitly wired socket;
+# the code below tolerates extra sockets if a host declares them optional:true)
 # Output sockets:
 #   verdictJson (item) one-line JSON verdict (see below)
 #   checked     (item) assigned True ONLY when the checks ran to completion — mirror of

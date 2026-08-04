@@ -144,6 +144,14 @@ git worktree로 분리 후 작은 단위로 랜딩.
 서버 가능)를 주 엔진으로**, Karamba는 (a) 캡 내 교차검증 오라클 (b) 라이선스 보유 사용자용
 1급 경로. 세션 0~4의 산출물(이론해 게이트·수치 어서션·단면 카탈로그)이 교차검증 인프라.
 
+**P1·P2 완료 (2026-08-04 저녁)**: P1 조합 API 확정(`LoadCaseCombination(["ULS=1.35*G+1.5*Q"])`,
+선형성·이론해 어서션 8/8 PASS) — 진단 7웨이브로 **LineToBeam 브로드캐스트 함정**(리스트
+1개→요소0만 적용, 나머지 기본 Ø114 강관)과 **변위 API=m 단위 확정**(매뉴얼 "cm"는 컴포넌트
+표시 전용)을 발견·쿡북 백필. P2a 판정 배선 게이트 PASS(처짐비 0.3101 이론 일치; 스킬은
+4소켓 필수-배선으로 수정 — GH가 미배선 입력을 필수 취급). P2b Utilization.solve 시그니처
++ BucklingLength_Set 확보, **분할 부재 좌굴길이 기본값=요소길이(1.5m) 실증** — 단
+좌굴지배 활용률은 역방향 이상(0.066→0.025)으로 오라클 미검증 상태로 명시.
+
 - **P1 — LoadCaseCombination 실험** (dev-loop 1회, 소): 3.1.60519에서
   `FactoryLoad.LoadCaseCombination`/`LoadCaseOptions` + K3D_tests의
   `lcActivation.CalculationFlow.Execute` 패턴 실측. 검증 오라클 = **선형성**:

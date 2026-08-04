@@ -53,7 +53,10 @@ Never compute pass/fail thresholds in ad-hoc script code or in your head. Your j
   API) — say so rather than improvising.
 - Member buckling is INSIDE the EC3 utilization check and depends on buckling length:
   use the PHYSICAL member length, not the subdivided element length — a subdivided
-  column checked with element-length buckling is unsafe. Set buckling lengths explicitly.
+  column checked with element-length buckling is unsafe. CONFIRMED LIVE: Karamba defaults
+  Ly/Lz/Llt to the ELEMENT length after subdivision; set the physical length explicitly
+  (BucklingLength_Set). Member-buckling utilization itself is not yet oracle-validated —
+  present buckling-governed verdicts as provisional.
 
 ## Reading results ([4]->[6])
 

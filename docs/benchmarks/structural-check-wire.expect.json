@@ -5,8 +5,8 @@
     { "component": "(?i)combo ?solver", "output": "resultsJSON", "kind": "json", "path": "dQ_M", "min": 0.0060460, "max": 0.0061682 },
     { "component": "(?i)combo ?solver", "output": "resultsJSON", "kind": "json", "path": "dULS_M", "min": 0.0141706, "max": 0.0144568 },
     { "component": "(?i)combo ?solver", "output": "resultsJSON", "kind": "json", "path": "dSLS_M", "min": 0.0098249, "max": 0.0100233 },
-    { "component": "(?i)beam ?check", "output": "checked", "kind": "count", "min": 1, "max": 1 },
-    { "component": "(?i)beam ?check", "output": "verdictJson", "kind": "json", "path": "passes", "min": 1, "max": 1 },
-    { "component": "(?i)beam ?check", "output": "verdictJson", "kind": "json", "path": "deflection.ratio", "min": 0.29, "max": 0.33 }
+    { "component": "(?i)beam ?check(?!.*seeds)", "output": "checked", "kind": "count", "min": 1, "max": 1 },
+    { "component": "(?i)beam ?check(?!.*seeds)", "output": "verdictJson", "kind": "json", "path": "passes", "min": 1, "max": 1 },
+    { "component": "(?i)beam ?check(?!.*seeds)", "output": "verdictJson", "kind": "json", "path": "deflection.ratio", "min": 0.29, "max": 0.33 }
   ]
 }
