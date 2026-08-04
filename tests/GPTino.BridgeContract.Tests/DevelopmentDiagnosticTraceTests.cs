@@ -23,11 +23,7 @@ public sealed class DevelopmentDiagnosticTraceTests
 
             DevelopmentDiagnosticTrace.TryWriteStandardError("Rhino", standardError);
 
-            var recordPath = Assert.Single(Directory.EnumerateFiles(
-                dataDirectory,
-                ".gptino-diagnostic-*.json",
-                SearchOption.TopDirectoryOnly));
-            var json = File.ReadAllText(recordPath);
+            var json = ReadOnlyRecord(dataDirectory);
             using var document = JsonDocument.Parse(json);
             var detail = document.RootElement.GetProperty("Detail").GetString();
             var bytes = Encoding.UTF8.GetBytes(standardError);
@@ -52,11 +48,7 @@ public sealed class DevelopmentDiagnosticTraceTests
                 "test-failure",
                 new InvalidDataException(sensitiveMessage));
 
-            var recordPath = Assert.Single(Directory.EnumerateFiles(
-                dataDirectory,
-                ".gptino-diagnostic-*.json",
-                SearchOption.TopDirectoryOnly));
-            var json = File.ReadAllText(recordPath);
+            var json = ReadOnlyRecord(dataDirectory);
             using var document = JsonDocument.Parse(json);
             var detail = document.RootElement.GetProperty("Detail").GetString();
 
@@ -68,64 +60,60 @@ public sealed class DevelopmentDiagnosticTraceTests
     }
 
     [Fact]
-    public void ConcurrentRecordCountNeverExceedsCap()
+    public void ConcurrentWritesAreNeverDropped()
     {
+        // The regression this file exists for. Records used to be one file each behind a 250ms
+        // cross-process mutex, and a caller that lost the race abandoned its record silently — so
+        // the trace went quiet exactly during the busy moments worth tracing. A live investigation
+        // read that silence as evidence and drew the wrong conclusion from it twice.
         WithDiagnosticEnvironment(dataDirectory =>
         {
+            const int Writes = 320;
             Parallel.For(
                 0,
-                320,
-                index => DevelopmentDiagnosticTrace.TryWrite(
-                    "test",
-                    "bounded",
-                    $"index={index}"));
+                Writes,
+                index => DevelopmentDiagnosticTrace.TryWrite("test", "bounded", $"index={index}"));
 
-            var recordCount = Directory.EnumerateFiles(
-                    dataDirectory,
-                    ".gptino-diagnostic-*.json",
-                    SearchOption.TopDirectoryOnly)
-                .Count();
-
-            // Diagnostics intentionally abandon a write when the bounded mutex wait
-            // expires, so concurrent callers need not fill every slot. They must never
-            // exceed the global cap.
-            Assert.InRange(recordCount, 1, 256);
+            var lines = ReadRecords(dataDirectory);
+            Assert.Equal(Writes, lines.Count);
+            // Every record is a complete JSON object: interleaved appends must not tear a line.
+            foreach (var line in lines)
+            {
+                using var document = JsonDocument.Parse(line);
+                Assert.Equal("bounded", document.RootElement.GetProperty("Event").GetString());
+            }
         });
     }
 
     [Fact]
-    public void LegacyDiagnosticRecordsConsumeTheSameGlobalCap()
+    public void WritingStopsOnceTheTraceFileReachesItsCap()
     {
+        // Unbounded appends would let a runaway loop fill the user's disk.
         WithDiagnosticEnvironment(dataDirectory =>
         {
             Directory.CreateDirectory(dataDirectory);
-            for (var index = 0; index < 3; index++)
-            {
-                File.WriteAllText(
-                    Path.Combine(
-                        dataDirectory,
-                        $".gptino-diagnostic-legacy-{index}.json"),
-                    "{}");
-            }
-            var preexistingHighSlot = Path.Combine(
-                dataDirectory,
-                ".gptino-diagnostic-255.json");
-            File.WriteAllText(preexistingHighSlot, "{}");
+            var path = Path.Combine(dataDirectory, $".gptino-trace-{Environment.ProcessId}.jsonl");
+            File.WriteAllBytes(path, new byte[(4 * 1024 * 1024) + 1]);
+            var sizeBefore = new FileInfo(path).Length;
 
-            for (var index = 0; index < 260; index++)
-            {
-                DevelopmentDiagnosticTrace.TryWrite("test", "bounded", $"index={index}");
-            }
+            DevelopmentDiagnosticTrace.TryWrite("test", "over-cap", "detail");
 
-            Assert.Equal(
-                256,
-                Directory.EnumerateFiles(
-                    dataDirectory,
-                    ".gptino-diagnostic-*.json",
-                    SearchOption.TopDirectoryOnly)
-                    .Count());
-            Assert.True(File.Exists(preexistingHighSlot));
+            Assert.Equal(sizeBefore, new FileInfo(path).Length);
         });
+    }
+
+    private static string ReadOnlyRecord(string dataDirectory) =>
+        Assert.Single(ReadRecords(dataDirectory));
+
+    private static IReadOnlyList<string> ReadRecords(string dataDirectory)
+    {
+        var path = Assert.Single(Directory.EnumerateFiles(
+            dataDirectory,
+            ".gptino-trace-*.jsonl",
+            SearchOption.TopDirectoryOnly));
+        return File.ReadAllLines(path)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToArray();
     }
 
     private static void WithDiagnosticEnvironment(Action<string> assertion)

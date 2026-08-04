@@ -33,6 +33,11 @@ public sealed class GptinoRuntimeHost : IDisposable
     private readonly Dictionary<Guid, long> _grasshopperObservationOrdinals = [];
     private long _grasshopperObservationOrdinal;
     private readonly ConcurrentDictionary<BridgeAdapterOwner, IBridgeOperationHandler> _handlers = new();
+    // Which targets the AgentHost has confirmed, and the registration frames still awaiting a reply.
+    // Together they turn registration from "send and hope" into an operation with an outcome.
+    private readonly DocumentRegistrationLedger _registrationLedger = new();
+    private readonly ConcurrentDictionary<Guid, TaskCompletionSource<string?>> _pendingRegistrations =
+        new();
     private AgentHostBootstrapper? _bootstrapper;
     private Timer? _selectionDebounceTimer;
     private uint _pendingSelectionSerial;
@@ -746,10 +751,14 @@ public sealed class GptinoRuntimeHost : IDisposable
                 // Registration order defines the AgentHost's default target; observation order
                 // keeps it deterministic across reconnects (ConcurrentDictionary enumeration
                 // order is not).
+                // A fresh AgentHost knows nothing about this plugin's targets, so nothing may be
+                // treated as still-confirmed across a reconnect.
+                _registrationLedger.Clear();
                 var registrationTargets = OrderTargetsByObservation(_targets.Values);
                 foreach (var target in registrationTargets)
                 {
-                    await SendRegistrationAsync(connection, target, cancellationToken).ConfigureAwait(false);
+                    await SendRegistrationWithAckAsync(connection, target, cancellationToken)
+                        .ConfigureAwait(false);
                 }
 
                 // Re-registration created fresh per-target state on the AgentHost, which cleared
@@ -833,6 +842,14 @@ public sealed class GptinoRuntimeHost : IDisposable
         BridgeFrame frame,
         CancellationToken cancellationToken)
     {
+        // Registration replies are Responses and Errors, not Requests. Dropping every non-Request
+        // frame is what left this side unable to tell a delivered registration from a lost one.
+        if (frame.Kind is BridgeMessageKind.Response or BridgeMessageKind.Error)
+        {
+            CompleteRegistration(frame);
+            return;
+        }
+
         if (frame.Kind != BridgeMessageKind.Request)
         {
             return;
@@ -961,11 +978,17 @@ public sealed class GptinoRuntimeHost : IDisposable
         long generation;
         lock (_gate)
         {
-            if (_disposed ||
-                !_targets.TryGetValue(target.StableTargetKey(), out var currentTarget) ||
-                !ReferenceEquals(currentTarget, target) ||
+            var known = _targets.TryGetValue(target.StableTargetKey(), out var currentTarget);
+            if (_disposed || !known || !ReferenceEquals(currentTarget, target) ||
                 _connectionLifetime is null)
             {
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "registration-queue-skipped",
+                    $"key={target.StableTargetKey()[..8]};gh={target.HasGrasshopper};" +
+                    $"disposed={_disposed};known={known};" +
+                    $"sameInstance={ReferenceEquals(currentTarget, target)};" +
+                    $"lifetime={_connectionLifetime is not null}");
                 return;
             }
             connection = _connection;
@@ -977,15 +1000,24 @@ public sealed class GptinoRuntimeHost : IDisposable
         {
             if (connection is not { IsConnected: true })
             {
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "registration-queue-skipped",
+                    $"key={target.StableTargetKey()[..8]};gh={target.HasGrasshopper};" +
+                    $"connection={connection is not null};connected=false");
                 return;
             }
         }
         catch (ObjectDisposedException)
         {
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Rhino",
+                "registration-queue-skipped",
+                $"key={target.StableTargetKey()[..8]};gh={target.HasGrasshopper};connectionDisposed=true");
             return;
         }
 
-        _ = SendRegistrationSafelyAsync(
+        _ = RegisterWithAgentHostAsync(
             connection,
             target,
             generation,
@@ -1024,6 +1056,8 @@ public sealed class GptinoRuntimeHost : IDisposable
         {
             foreach (var removed in removedTargets)
             {
+                // A closed target must re-register from scratch if it ever comes back.
+                _registrationLedger.Forget(removed.StableTargetKey());
                 _ = SendDocumentClosedSafelyAsync(
                     connection,
                     removed,
@@ -1037,6 +1071,14 @@ public sealed class GptinoRuntimeHost : IDisposable
 
     private DetachedRuntime? DetachRuntimeLocked(string status)
     {
+        // The next AgentHost is a different process with no memory of these targets, and anything
+        // still waiting for an acknowledgement will never get one from a connection that is gone.
+        _registrationLedger.Clear();
+        foreach (var pending in _pendingRegistrations.Values)
+        {
+            pending.TrySetResult("bridge_disconnected");
+        }
+        _pendingRegistrations.Clear();
         var detached = new DetachedRuntime(
             _bootstrapper,
             _connectionLifetime,
@@ -1478,61 +1520,166 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
     }
 
-    private async Task SendRegistrationSafelyAsync(
+    /// <summary>
+    /// Registers one target and waits for the acknowledgement. The guards that used to bail here
+    /// silently are now outcomes: a target that is no longer current, or a connection that moved on,
+    /// says so in the trace instead of leaving a target unregistered with no way to tell.
+    /// </summary>
+    private async Task RegisterWithAgentHostAsync(
         DocumentPipeConnection connection,
         DocumentTarget target,
         long generation,
         CancellationToken cancellationToken)
     {
+        lock (_gate)
+        {
+            var known = _targets.TryGetValue(target.StableTargetKey(), out var currentTarget);
+            if (_disposed ||
+                _runtimeGeneration != generation ||
+                !ReferenceEquals(_connection, connection) ||
+                !known ||
+                !ReferenceEquals(currentTarget, target))
+            {
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "registration-superseded",
+                    $"key={target.StableTargetKey()[..8]};gh={target.HasGrasshopper};" +
+                    $"disposed={_disposed};genExpected={generation};genNow={_runtimeGeneration};" +
+                    $"sameConnection={ReferenceEquals(_connection, connection)};known={known};" +
+                    $"sameInstance={ReferenceEquals(currentTarget, target)}");
+                return;
+            }
+        }
+
         try
         {
-            lock (_gate)
-            {
-                if (_disposed ||
-                    _runtimeGeneration != generation ||
-                    !ReferenceEquals(_connection, connection) ||
-                    !_targets.TryGetValue(target.StableTargetKey(), out var currentTarget) ||
-                    !ReferenceEquals(currentTarget, target))
-                {
-                    return;
-                }
-            }
-            await SendRegistrationAsync(connection, target, cancellationToken).ConfigureAwait(false);
+            await SendRegistrationWithAckAsync(connection, target, cancellationToken)
+                .ConfigureAwait(false);
         }
-        catch (Exception exception) when (
-            exception is IOException or OperationCanceledException or ObjectDisposedException)
+        catch (Exception exception)
         {
-            lock (_gate)
-            {
-                if (!_disposed &&
-                    _runtimeGeneration == generation &&
-                    ReferenceEquals(_connection, connection))
-                {
-                    _bridgeStatus = "Could not register the document target; retrying on reconnect.";
-                }
-            }
-            DevelopmentDiagnosticTrace.TryWriteException(
+            // Fire-and-forget: anything escaping here would vanish as an unobserved task exception.
+            DevelopmentDiagnosticTrace.TryWrite(
                 "Rhino",
-                "document-registration-failed",
-                exception);
+                "registration-faulted",
+                $"key={target.StableTargetKey()[..8]};gh={target.HasGrasshopper};" +
+                $"{exception.GetType().Name}: {exception.Message}");
         }
     }
 
-    private Task SendRegistrationAsync(
+    /// <summary>
+    /// Sends one registration and WAITS for the AgentHost to acknowledge it, retrying a bounded
+    /// number of times. The acknowledgement already exists on the wire (DocumentRegistered carries
+    /// the registration frame's MessageId as its correlation id) — this side simply never read it,
+    /// so a dropped registration was indistinguishable from a delivered one.
+    ///
+    /// Retries are driven by outcomes, never by a clock: a send that throws, a rejection, or a reply
+    /// that does not arrive. When nothing is registering, nothing here runs at all.
+    /// </summary>
+    private async Task<bool> SendRegistrationWithAckAsync(
         DocumentPipeConnection connection,
         DocumentTarget target,
         CancellationToken cancellationToken)
     {
-        var request = new RegisterDocumentRequest(
-            $"rhino-{Environment.ProcessId}",
-            GetType().Assembly.GetName().Version?.ToString() ?? "0.0.0",
-            _handlers.Keys.OrderBy(owner => owner).ToArray());
-        var frame = BridgeFrame.Create(
-            BridgeMessageKind.Event,
-            BridgeMessageTypes.RegisterDocument,
-            request,
-            target);
-        return connection.SendAsync(frame, cancellationToken).AsTask();
+        const int MaximumAttempts = 3;
+        var key = target.StableTargetKey();
+        for (var attempt = 1; attempt <= MaximumAttempts; attempt++)
+        {
+            var request = new RegisterDocumentRequest(
+                $"rhino-{Environment.ProcessId}",
+                GetType().Assembly.GetName().Version?.ToString() ?? "0.0.0",
+                _handlers.Keys.OrderBy(owner => owner).ToArray());
+            var frame = BridgeFrame.Create(
+                BridgeMessageKind.Event,
+                BridgeMessageTypes.RegisterDocument,
+                request,
+                target);
+            var acknowledged = new TaskCompletionSource<string?>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingRegistrations[frame.MessageId] = acknowledged;
+            try
+            {
+                await connection.SendAsync(frame, cancellationToken).ConfigureAwait(false);
+                // Long enough to cross a busy UI thread, short enough that a lost frame is retried
+                // while the user is still opening the document rather than minutes later.
+                using var attemptTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                attemptTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+                var failure = await acknowledged.Task
+                    .WaitAsync(attemptTimeout.Token)
+                    .ConfigureAwait(false);
+                if (failure is null)
+                {
+                    _registrationLedger.Confirm(key, target.Generation);
+                    DevelopmentDiagnosticTrace.TryWrite(
+                        "Rhino",
+                        "registration-acknowledged",
+                        $"key={key[..8]};gh={target.HasGrasshopper};generation={target.Generation};attempt={attempt}");
+                    return true;
+                }
+                // A REJECTION is an answer, not a hiccup: retrying an identical frame would only
+                // produce the same refusal, and the reason belongs in front of the user.
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "registration-rejected",
+                    $"key={key[..8]};gh={target.HasGrasshopper};reason={failure}");
+                SetBridgeStatus($"The AgentHost refused a document registration: {failure}");
+                return false;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception exception) when (
+                exception is IOException or OperationCanceledException or ObjectDisposedException)
+            {
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "registration-attempt-failed",
+                    $"key={key[..8]};gh={target.HasGrasshopper};attempt={attempt};" +
+                    $"{exception.GetType().Name}: {exception.Message}");
+            }
+            finally
+            {
+                _pendingRegistrations.TryRemove(frame.MessageId, out _);
+            }
+        }
+
+        // Out of attempts. Say so where a human will see it — the old code returned silently, which
+        // is how a missing registration hid behind a bridge that still reported "connected".
+        DevelopmentDiagnosticTrace.TryWrite(
+            "Rhino",
+            "registration-unacknowledged",
+            $"key={key[..8]};gh={target.HasGrasshopper};generation={target.Generation}");
+        SetBridgeStatus(
+            "A document registration was never acknowledged; reopen the document or restart Rhino.");
+        return false;
+    }
+
+    private void SetBridgeStatus(string status)
+    {
+        lock (_gate)
+        {
+            _bridgeStatus = status;
+        }
+    }
+
+    /// <summary>
+    /// Completes the wait for a registration frame. The AgentHost answers with DocumentRegistered on
+    /// success and a bridge failure on rejection, both correlated to the registration's MessageId.
+    /// </summary>
+    private void CompleteRegistration(BridgeFrame frame)
+    {
+        if (frame.CorrelationId is not { } correlationId ||
+            !_pendingRegistrations.TryRemove(correlationId, out var pending))
+        {
+            return;
+        }
+        if (frame.Kind == BridgeMessageKind.Error)
+        {
+            pending.TrySetResult(frame.ErrorCode ?? "registration_rejected");
+            return;
+        }
+        pending.TrySetResult(null);
     }
 
     /// <summary>
@@ -1580,7 +1727,7 @@ public sealed class GptinoRuntimeHost : IDisposable
                 "Rhino",
                 "pair-evaluated",
                 $"rhino={_observedRhinoDocuments.Count};grasshopper={_observedGrasshopperDocuments.Count}");
-            if (_observedRhinoDocuments.Count != 1 || _observedGrasshopperDocuments.Count == 0)
+            if (_observedRhinoDocuments.Count != 1)
             {
                 return;
             }
@@ -1589,6 +1736,18 @@ public sealed class GptinoRuntimeHost : IDisposable
             using var process = Process.GetCurrentProcess();
             var startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
             var projectId = CreateProjectId(process.Id, startedAt.UtcTicks, rhinoPair.Key);
+            // The Rhino-only target is registered UNCONDITIONALLY and never retired: it is a real
+            // target (every Rhino-side operation resolves against the Rhino document alone), and
+            // registering-then-closing it raced the pair's registration. The AgentHost prefers a
+            // Grasshopper-bearing target as its default and omits this one from the document list.
+            targets.Add(DocumentRuntimeTarget.Create(
+                projectId,
+                process.Id,
+                startedAt,
+                rhinoPair.Key,
+                grasshopperDocumentId: null,
+                rhinoPair.Value,
+                grasshopperPath: null));
             // Observation order (not dictionary order) so the first-registered/default target on
             // the AgentHost is the first/primary observed document, deterministically.
             foreach (var grasshopperPair in _observedGrasshopperDocuments
@@ -1609,7 +1768,25 @@ public sealed class GptinoRuntimeHost : IDisposable
         // (up to a 2s process wait), which must not stall concurrent document observation.
         foreach (var target in targets)
         {
-            RegisterDocument(target);
+            // Traced per target: the live gate showed the Rhino-only placeholder registering and the
+            // pair that followed it never reaching the AgentHost at all, with nothing anywhere
+            // saying why. One target failing must also not stop the others.
+            try
+            {
+                RegisterDocument(target);
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "target-register-ok",
+                    $"key={target.StableTargetKey()[..8]};gh={target.HasGrasshopper};total={_targets.Count}");
+            }
+            catch (Exception exception)
+            {
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "Rhino",
+                    "target-register-failed",
+                    $"key={target.StableTargetKey()[..8]};gh={target.HasGrasshopper};" +
+                    $"{exception.GetType().Name}: {exception.Message}");
+            }
         }
     }
 

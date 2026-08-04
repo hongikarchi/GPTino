@@ -5521,13 +5521,17 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
             if (docKey is null)
             {
-                if (_targets.Count == 1)
+                // Ambiguity is counted over GRASSHOPPER documents only. The Rhino-only target is
+                // always registered and serves every Rhino-side operation, so it must never make an
+                // unbound session look ambiguous — the curator is never bound to a .gh.
+                var grasshopperTargets = _targets.Values.Count(state => state.Target.HasGrasshopper);
+                if (grasshopperTargets <= 1)
                 {
-                    return _targets.Values.First();
+                    return DefaultTargetStateUnsafe()!;
                 }
                 throw new InvalidOperationException(
                     $"{char.ToUpperInvariant(subject[0])}{subject[1..]} is not bound to a Grasshopper document and " +
-                    $"{_targets.Count} are registered. Bind the session to one document (or create sessions " +
+                    $"{grasshopperTargets} are registered. Bind the session to one document (or create sessions " +
                     $"with a grasshopperDoc). Registered documents: {DescribeRegisteredDocumentsUnsafe()}.");
             }
             var match = _targets.Values.FirstOrDefault(state =>
@@ -5550,6 +5554,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 ", ",
                 _targets.Values
                     .OrderBy(state => state.Sequence)
+                    .Where(state => state.Target.GrasshopperPath is not null)
                     .Select(state =>
                         $"{Path.GetFileName(state.Target.GrasshopperPath)} (docKey {state.DocKey})"));
 

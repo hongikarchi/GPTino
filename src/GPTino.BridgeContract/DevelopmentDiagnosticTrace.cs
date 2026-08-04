@@ -11,10 +11,19 @@ namespace GPTino.BridgeContract;
 /// </summary>
 public static class DevelopmentDiagnosticTrace
 {
-    private const int MaximumRecordCount = 256;
+    private const int MaximumTraceBytes = 4 * 1024 * 1024;
+    private static readonly object WriteGate = new();
     private static readonly ConcurrentDictionary<string, byte> ExhaustedDirectories =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Appends one JSON line to a PER-PROCESS trace file. The previous design wrote one file per
+    /// record behind a 250ms mutex shared by Rhino, Grasshopper and the AgentHost — under the
+    /// contention of a busy moment it failed to take the lock and dropped the record silently.
+    /// Diagnostics that vanish exactly when something interesting happens are worse than none: a
+    /// whole debugging session was spent reading "no trace" as evidence. One file per process needs
+    /// no cross-process lock at all, and a byte cap keeps a runaway loop from filling the disk.
+    /// </summary>
     public static void TryWrite(string component, string eventName, string? detail = null)
     {
         try
@@ -27,76 +36,38 @@ public static class DevelopmentDiagnosticTrace
 
             Directory.CreateDirectory(dataDirectory);
             dataDirectory = DevelopmentDataDirectoryPolicy.Validate(dataDirectory);
-            if (ExhaustedDirectories.ContainsKey(dataDirectory))
+            var path = Path.Combine(dataDirectory, $".gptino-trace-{Environment.ProcessId}.jsonl");
+            if (ExhaustedDirectories.ContainsKey(path))
             {
                 return;
             }
 
-            using var mutex = new Mutex(false, CreateMutexName(dataDirectory));
-            var lockTaken = false;
-            try
+            var record = new DevelopmentDiagnosticRecord(
+                DateTimeOffset.UtcNow,
+                Environment.ProcessId,
+                Limit(component),
+                Limit(eventName),
+                Limit(detail));
+            var line = JsonSerializer.Serialize(record) + Environment.NewLine;
+
+            // Serialized in-process. The file is per-process, so there is no cross-process race
+            // left to lose — and a retry loop still dropped a fifth of 320 concurrent records in
+            // test, which is the exact failure this rewrite exists to end. Writes are a single
+            // short line and rare in production, so holding a lock costs nothing worth measuring.
+            lock (WriteGate)
             {
-                try
+                using var stream = new FileStream(
+                    path,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.Read);
+                if (stream.Length > MaximumTraceBytes)
                 {
-                    lockTaken = mutex.WaitOne(TimeSpan.FromMilliseconds(250));
-                }
-                catch (AbandonedMutexException)
-                {
-                    lockTaken = true;
-                }
-                if (!lockTaken)
-                {
+                    ExhaustedDirectories.TryAdd(path, 0);
                     return;
                 }
-
-                if (Directory
-                    .EnumerateFiles(
-                        dataDirectory,
-                        ".gptino-diagnostic-*.json",
-                        SearchOption.TopDirectoryOnly)
-                    .Take(MaximumRecordCount)
-                    .Count() >= MaximumRecordCount)
-                {
-                    ExhaustedDirectories.TryAdd(dataDirectory, 0);
-                    return;
-                }
-
-                var timestamp = DateTimeOffset.UtcNow;
-                var record = new DevelopmentDiagnosticRecord(
-                    timestamp,
-                    Environment.ProcessId,
-                    Limit(component),
-                    Limit(eventName),
-                    Limit(detail));
-                for (var slot = 0; slot < MaximumRecordCount; slot++)
-                {
-                    var path = Path.Combine(
-                        dataDirectory,
-                        $".gptino-diagnostic-{slot:D3}.json");
-                    try
-                    {
-                        using var stream = new FileStream(
-                            path,
-                            FileMode.CreateNew,
-                            FileAccess.Write,
-                            FileShare.None);
-                        JsonSerializer.Serialize(stream, record);
-                        return;
-                    }
-                    catch (IOException) when (File.Exists(path))
-                    {
-                        // This canonical slot is already part of the global count.
-                    }
-                }
-
-                ExhaustedDirectories.TryAdd(dataDirectory, 0);
-            }
-            finally
-            {
-                if (lockTaken)
-                {
-                    mutex.ReleaseMutex();
-                }
+                using var writer = new StreamWriter(stream, Encoding.UTF8);
+                writer.Write(line);
             }
         }
         catch
@@ -201,13 +172,6 @@ public static class DevelopmentDiagnosticTrace
 
         var singleLine = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
         return singleLine.Length <= 1_024 ? singleLine : singleLine[..1_024];
-    }
-
-    private static string CreateMutexName(string dataDirectory)
-    {
-        var canonicalPath = Path.GetFullPath(dataDirectory).ToUpperInvariant();
-        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalPath)));
-        return $"Local\\GPTino-Diagnostics-{digest[..32]}";
     }
 
     private sealed record DevelopmentDiagnosticRecord(
