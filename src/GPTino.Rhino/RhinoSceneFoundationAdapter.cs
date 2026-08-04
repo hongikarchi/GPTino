@@ -774,7 +774,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         // pass boundaries, so one slow pass still ran past the bridge budget and left the UI thread
         // wedged for the next call. 12s leaves the bridge's 45s room to answer.
         var budget = Stopwatch.StartNew();
-        var deadline = TimeSpan.FromSeconds(12);
+        var deadline = TimeSpan.FromSeconds(8);
         bool Expired() => budget.Elapsed > deadline;
 
         // ESTIMATED boxes here on purpose. An accurate box evaluates every surface, and 2484 of
@@ -878,11 +878,12 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 }
                 continue;
             }
-            // Zero-thickness is expected for curves and surfaces; only shapes that claim volume
-            // can be "too thin". A flat panel is legitimately thin, so the ratio does the work.
+            // Only shapes that CLAIM VOLUME can be too thin. The first version tested "is a Brep",
+            // and the live gate returned twelve flat planar surfaces measuring a nanometre thick —
+            // which is simply what a surface is. A closed solid that thin is the real defect.
             var shortest = extents.Min();
-            if (slivers.Count < limit && rhinoObject.Geometry is Brep or Extrusion &&
-                shortest <= degenerate && longest >= tolerance * 1000.0)
+            if (slivers.Count < limit && shortest <= degenerate && longest >= tolerance * 1000.0 &&
+                rhinoObject.Geometry is { } geometry && AsBrep(geometry) is { IsSolid: true })
             {
                 slivers.Add(new RhinoAuditFinding(
                     Hash($"sliver|{rhinoObject.Id:D}")[..16],
