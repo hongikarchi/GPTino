@@ -138,6 +138,38 @@ git worktree로 분리 후 작은 단위로 랜딩.
 - `build-package.ps1:249` publish가 Content를 자동 동반, 금지 확장자 가드(:368-369)에 .json 없음 — 확인 완료.
 - V1 3-way 대조 스크립트(scripts/ 또는 tests/)로 게이트.
 
+## Phase 2 로드맵 (2026-08-04 사용자 확정: 오픈소스 엔진이 본선, Karamba = 검증 오라클)
+
+**전략 재정렬**: 트라이얼 캡(보 20요소)은 실전 모델에 부족 → 목표 = **PyNite(오픈소스, 무제한,
+서버 가능)를 주 엔진으로**, Karamba는 (a) 캡 내 교차검증 오라클 (b) 라이선스 보유 사용자용
+1급 경로. 세션 0~4의 산출물(이론해 게이트·수치 어서션·단면 카탈로그)이 교차검증 인프라.
+
+- **P1 — LoadCaseCombination 실험** (dev-loop 1회, 소): 3.1.60519에서
+  `FactoryLoad.LoadCaseCombination`/`LoadCaseOptions` + K3D_tests의
+  `lcActivation.CalculationFlow.Execute` 패턴 실측. 검증 오라클 = **선형성**:
+  단순보에 G=5kN·Q=8kN 별도 케이스 → ULS 조합 처짐이 1.35·δG+1.5·δQ와 0.5% 내 일치해야.
+  실패 시 폴백(계수하중 2회 해석) 유지 + 쿡북 백필·pending 마커 해소.
+- **P2 — 판정 계층 라이브 완결** (P1과 같은 dev-loop 런): ① structural_check.py를
+  에이전트가 fetch→생성→배선(단순보 결과에 memberKind/spanM 물려 verdictJson 검증;
+  expect 어서션: checked=1, passes=true, ratio≈0.24) ② **Karamba Utilization 라이브 첫 실측**
+  (지금까지 미실행 — 좌굴길이 정책의 분할 기둥 케이스 포함) → V4 1단계(자체 vs Karamba
+  활용률 대조) 착수 조건 확보.
+- **P3 — It/Iw 3-way 임포트** (Rhino 불필요, 스크립트 작업): ① Karamba 설치 폴더에서
+  단면 테이블 파일 탐색(형식 미확인 — csv/bin/xlsx 후보) ② 파서 작성 ③ 이름 매칭으로
+  기존 열 3-way 대조(A·I·W ≤1%, It ≤5% — 근사식 차이 허용) ④ It/Iw 채움 + 출처 필드
+  ⑤ verify-structural-data.ps1에 대조 패스 추가. 테이블이 파싱 불가 형식이면 폴백 =
+  KarambaCommon API로 CroSecTable을 읽는 일회성 스크립트.
+- **P4 — PyNite 브리지 (본선 개시)**: ① 환경: PyNiteFEA를 Rhino Python 3 환경에 사전
+  설치(`# r:` 헤더는 하우스룰 금지 — pip 사전 설치 후 plain import) ② V2 단순보를 PyNite로
+  재현(단면 데이터는 data_read 카탈로그 → 페이로드 주입) ③ **V3 교차 게이트**: 동일 모델
+  Karamba vs PyNite, 변위 ≤1%·부재력 ≤2%, 기존 expect 파일 확장 ④ 캡 초과 모델은
+  PyNite 단독 + 캡 내 축소판으로 오라클 대조. 서버/헤드리스 경로(호스트측 CPython
+  서브프로세스)는 P4 검증 후 별도 승격.
+- **선행 조건**: P4 전 재패키징 1회(data_read 반영). P1·P2는 현 설치본으로 가능
+  (스킬·instructions는 텍스트 동기화 완료).
+- 병행 유의: curator 트랙 Phase 2의 curator.md 작성 시 "구조해석 → GH 세션 리다이렉트"
+  한 줄 조정(전달 항목).
+
 ## 미확정 → 라이브로 판정할 항목 (누적)
 
 | 항목 | 판정 세션 |
