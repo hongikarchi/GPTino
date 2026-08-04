@@ -1,0 +1,5 @@
+{
+  "asserts": [
+    { "component": "(?i)util ?probe", "output": "solved", "kind": "count", "min": 1, "max": 1 }
+  ]
+}

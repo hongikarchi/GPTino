@@ -60,8 +60,24 @@ standardizes the solver plumbing.
   `k3d.CroSec.Trapezoid(height, upperWidth, lowerWidth, ...)` takes dimensions in **cm**
   (a 100x200 mm rectangle is `Trapezoid(20, 10, 10, ...)`). Geometry stays in m. Never assume
   one unit system across factory calls.
-- PENDING LIVE VERIFICATION: `FactoryLoad.LoadCaseCombination` scope (exercise when load
-  combinations first matter).
+- **DISPLACEMENT UNITS = METERS (base), confirmed live**: `AnalyzeThI` maxDisp and
+  `NodeDisplacements.solve` translations return base SI meters. The manual page saying "cm"
+  describes the GH Analyze COMPONENT's display output only — applying x0.01 to the API value
+  is a 100x error. `UnitsConversionFactory.Conv().cm().toUnit(raw)` (base->display) is the
+  sanctioned display conversion.
+- **LOAD COMBINATIONS (confirmed live on 3.1.60519)**: full rule-string form works —
+  `var uls = k3d.Load.LoadCaseCombination(new List<string>{ "ULS=1.35*G+1.5*Q" });` added to
+  the loads list alongside the per-case loads. Name-only input ("ULS") fails with parser error
+  `Illegal token %EOF%`. Tag case names on loads via the PointLoad overload
+  `k3d.Load.PointLoad(node, force, moment, "G", false)`. Analysis case order = declared order
+  then combinations (here [G, Q, ULS]); read per-case via
+  `analyzed.lcActivation.AnalysisLoadCaseCombinations` names, never assume indices.
+- **Node displacement readback**: `Karamba.Results.NodeDisplacements.solve(model, "G",
+  new List<int>{ nodeInd }, out var trans, out var rots, out _, out _, out _)` — verified form.
+- **VERIFY THE ASSEMBLED MODEL, not just inputs**: after AssembleModel, check
+  `elems[middle].crosec.name` (a MIDDLE element — element 0 can be the only correct one, see
+  broadcast trap) and prefer position-anchored supports/loads (Point3 overloads) over node
+  indices when geometry is available.
 
 ## Solver source scaffold
 
@@ -70,6 +86,7 @@ standardizes the solver plumbing.
 #r "KarambaCommon.dll"
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Karamba.CrossSections;
 using Karamba.Geometry;
 using Karamba.Loads;
@@ -103,8 +120,15 @@ foreach (Rhino.Geometry.Line ln in lineList)
 }
 
 // ---- Build -> assemble -> analyze (out var EVERYWHERE; arities: verify live once, then trust).
+// BROADCAST TRAP (confirmed live): the ids/crosecs/zOris lists are PER LINE. A 1-element
+// (or empty) crosec list does NOT broadcast — element 0 gets your section and every other
+// element silently gets the DEFAULT (RO114.3/4 tube, ~30x more flexible). ALWAYS replicate:
+var beamIds = Enumerable.Repeat("b", k3dLines.Count).ToList();
+var beamSecs = Enumerable.Repeat<CroSec>(section, k3dLines.Count).ToList();
+var beamZOris = Enumerable.Repeat(new Vector3(0, 0, 1), k3dLines.Count).ToList();
 var beams = k3d.Part.LineToBeam(
-    k3dLines, new List<string> { "b" }, new List<CroSec>(), logger, out var nodes);
+    k3dLines, beamIds, beamSecs, logger, out var nodes,
+    bending: true, limitDist: 0.005, zOris: beamZOris);
 
 var supports = new List<Support>();
 foreach (int ni in (IList<object>)supportIndices.ConvertAll())   // fixed: all six DOF true

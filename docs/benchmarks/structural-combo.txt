@@ -1,0 +1,8 @@
+Karamba 하중조합 실험: TestBeam 레이어의 8m 선을 참조해 새 단순보 모델을 만들어줘 (기존 컴포넌트는 건드리지 말고 전부 새로).
+- 스펙: 양끝 핀-롤러 지지, 부재 10분할, 단면 사각 솔리드 100mm x 200mm, 재료 S235, 자중 제외
+- 하중을 두 개의 별도 하중케이스로 정의: 케이스 "G" = 스팬 중앙 노드 -Z 5 kN, 케이스 "Q" = 같은 노드 -Z 8 kN
+- 해석 셋: A = G만 / B = Q만 / C = ULS 조합 1.35G + 1.5Q
+- 조합(C)은 가능하면 Karamba의 하중조합 API로 (FactoryLoad.LoadCaseCombination, LoadCaseOptions, 또는 model.lcActivation.CalculationFlow.Execute 패턴 — 3.1.60519에서 실제 되는 형태를 찾아서). 컴파일이 안 되면 계수를 곱한 하중으로 폴백하고 폴백했다고 기록해.
+- results 출력(한 줄 JSON): {"solved":true,"dG_M":<A 최대처짐 m>,"dQ_M":<B>,"dULS_M":<C>,"dSLS_M":<dG_M+dQ_M>,"api":"combo" 또는 "fallback","warning":"..."} — solved 출력은 성공 시에만 할당
+- 솔버 컴포넌트 닉네임에 "ComboSolver"를 포함해줘
+- 완료 후 보고: 조합 API가 실제로 어떤 호출 형태로 작동했는지(정확한 코드 조각), 안 됐다면 정확한 에러 메시지

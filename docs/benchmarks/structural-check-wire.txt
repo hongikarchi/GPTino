@@ -1,0 +1,6 @@
+판정 스크립트 배선: structural_check.py 스킬을 skill_read로 가져와 Python 3 컴포넌트로 만들어줘. 소스는 한 글자도 수정 금지, 소켓은 파일 헤더의 명세 그대로 선언해.
+- 배선: resultsJson ← ComboSolver의 results 출력, memberKind = "simply_supported", spanM = 8, deflectionKey = "dSLS_M" (문자열 입력은 Panel 컴포넌트로 공급)
+- utilizations 입력은 미배선으로 둬 (이번엔 처짐 체크만)
+- limitDivisor도 미배선 (기본 L/250 적용)
+- 컴포넌트 닉네임에 "BeamCheck"를 포함해줘
+- 실행 후 verdictJson 내용을 그대로 보고하고, 처짐비(ratio)가 뭘 의미하는지 한 줄로 설명해줘

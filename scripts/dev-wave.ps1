@@ -96,7 +96,10 @@ if ($ExpectFile) {
         $snap = Api GET '/dev/snapshot'
         foreach ($a in $spec.asserts) {
             $label = "$($a.component) / $($a.output) [$($a.kind)]"
-            $hits = @($snap.canvas.objects | Where-Object { $_.name -match $a.component })
+            # Socket-less canvas objects (groups) share the name space with components but
+            # cannot be inspected — exclude them from assert matching.
+            $hits = @($snap.canvas.objects | Where-Object {
+                    $_.name -match $a.component -and (@($_.inputs).Count + @($_.outputs).Count) -gt 0 })
             if ($hits.Count -ne 1) {
                 $assertsFailed++
                 $assertResults += "FAIL $label - component regex matched $($hits.Count) objects (need exactly 1)"
