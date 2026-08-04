@@ -20,13 +20,15 @@ standardizes the solver plumbing.
 
 ```csharp
 // #! csharp
-#r "KarambaCommon.dll"   // PREFERRED (bare name, survives updates) — VERIFY LIVE on first use
-// FALLBACK — pinned path (works, breaks on Karamba update; keep the pin explicit):
-// #r "C:\Users\<user>\AppData\Roaming\McNeel\Rhinoceros\packages\8.0\Karamba3D\3.1.60519\net7.0-windows\KarambaCommon.dll"
+#r "KarambaCommon.dll"   // PREFERRED — CONFIRMED live 2026-08-04: bare name resolves to the
+                         // installed plugin copy; survives Karamba updates. Use this form.
+// FALLBACK — pinned path (only if bare-name ever fails; breaks on Karamba update):
+// #r "C:\Users\<user>\AppData\Roaming\McNeel\Rhinoceros\packages\8.0\Karamba3D\3.1.60519\net8.0-windows\KarambaCommon.dll"
 ```
 
 - **Runtime folder matters**: the package ships `net48` / `net7.0-windows` / `net8.0-windows`.
-  Rhino 8 script components run .NET 7 → use `net7.0-windows`. A wrong-runtime or duplicate copy
+  Rhino 8 currently runs .NET 8 — the live smoke confirmed bare-name `#r` resolved to
+  `net8.0-windows`. Never hardcode a different runtime folder; a wrong-runtime or duplicate copy
   causes "Data conversion failed from Model to Model" (assembly double-load).
 - Reference `Karamba.gha` (same folder) ONLY when wrapping output for native components
   (`Karamba.GHopper.Models.GH_Model`) or using `Karamba.GHopper.Geometry` converters.
@@ -48,8 +50,18 @@ standardizes the solver plumbing.
   the facade lacks the feature, and expect signature drift between builds.
 - **Trust the K3D_tests repo patterns over the prose guide** — several guide pages carry stale v1
   code. When a call fails to compile, the fix is usually the K3D_tests form of the same call.
-- PENDING LIVE VERIFICATION (backfill after first smoke): bare-name `#r` resolution, exact
-  3.1.60519 `AssembleModel`/`AnalyzeThI` arities, `FactoryLoad.LoadCaseCombination` scope.
+- **CONFIRMED on 3.1.60519 (live smoke 2026-08-04)**: the scaffold's `LineToBeam` /
+  `AssembleModel` / `AnalyzeThI` calls compile and run as written. Exact AnalyzeThI shape:
+  `AnalyzeThI(Model, out IReadOnlyList<double> maxDisplacement, out IReadOnlyList<double>
+  gravityForce, out IReadOnlyList<double> elasticEnergy, out string warning)` — it carries an
+  Obsolete compiler warning (K3D_tests still uses it; the warning is not an error, proceed).
+- **UNIT TRAP — the API mixes unit systems (confirmed live)**: `k3d.Material.IsotropicMaterial`
+  expects **kN/m²** (S235: E=210000000, G=80760000, ft=235000, fc=-235000), while
+  `k3d.CroSec.Trapezoid(height, upperWidth, lowerWidth, ...)` takes dimensions in **cm**
+  (a 100x200 mm rectangle is `Trapezoid(20, 10, 10, ...)`). Geometry stays in m. Never assume
+  one unit system across factory calls.
+- PENDING LIVE VERIFICATION: `FactoryLoad.LoadCaseCombination` scope (exercise when load
+  combinations first matter).
 
 ## Solver source scaffold
 
