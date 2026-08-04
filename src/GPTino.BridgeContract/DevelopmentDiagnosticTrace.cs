@@ -13,6 +13,7 @@ public static class DevelopmentDiagnosticTrace
 {
     private const int MaximumTraceBytes = 4 * 1024 * 1024;
     private static readonly object WriteGate = new();
+    private static readonly UTF8Encoding BomlessUtf8 = new(encoderShouldEmitUTF8Identifier: false);
     private static readonly ConcurrentDictionary<string, byte> ExhaustedDirectories =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -66,7 +67,9 @@ public static class DevelopmentDiagnosticTrace
                     ExhaustedDirectories.TryAdd(path, 0);
                     return;
                 }
-                using var writer = new StreamWriter(stream, Encoding.UTF8);
+                // BOM-less: StreamWriter emits a preamble on an empty file, which put a BOM in
+                // front of the first record and broke every JSONL reader on the first line.
+                using var writer = new StreamWriter(stream, BomlessUtf8);
                 writer.Write(line);
             }
         }

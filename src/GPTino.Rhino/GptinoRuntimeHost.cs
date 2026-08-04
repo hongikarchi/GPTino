@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -17,6 +18,10 @@ public sealed class GptinoRuntimeHost : IDisposable
     private static readonly TimeSpan BootstrapMonitorInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan SelectionDebounceInterval = TimeSpan.FromMilliseconds(250);
     private const int MaximumSelectionIds = 512;
+    // Deep enough that a document open (tens of seconds of UI thread) never backs up into the
+    // pipe, small enough that a genuine flood is still bounded. The AgentHost is request/response
+    // driven and broker-serialized, so in practice this holds a handful.
+    private const int RequestQueueCapacity = 256;
 
     private readonly object _gate = new();
     private readonly object _observationGate = new();
@@ -755,10 +760,14 @@ public sealed class GptinoRuntimeHost : IDisposable
                 // treated as still-confirmed across a reconnect.
                 _registrationLedger.Clear();
                 var registrationTargets = OrderTargetsByObservation(_targets.Values);
+                // NOT awaited here. Waiting for an acknowledgement on this thread would deadlock
+                // against the receive loop below — the loop that delivers the acknowledgement has
+                // not started yet, so every wait would burn its full timeout with the reply already
+                // sitting in the pipe. The live gate showed exactly that: the AgentHost registered
+                // the target and this side timed out anyway. Fire them, then start reading.
                 foreach (var target in registrationTargets)
                 {
-                    await SendRegistrationWithAckAsync(connection, target, cancellationToken)
-                        .ConfigureAwait(false);
+                    _ = SendRegistrationWithAckAsync(connection, target, cancellationToken);
                 }
 
                 // Re-registration created fresh per-target state on the AgentHost, which cleared
@@ -772,10 +781,52 @@ public sealed class GptinoRuntimeHost : IDisposable
                     NotifySelectionChanged(serial);
                 }
 
-                while (!cancellationToken.IsCancellationRequested && connection.IsConnected)
+                // READING and DOING are separate jobs. Every request ends up on Rhino's UI thread,
+                // and while Grasshopper opens a document that thread is occupied for as long as it
+                // takes — so a loop that awaited each request before reading the next stopped
+                // draining the pipe. The AgentHost's next write then blocked on a full pipe, which
+                // stopped ITS reader, and both processes sat alive and idle waiting for each other.
+                // A live gate caught exactly that: both traces stopped in the same second, neither
+                // faulted. The reader below never awaits document work; it hands requests to one
+                // worker and goes straight back to the pipe.
+                var requests = Channel.CreateBounded<BridgeFrame>(
+                    new BoundedChannelOptions(RequestQueueCapacity)
+                    {
+                        SingleReader = true,
+                        SingleWriter = true,
+                        FullMode = BoundedChannelFullMode.Wait,
+                    });
+                // ONE worker, so requests are still handled strictly in arrival order — the only
+                // thing this change alters is that the pipe keeps draining while one is in flight.
+                var requestWorker = Task.Run(
+                    () => ProcessRequestQueueAsync(connection, requests.Reader, cancellationToken),
+                    CancellationToken.None);
+                try
                 {
-                    var frame = await connection.ReceiveAsync(cancellationToken).ConfigureAwait(false);
-                    await ProcessIncomingFrameAsync(connection, frame, cancellationToken).ConfigureAwait(false);
+                    while (!cancellationToken.IsCancellationRequested && connection.IsConnected)
+                    {
+                        var frame = await connection.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                        // Registration replies are a dictionary lookup, and they must NEVER queue
+                        // behind UI-thread work: a registration waiting for its acknowledgement is
+                        // precisely what deadlocks if the answer sits behind a busy document.
+                        if (frame.Kind is BridgeMessageKind.Response or BridgeMessageKind.Error)
+                        {
+                            CompleteRegistration(frame);
+                            continue;
+                        }
+                        if (frame.Kind != BridgeMessageKind.Request)
+                        {
+                            continue;
+                        }
+                        await requests.Writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    requests.Writer.TryComplete();
+                    // Let the in-flight request finish writing its response before the connection
+                    // is disposed underneath it.
+                    await AwaitQuietlyAsync(requestWorker).ConfigureAwait(false);
                 }
                 restartExitedRuntime = bootstrapper.HasExited;
             }
@@ -837,24 +888,60 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
     }
 
-    private async Task ProcessIncomingFrameAsync(
+    /// <summary>
+    /// Drains queued requests one at a time, so arrival order is preserved exactly as it was when
+    /// the receive loop handled them itself. A failure on one request must not take the worker
+    /// down: the remaining queue, and the connection, are still good.
+    /// </summary>
+    private async Task ProcessRequestQueueAsync(
+        DocumentPipeConnection connection,
+        ChannelReader<BridgeFrame> requests,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var frame in requests.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    await ProcessRequestAsync(connection, frame, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    DevelopmentDiagnosticTrace.TryWrite(
+                        "Rhino",
+                        "request-worker-error",
+                        $"type={frame.PayloadType};{exception.GetType().Name}: {exception.Message}");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The connection is going away; the reader has already stopped queueing.
+        }
+    }
+
+    /// <summary>Awaits a background task without letting its failure escape a finally block.</summary>
+    private static async Task AwaitQuietlyAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Rhino",
+                "request-worker-faulted",
+                $"{exception.GetType().Name}: {exception.Message}");
+        }
+    }
+
+    private async Task ProcessRequestAsync(
         DocumentPipeConnection connection,
         BridgeFrame frame,
         CancellationToken cancellationToken)
     {
-        // Registration replies are Responses and Errors, not Requests. Dropping every non-Request
-        // frame is what left this side unable to tell a delivered registration from a lost one.
-        if (frame.Kind is BridgeMessageKind.Response or BridgeMessageKind.Error)
-        {
-            CompleteRegistration(frame);
-            return;
-        }
-
-        if (frame.Kind != BridgeMessageKind.Request)
-        {
-            return;
-        }
-
         try
         {
             var target = RequireRegisteredTarget(frame.Target);

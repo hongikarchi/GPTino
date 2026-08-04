@@ -5475,8 +5475,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     // The DEFAULT target: the only registered target when exactly one Grasshopper document is
     // open (today's single-document behavior, byte-for-byte), otherwise the first registered.
+    /// <summary>
+    /// The default target: the first-registered one that HAS a Grasshopper document, falling back
+    /// to the first registered at all. The Rhino-only target registers first — it exists before any
+    /// definition is opened — so without the preference it would stay the default forever and the
+    /// panel would report no Grasshopper file while one was open.
+    /// </summary>
     private TargetState? DefaultTargetStateUnsafe() =>
-        _targets.Count == 0 ? null : _targets.Values.MinBy(state => state.Sequence);
+        _targets.Values.Where(state => state.Target.HasGrasshopper).MinBy(state => state.Sequence)
+        ?? _targets.Values.MinBy(state => state.Sequence);
 
     private TargetState? DefaultTargetStateOrNull()
     {
