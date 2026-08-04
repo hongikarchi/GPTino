@@ -16,6 +16,10 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else "artifacts/pynite-real-report.json"
 
 GRID_MM = 30.0      # exact-merge tolerance
 SNAP_MM = 350.0     # free-end snap radius (beam drawn to column face, not axis)
+REPAIR_SNAP_MM = 1500.0  # user-confirmed modeling-error repair: surviving free ends
+                         # (deg==1 after normal passes) get one wider snap. The user
+                         # confirmed these members exist and only their endpoints are
+                         # off — so pulling them onto the nearest axis IS the intent.
 E = 2.1e8           # kN/m2
 G = 8.076e7
 RHO_KNM3 = 78.5     # steel unit weight kN/m3
@@ -163,6 +167,40 @@ for _round in range(4):
     if not did:
         break
 
+# (c) user-confirmed repair pass: any free end still unconnected gets ONE wider-radius
+# attempt (endpoint first, then member-interior projection) at REPAIR_SNAP_MM.
+deg = build_deg()
+repaired = 0
+for ni in [n for n in range(len(node_xyz)) if deg[n] == 1]:
+    p = node_xyz[ni]
+    best_n, bd = None, REPAIR_SNAP_MM
+    for nj in range(len(node_xyz)):
+        if nj == ni or deg[nj] == 0:
+            continue
+        d = math.dist(p, node_xyz[nj])
+        if 1.0 < d < bd:
+            best_n, bd = nj, d
+    if best_n is not None and deg[best_n] > 1:
+        for e in edges:
+            if e["a"] == ni: e["a"] = best_n
+            if e["b"] == ni: e["b"] = best_n
+        repaired += 1
+        continue
+    best_e = None  # (dist, edge_idx, q)
+    for ei, e in enumerate(edges):
+        if ni in (e["a"], e["b"]):
+            continue
+        dq, q = seg_project(p, node_xyz[e["a"]], node_xyz[e["b"]])
+        if dq is not None and dq < REPAIR_SNAP_MM and (best_e is None or dq < best_e[0]):
+            best_e = (dq, ei, q)
+    if best_e is not None:
+        _, ei, q = best_e
+        host = edges[ei]
+        node_xyz[ni] = list(q)
+        edges.append({"a": ni, "b": host["b"], "mark": host["mark"], "len": None})
+        host["b"] = ni
+        repaired += 1
+
 for e in edges:
     e["len"] = math.dist(node_xyz[e["a"]], node_xyz[e["b"]])
 edges = [e for e in edges if e["a"] != e["b"] and e["len"] > 50.0]
@@ -288,6 +326,7 @@ report = {
     "max_displacement_node": "N%d" % maxn if maxn is not None else None,
     "max_displacement_xyz_mm": node_xyz[maxn] if maxn is not None else None,
     "t_junction_splits": tsplit,
+    "repaired_free_ends": repaired,
     "top10_displacements": top10,
     "max_disp_below_z15000_mm": round(max_main[0] * 1000.0, 2),
     "max_disp_below_z15000_node": "N%d" % max_main[1] if max_main[1] is not None else None,
