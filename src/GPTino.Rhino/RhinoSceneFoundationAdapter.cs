@@ -11,6 +11,8 @@ using Rhino.FileIO;
 using Rhino.Geometry;
 using Rhino.Runtime;
 
+using System.Diagnostics;
+
 namespace GPTino.Rhino;
 
 /// <summary>
@@ -746,7 +748,16 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         var perKind = Math.Max(1, limit / 5);
         var scanned = 0;
         var truncated = false;
+        // The bridge gives a UI-thread operation 45 seconds. A sweep that blows through it freezes
+        // Rhino and returns nothing at all, which is strictly worse than partial results — so the
+        // whole sweep runs against a wall clock and reports Truncated when it stops early.
+        var budget = Stopwatch.StartNew();
+        var deadline = TimeSpan.FromSeconds(20);
 
+        // ESTIMATED boxes here on purpose. An accurate box evaluates every surface, and 2484 of
+        // them alone exhausted the bridge budget on a real model. The estimate is a superset of the
+        // accurate box, so it is sound for positioning and for the "is this small?" gate below,
+        // which confirms its candidates with an accurate box before reporting them.
         var items = new List<(RhinoObject Object, BoundingBox Box)>();
         foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator())
                      .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
@@ -756,12 +767,12 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             {
                 continue;
             }
-            if (++scanned > MaxObjects)
+            if (++scanned > MaxObjects || budget.Elapsed > deadline)
             {
                 truncated = true;
                 break;
             }
-            var box = rhinoObject.Geometry.GetBoundingBox(accurate: true);
+            var box = rhinoObject.Geometry.GetBoundingBox(accurate: false);
             if (box.IsValid)
             {
                 items.Add((rhinoObject, box));
@@ -769,11 +780,24 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         }
 
         var findings = new List<RhinoAuditFinding>();
-        findings.AddRange(FindTinyAndSliverObjects(items, tolerance, perKind, cancellationToken));
-        findings.AddRange(FindStrayObjects(items, perKind, cancellationToken));
-        findings.AddRange(FindPartialDuplicates(items, tolerance, perKind, cancellationToken));
-        findings.AddRange(FindAdjacentFaceGaps(items, tolerance, band, perKind, cancellationToken));
-        findings.AddRange(FindMappingHazards(items, perKind, cancellationToken));
+        // Cheapest and most universally useful first, so an exhausted budget still returns the
+        // findings most likely to matter rather than whichever ran fastest by accident.
+        foreach (var pass in new Func<IEnumerable<RhinoAuditFinding>>[]
+        {
+            () => FindTinyAndSliverObjects(items, tolerance, perKind, cancellationToken),
+            () => FindStrayObjects(items, perKind, cancellationToken),
+            () => FindMappingHazards(items, perKind, cancellationToken),
+            () => FindPartialDuplicates(items, tolerance, perKind, cancellationToken),
+            () => FindAdjacentFaceGaps(items, tolerance, band, perKind, cancellationToken),
+        })
+        {
+            if (budget.Elapsed > deadline)
+            {
+                truncated = true;
+                break;
+            }
+            findings.AddRange(pass());
+        }
         return (Bounded(findings, limit, ref truncated), scanned, truncated);
     }
 
@@ -799,7 +823,16 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             {
                 break;
             }
-            var size = box.Diagonal;
+            // The estimated box is a SUPERSET, so anything it calls big really is big: only
+            // candidates that already look degenerate pay for an accurate box.
+            if (box.Diagonal.Length > degenerate * 4 &&
+                new[] { Math.Abs(box.Diagonal.X), Math.Abs(box.Diagonal.Y), Math.Abs(box.Diagonal.Z) }.Min()
+                    > degenerate * 4)
+            {
+                continue;
+            }
+            var accurate = rhinoObject.Geometry?.GetBoundingBox(accurate: true) ?? box;
+            var size = accurate.IsValid ? accurate.Diagonal : box.Diagonal;
             var extents = new[] { Math.Abs(size.X), Math.Abs(size.Y), Math.Abs(size.Z) };
             var longest = extents.Max();
             var diagonal = size.Length;
@@ -967,6 +1000,15 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 var (objectB, boxB) = solids[hit];
                 var offset = boxA.Center.DistanceTo(boxB.Center);
                 if (offset <= tolerance)
+                {
+                    continue;
+                }
+                // Cheap gate first: mass properties are expensive, and two solids whose BOXES
+                // disagree on volume can never agree on the real thing.
+                var boxVolumeA = boxA.Volume;
+                var boxVolumeB = boxB.Volume;
+                if (boxVolumeA <= 0 || boxVolumeB <= 0 ||
+                    Math.Abs(boxVolumeA - boxVolumeB) / Math.Max(boxVolumeA, boxVolumeB) > 0.05)
                 {
                     continue;
                 }
@@ -1345,6 +1387,27 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             layers.Add(rhinoObject.Attributes.LayerIndex);
         }
 
+        // How many DEFINITIONS put members on each layer. A layer several blocks share is a
+        // deliberate block-library convention, not import residue — the live gate flagged seven
+        // healthy blocks before this counted. Only a layer used by exactly one definition, and by
+        // nothing at top level, carries the CAD-import signature.
+        var definitionsPerLayer = new Dictionary<int, int>();
+        foreach (var definition in document.InstanceDefinitions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (definition is null || definition.IsDeleted)
+            {
+                continue;
+            }
+            foreach (var layerIndex in definition.GetObjects()
+                         .Where(member => member is not null)
+                         .Select(member => member.Attributes.LayerIndex)
+                         .Distinct())
+            {
+                definitionsPerLayer[layerIndex] = definitionsPerLayer.GetValueOrDefault(layerIndex) + 1;
+            }
+        }
+
         var emptyDefinitions = new List<RhinoAuditFinding>();
         var splitPlacements = new List<RhinoAuditFinding>();
         var foreignLayers = new List<RhinoAuditFinding>();
@@ -1395,7 +1458,8 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                     .Where(member => member is not null)
                     .Select(member => member.Attributes.LayerIndex)
                     .Distinct()
-                    .Where(index => !topLevelLayers.Contains(index))
+                    .Where(index => !topLevelLayers.Contains(index) &&
+                        definitionsPerLayer.GetValueOrDefault(index) <= 1)
                     .Select(index => document.Layers.FindIndex(index)?.FullPath ?? $"#{index}")
                     .OrderBy(name => name, StringComparer.Ordinal)
                     .ToList();
@@ -1407,8 +1471,9 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                         new[] { definition.Id },
                         new[] { fingerprint },
                         stranger.Count,
-                        $"Block '{definition.Name}' has members on {stranger.Count} layer(s) nothing " +
-                        $"else in the document uses ({string.Join(", ", stranger.Take(4))}" +
+                        $"Block '{definition.Name}' has members on {stranger.Count} layer(s) that " +
+                        $"nothing else uses — no top-level object and no other block " +
+                        $"({string.Join(", ", stranger.Take(4))}" +
                         $"{(stranger.Count > 4 ? ", …" : string.Empty)}). Typical of CAD imports.",
                         Array.Empty<string>(),
                         null));
