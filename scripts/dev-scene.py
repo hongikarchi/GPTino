@@ -31,6 +31,13 @@ rs.AddCurve([(0, 6000, 0), (5000, 5000, 1200), (10000, 6500, 200)])
 rs.AddPoint(5000, 4000, 0)
 rs.AddPoint(2000, 1000, 0)
 
+# Purge fixture: a block definition with no instances placed. AddBlock consumes its input
+# objects, so the definition exists and is unused -- the one thing purgeCandidates can report
+# besides empty layers. It also gives the document a non-empty InstanceDefinitions table, which
+# is what makes the layer census take its second (block-member) enumeration pass.
+_marker = rs.AddCircle(rs.WorldXYPlane(), 250)
+rs.AddBlock([_marker], (0, 0, 0), "GPTinoUnusedFixture", True)
+
 # Scripted SaveAs (dash-prefixed = no dialog). Path has no spaces in the dev-loop tree.
 rs.Command('_-SaveAs "%s" _Enter' % out, False)
 

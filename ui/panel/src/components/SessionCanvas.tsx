@@ -11,10 +11,8 @@ interface SessionCanvasProps {
   unseenIds: ReadonlySet<string>;
   onSelect(id: string): void;
   onReorder(sourceId: string, targetId: string): void;
-  /** Canvas "Data" toggle: render Rhino<->GH reference/bake arcs between doc nodes. */
-  dataLayerOn?: boolean;
-  /** Opens the data-flow detail drawer for a GH doc (null = legacy single doc). */
-  onOpenDataFlow?(docId: string | null): void;
+  /** Jumps to the Data tab from a GH doc node's reference/bake chip. */
+  onOpenDataFlow?(): void;
 }
 
 interface ViewBox {
@@ -227,14 +225,14 @@ function OrchestratorNode({ node, nowMs }: { node: GraphNode; nowMs: number }) {
   );
 }
 
-function DocNode({ node, onOpenDataFlow }: { node: GraphNode; onOpenDataFlow?(docId: string | null): void }) {
+function DocNode({ node, onOpenDataFlow }: { node: GraphNode; onOpenDataFlow?(): void }) {
   const tooltip = [`${node.label} — ${node.sublabel ?? ""}`, node.tooltip ?? node.detail]
     .filter(Boolean)
     .join("\n");
-  // GH doc nodes with a data-flow summary open the detail drawer on click. The root g carries
+  // GH doc nodes with a data-flow summary jump to the Data tab on click. The root g carries
   // .gnode, so the background pan handler already ignores presses here — a plain click works.
   const openable = node.docTarget === "grasshopper" && node.dataChip !== undefined && onOpenDataFlow !== undefined;
-  const open = openable ? () => onOpenDataFlow?.(node.docId ?? null) : undefined;
+  const open = openable ? () => onOpenDataFlow?.() : undefined;
   return (
     <g
       className={`gnode gnode-doc doc-${node.docTarget}${openable ? " openable" : ""}`}
@@ -279,10 +277,9 @@ export function SessionCanvas({
   unseenIds,
   onSelect,
   onReorder,
-  dataLayerOn = false,
   onOpenDataFlow,
 }: SessionCanvasProps) {
-  const model = useMemo(() => deriveGraph(runtime, { dataLayer: dataLayerOn }), [runtime, dataLayerOn]);
+  const model = useMemo(() => deriveGraph(runtime), [runtime]);
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
   const multiGh = ghDocs != null && ghDocs.length > 1;
   const docNameById = useMemo(

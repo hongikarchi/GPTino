@@ -86,10 +86,13 @@
   목록(존재 여부·레이어), bake family 목록.
 - bake 귀속: typed bake 경로와 bake_manager.py에 `GPTino.SourceDocKey` 유저스트링 스탬프
   추가. 레거시 bake는 추측 귀속 금지 — "unattributed" 버킷으로 정직하게 표시.
-- UI: 캔버스 툴바 "Data" 토글(기본 off, localStorage 유지) → doc 노드 간 참조(⇢)/bake(⇠)
-  아크 + 카운트 칩, `missingReferenceCount>0`이면 경고 스타일(`⇢12 · 2!`), 클릭 →
-  하단 드로어(ArchiveBrowser 오버레이 관례), "as of r{N}" 스탬프 필수. 토글 off 시 doc 노드에
-  압축 칩 라인. 스캔 중인 doc은 0이 아니라 "scanning"으로(데이터 부재≠참조 부재).
+- UI: ~~캔버스 툴바 "Data" 토글 + 하단 드로어~~ → **(2026-08-04 갱신, 사용자 지시)**
+  데이터는 **model / curator / data 3탭 위계의 독립 탭**이다. Model 탭에는 doc 노드의
+  압축 칩(`⇢12 ⇠38 · 2!`, `missingReferenceCount>0`이면 경고색)만 남는다 — 끊어진 참조는
+  조용히 빈 데이터를 뱉으므로 수동적 신뢰성 신호로서 자리를 지키고, 클릭하면 Data 탭으로
+  넘어간다. 파라미터별 참조 목록·bake family·unattributed 버킷은 Data 탭 본문이며
+  "as of r{N}" 스탬프 필수. 토글·아크·드로어는 제거(탭 위에 떠서 curator 탭까지 덮었다).
+  스캔 중인 doc은 0이 아니라 "scanning"으로(데이터 부재≠참조 부재).
 - 위험도 낮음(전부 읽기 전용). 이 단계만으로도 독립적 가치가 있다.
 
 ### Phase 2 — curator 세션 + 탭 셸 + 문서 검진 (대)
@@ -140,6 +143,9 @@
   GH 참조 입력("'facade' 세트를 GH로 참조해줘"), 데이터 뷰에서 삭제된 멤버 표시
   (끊어진 참조와 동일 패턴). 네이티브 API가 공개되면 그때 동기화를 후속으로.
 - 탭 셸(UI 스킨 체크리스트):
+  - **탭 위계 = model / curator / data** (2026-08-04 사용자 지시). 각 탭이 정확히 하나를
+    소유한다: 모델링 세션 / 문서 관리 / 참조·bake 원장. 한 탭에만 의미 있는 툴바 버튼
+    (Graph, + Session)은 그 탭에서만 렌더 — 다른 탭에서 보이면 보이지 않는 상태를 바꾼다.
   - 헤더·에러/pause 배너·conflict drawer는 탭 바 **위**에서 공유. 헤더에 writer 칩
     ("writer: curator → purge (r124)") 추가.
   - curator 탭에 브로커 큐 상태 표시("writer 대기 #2") — GH 세션이 lease를 잡고 있을 때

@@ -3,7 +3,7 @@ import { ArchiveBrowser } from "./components/ArchiveBrowser";
 import { AuditCard } from "./components/AuditCard";
 import { ChatPane } from "./components/ChatPane";
 import { CuratorActions } from "./components/CuratorActions";
-import { DataFlowDrawer } from "./components/DataFlowDrawer";
+import { DataView } from "./components/DataView";
 import { DeletedSessions } from "./components/DeletedSessions";
 import { Icon } from "./components/Icons";
 import { SessionCanvas } from "./components/SessionCanvas";
@@ -168,39 +168,22 @@ export default function App() {
       }
       return next;
     });
-  const [dataLayerOn, setDataLayerOn] = useState(() => {
-    try {
-      return localStorage.getItem("gptino.dataLayer") === "1";
-    } catch {
-      return false;
-    }
-  });
-  const toggleDataLayer = () =>
-    setDataLayerOn((on) => {
-      const next = !on;
-      try {
-        localStorage.setItem("gptino.dataLayer", next ? "1" : "0");
-      } catch {
-        // localStorage may be unavailable; the toggle still works for this session.
-      }
-      return next;
-    });
-  // Drawer target: undefined = closed; null = the only/legacy doc; string = explicit docKey.
-  const [dataFlowDocId, setDataFlowDocId] = useState<string | null | undefined>(undefined);
   // Open audit approval card on the curator tab (null = closed). The nonce forces a fresh scan
   // when the same preset is clicked again (the card remounts).
   const [auditKind, setAuditKind] = useState<RhinoAuditKind | null>(null);
   const [auditNonce, setAuditNonce] = useState(0);
-  // [Model | Curator] view switch inside the one panel: the tab is presentation only — the
-  // curator underneath is an ordinary session flowing through the same broker.
-  const [tab, setTab] = useState<"model" | "curator">(() => {
+  // [Model | Curator | Data] view switch inside the one panel: tabs are presentation only — the
+  // curator underneath is an ordinary session flowing through the same broker, and the data view
+  // projects the same runtime snapshot everything else reads.
+  const [tab, setTab] = useState<"model" | "curator" | "data">(() => {
     try {
-      return localStorage.getItem("gptino.tab") === "curator" ? "curator" : "model";
+      const stored = localStorage.getItem("gptino.tab");
+      return stored === "curator" || stored === "data" ? stored : "model";
     } catch {
       return "model";
     }
   });
-  const switchTab = (next: "model" | "curator") => {
+  const switchTab = (next: "model" | "curator" | "data") => {
     setTab(next);
     try {
       localStorage.setItem("gptino.tab", next);
@@ -208,17 +191,6 @@ export default function App() {
       // localStorage may be unavailable; the switch still works for this session.
     }
   };
-  // A drawer must not outlive its document: when the doc unregisters (close, Save As re-key),
-  // showing its stale detail — and letting Rescan surface a raw HTTP error — helps nobody.
-  useEffect(() => {
-    if (
-      typeof dataFlowDocId === "string" &&
-      runtime?.grasshopperDocs != null &&
-      !runtime.grasshopperDocs.some((doc) => doc.id === dataFlowDocId)
-    ) {
-      setDataFlowDocId(undefined);
-    }
-  }, [dataFlowDocId, runtime?.grasshopperDocs]);
   const newSessionAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // Esc or a press outside the + Session button / popover closes it. Capture
@@ -301,6 +273,12 @@ export default function App() {
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
   const modelUnread = modelSessions.some((session) => completion.unseen.has(session.id));
   const curatorUnread = curatorSession != null && completion.unseen.has(curatorSession.id);
+  // A definition pointing at deleted Rhino objects emits empty data with no error — the one
+  // data-flow fact that earns an attention dot rather than waiting to be looked up.
+  const brokenReferences = (runtime.dataFlow ?? []).reduce(
+    (total, flow) => total + flow.missingReferenceCount,
+    0,
+  );
   const curatorBusy =
     curatorSession?.status === "working" ||
     curatorSession?.status === "drafting" ||
@@ -319,7 +297,7 @@ export default function App() {
   openSessionRef.current = openSession;
 
   return (
-    <div className={`app-shell${dataFlowDocId !== undefined ? " data-drawer-open" : ""}`}>
+    <div className="app-shell">
       <header className="document-header">
         <div className="brand-mark" title="GPTino — Rhino orchestration">G</div>
 
@@ -349,8 +327,8 @@ export default function App() {
 
         <div className="session-toolbar">
           <div className="toolbar-group">
-            {/* Graph/Data/+Session act on the Model tab's canvas and rail; showing them on the
-                Curator tab would mutate invisible state. Deleted/Past sessions stay global. */}
+            {/* Graph/+Session act on the Model tab's canvas and rail; showing them on another
+                tab would mutate invisible state. Deleted/Past sessions stay global. */}
             {tab === "model" ? (
             <button
               type="button"
@@ -361,17 +339,6 @@ export default function App() {
             >
               {canvasCollapsed ? `▸ Graph (${modelSessions.length})` : "▾ Graph"}
             </button>
-            ) : null}
-            {tab === "model" && !canvasCollapsed && (runtime.dataFlow?.length ?? 0) > 0 ? (
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={toggleDataLayer}
-                aria-pressed={dataLayerOn}
-                title={dataLayerOn ? "Hide Rhino↔GH reference/bake arcs" : "Show Rhino↔GH reference/bake arcs"}
-              >
-                {dataLayerOn ? "▾ Data" : "▸ Data"}
-              </button>
             ) : null}
             <div className="new-session-anchor" ref={newSessionAnchorRef} hidden={tab !== "model"}>
               <button
@@ -479,6 +446,8 @@ export default function App() {
         </>
       ) : null}
 
+      {/* Model = build it, Curator = tidy it, Data = see what flows between the documents. Each
+          tab owns exactly one thing, so nothing curator- or data-shaped leaks into Model. */}
       <nav className="tab-bar" aria-label="Panel view">
         <div className="segmented view-tabs">
           <button
@@ -486,6 +455,7 @@ export default function App() {
             className={tab === "model" ? "active" : ""}
             aria-pressed={tab === "model"}
             onClick={() => switchTab("model")}
+            title="Grasshopper modeling sessions"
           >
             Model
             {modelUnread && tab !== "model" ? <span className="tab-dot" aria-label="Unread activity" /> : null}
@@ -501,6 +471,18 @@ export default function App() {
             Curator
             {curatorUnread && tab !== "curator" ? <span className="tab-dot" aria-label="Unread activity" /> : null}
           </button>
+          <button
+            type="button"
+            className={tab === "data" ? "active" : ""}
+            aria-pressed={tab === "data"}
+            onClick={() => switchTab("data")}
+            title="What Grasshopper references from Rhino and what it bakes back"
+          >
+            Data
+            {brokenReferences > 0 && tab !== "data" ? (
+              <span className="tab-dot warning" aria-label="Broken references" />
+            ) : null}
+          </button>
         </div>
       </nav>
 
@@ -512,14 +494,27 @@ export default function App() {
             unseenIds={completion.unseen}
             onSelect={setSelectedId}
             onReorder={actions.reorder}
-            dataLayerOn={dataLayerOn}
-            onOpenDataFlow={setDataFlowDocId}
+            onOpenDataFlow={() => switchTab("data")}
           />
         </section>
       ) : null}
 
-      {/* Both tab regions stay MOUNTED and toggle via `hidden`: unmounting a ChatPane would
-          silently discard its composer draft and staged attachments on every tab switch. */}
+      {tab === "data" ? (
+        <main className="chat-region data-region">
+          <DataView
+            docs={ghDocs}
+            summaries={runtime.dataFlow ?? []}
+            unattributedBakeCount={runtime.unattributedBakeCount ?? 0}
+            rhinoFile={runtime.rhinoFile}
+            grasshopperFile={runtime.grasshopperFile}
+            getDetail={actions.getDataFlowDetail}
+          />
+        </main>
+      ) : null}
+
+      {/* The two chat regions stay MOUNTED and toggle via `hidden`: unmounting a ChatPane would
+          silently discard its composer draft and staged attachments on every tab switch. The Data
+          region holds no draft, so it unmounts — and re-reads the ledger on every visit. */}
       <main className="chat-region" hidden={tab !== "model"}>
           <ChatPane
             key={selected?.id ?? "none"}
@@ -669,19 +664,6 @@ export default function App() {
               curatorSession ? actions.retractLast(curatorSession.id) : Promise.resolve(null)}
           />
       </main>
-
-      {dataFlowDocId !== undefined ? (
-        <DataFlowDrawer
-          docId={dataFlowDocId}
-          docName={
-            dataFlowDocId != null
-              ? runtime.grasshopperDocs?.find((doc) => doc.id === dataFlowDocId)?.file.split(/[\\/]/).pop()
-              : runtime.grasshopperFile
-          }
-          onClose={() => setDataFlowDocId(undefined)}
-          getDetail={actions.getDataFlowDetail}
-        />
-      ) : null}
 
       {archiveOpen ? (
         <ArchiveBrowser

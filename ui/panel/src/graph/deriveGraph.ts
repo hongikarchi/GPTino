@@ -101,11 +101,6 @@ function conflictPath(x: number, y1: number, y2: number): string {
   return `M ${x} ${y1} C ${x - bow} ${y1}, ${x - bow} ${y2}, ${x} ${y2}`;
 }
 
-/** Mirror of conflictPath bowing RIGHT off the doc column's shared right edge. */
-function dataPath(x: number, y1: number, y2: number, bow: number): string {
-  return `M ${x} ${y1} C ${x + bow} ${y1}, ${x + bow} ${y2}, ${x} ${y2}`;
-}
-
 /** Midpoint of a cubic bezier at t = 0.5: (P0 + 3·P1 + 3·P2 + P3) / 8. */
 function cubicMid(p0: number, p1: number, p2: number, p3: number): number {
   return (p0 + 3 * p1 + 3 * p2 + p3) / 8;
@@ -113,12 +108,7 @@ function cubicMid(p0: number, p1: number, p2: number, p3: number): number {
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export interface DeriveGraphOptions {
-  /** Render reference/bake arcs between the doc nodes (the canvas "Data" toggle). */
-  dataLayer?: boolean;
-}
-
-export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): GraphModel {
+export function deriveGraph(state: RuntimeState): GraphModel {
   // The graph is the Model tab's rail: curator sessions live on their own tab and are pinned
   // outside the draggable priority order, so they never render as draggable session nodes.
   const sessions = state.sessions.filter((session) => session.role !== "curator");
@@ -360,10 +350,10 @@ export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): 
     });
   });
 
-  // Rhino<->GH data-flow: resting compact chips on the GH doc nodes always, plus
-  // reference/bake arcs along the RIGHT edge of the doc column when the Data
-  // layer is on. Entries match nodes by docId, with the legacy single-doc node
-  // falling back to the only summary — the same narrowing rule as commit wires.
+  // Rhino<->GH data-flow: a resting compact chip on each GH doc node — the passive reliability
+  // signal (broken references emit empty data with no error); the per-parameter ledger itself
+  // lives on the Data tab. Entries match nodes by docId, with the legacy single-doc node falling
+  // back to the only summary — the same narrowing rule as commit wires.
   const dataFlows = state.dataFlow ?? [];
   const dataFlowByDoc = new Map<string, DocDataFlow>();
   for (const flow of dataFlows) dataFlowByDoc.set(flow.docId, flow);
@@ -377,67 +367,6 @@ export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): 
     }`;
     doc.dataChipWarning = flow.missingReferenceCount > 0;
   }
-  let hasDataEdges = false;
-  if (options?.dataLayer) {
-    const edgeX = DOC_X + DOC_W;
-    const rhinoMidY = rhinoDoc.y + rhinoDoc.h / 2;
-    for (const doc of ghDocNodes) {
-      const flow = flowForNode(doc);
-      if (!flow) continue;
-      const ghMidY = doc.y + doc.h / 2;
-      const asOf = ` (as of r${flow.revision})`;
-      if (flow.referenceCount > 0 || flow.missingReferenceCount > 0) {
-        hasDataEdges = true;
-        const bow = 16;
-        const y1 = rhinoMidY - 10;
-        const y2 = ghMidY - 10;
-        edges.push({
-          id: doc.docId !== undefined ? `ref:gh:${doc.docId}` : "ref:grasshopper",
-          from: "doc:rhino",
-          to: doc.id,
-          kind: "reference",
-          animated: false,
-          label: flow.missingReferenceCount > 0 ? `⇢${flow.referenceCount}·${flow.missingReferenceCount}!` : `⇢${flow.referenceCount}`,
-          warning: flow.missingReferenceCount > 0,
-          title:
-            `${flow.referenceCount} Rhino object${flow.referenceCount === 1 ? "" : "s"} referenced by this definition${asOf}` +
-            (flow.missingReferenceCount > 0
-              ? `\n${flow.missingReferenceCount} reference${flow.missingReferenceCount === 1 ? "" : "s"} point at deleted objects — components downstream emit empty data`
-              : ""),
-          x1: edgeX,
-          y1,
-          x2: edgeX,
-          y2,
-          path: dataPath(edgeX, y1, y2, bow),
-          midX: edgeX + (3 * bow) / 4,
-          midY: cubicMid(y1, y1, y2, y2),
-        });
-      }
-      if (flow.bakeCount > 0) {
-        hasDataEdges = true;
-        const bow = 30;
-        const y1 = ghMidY + 10;
-        const y2 = rhinoMidY + 10;
-        edges.push({
-          id: doc.docId !== undefined ? `bake:gh:${doc.docId}` : "bake:grasshopper",
-          from: doc.id,
-          to: "doc:rhino",
-          kind: "bake",
-          animated: false,
-          label: `⇠${flow.bakeCount}`,
-          title: `${flow.bakeCount} stamped bake${flow.bakeCount === 1 ? "" : "s"} from this definition${asOf}`,
-          x1: edgeX,
-          y1,
-          x2: edgeX,
-          y2,
-          path: dataPath(edgeX, y1, y2, bow),
-          midX: edgeX + (3 * bow) / 4,
-          midY: cubicMid(y1, y1, y2, y2),
-        });
-      }
-    }
-  }
-
   // Pairwise conflicts arc along the left of the session column.
   for (const conflict of state.conflicts) {
     if (conflict.sessionIds.length !== 2) continue;
@@ -466,5 +395,5 @@ export function deriveGraph(state: RuntimeState, options?: DeriveGraphOptions): 
   // The data arcs bow past the doc column's right edge; give them (and their
   // chips) headroom — but only when arcs were actually drawn, so a persisted
   // Data toggle with nothing to show does not widen the canvas for no reason.
-  return { nodes, edges, width: hasDataEdges ? CANVAS_W + 40 : CANVAS_W, height };
+  return { nodes, edges, width: CANVAS_W, height };
 }

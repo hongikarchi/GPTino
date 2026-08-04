@@ -440,6 +440,11 @@ button.llm-auth:hover strong {
   display: flex;
 }
 
+/* The tab regions stay mounted (a ChatPane unmount would discard its composer draft) and hide
+   via [hidden]. An author `display: flex` beats the UA `[hidden] { display: none }` on cascade
+   origin alone, so without this the inactive region paints on top of the active one. */
+.chat-region[hidden] { display: none; }
+
 .chat-region > .chat-pane {
   flex: 1;
   min-width: 0;
@@ -1518,33 +1523,14 @@ button.llm-auth:hover strong {
   backdrop-filter: blur(12px);
 }
 
-/* Bottom data-flow drawer: sits above content (z-30) but below full overlays and toasts (z-40).
-   The app shell reserves the same height below the chat region while the drawer is open, so the
-   composer stays visible and reachable instead of being covered. */
-.data-drawer {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 30;
-  height: min(42vh, 340px);
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
-  background: rgb(12 14 15 / 0.97);
-  backdrop-filter: blur(12px);
-}
-
-.app-shell.data-drawer-open { padding-bottom: min(42vh, 340px); }
-
-/* [Model | Curator] view switch: presentation only — the curator underneath is an ordinary
+/* [Model | Curator | Data] view switch: presentation only — the curator underneath is an ordinary
    session on the same broker. Sits below the header/banners, above the tab-scoped content. */
 .tab-bar {
   display: flex;
   padding: 6px 16px 0;
 }
 
-.view-tabs { width: 220px; }
+.view-tabs { width: 300px; }
 .view-tabs button { position: relative; }
 
 .tab-dot {
@@ -1556,6 +1542,7 @@ button.llm-auth:hover strong {
   border-radius: 50%;
   background: var(--lime);
 }
+.tab-dot.warning { background: var(--red); }
 
 /* Audit approval card: server-computed findings + approve-what-you-saw. */
 .audit-card {
@@ -1594,11 +1581,54 @@ button.llm-auth:hover strong {
 .curator-region > .chat-pane,
 .curator-region > * { min-height: 0; }
 
-.data-drawer .archive-header { flex: 0 0 auto; }
-.data-drawer-actions { display: flex; gap: 8px; }
-.data-drawer-stamp { color: var(--dim); font-size: var(--fs-meta); font-weight: 400; margin-left: 8px; }
+/* Data tab: the Rhino<->GH reference/bake ledger. Same sections the drawer used to show,
+   now a first-class region instead of something floating over the other tabs. */
+.data-view { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 
-.data-drawer-body {
+.data-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-view-flow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-sec);
+}
+.data-view-doc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg, #e8eaea);
+}
+.data-view-arrow { color: var(--violet); font-family: var(--mono); flex: 0 0 auto; }
+.data-view-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+
+.data-view-docs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+.data-view-chip { margin-left: 6px; color: var(--violet); font-family: var(--mono); font-size: var(--fs-meta); }
+.data-view-chip.warning { color: var(--red); }
+
+.data-view-alert {
+  margin: 8px 16px 0;
+  padding: 6px 10px;
+  border: 1px solid rgb(214 92 78 / 0.4);
+  border-radius: 6px;
+  color: var(--red);
+  font-size: var(--fs-sec);
+}
+
+.data-view-body {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 10px 16px 16px;
