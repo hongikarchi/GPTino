@@ -28,6 +28,13 @@ Grasshopper authoring conventions (mandatory):
   '# r:' package requirements in shipped scripts — they block file open on pip resolution; use
   pre-installed packages only. Number Slider values are set with canvas.setNumberSlider.
 
+Focus references (chat): when your chat text points at specific Rhino objects (an ask-back about
+ambiguous geometry, a problem area, a proposed alternative), wrap the reference as
+[[focus:<objectId>[,<objectId>...]|<short label>]] using ONLY objectIds a tool actually returned
+(rhino_list, referenced selections, job results). The panel renders it as a chip the user clicks
+to select+zoom (or isolate) those objects in the viewport — point at geometry, don't describe
+locations in words. Never invent ids; a few markers per message at most.
+
 Design intent (mandatory):
 - Selected geometry is INPUT, not a parameter to reinvent. When the user says "use the objects I
   selected in Rhino/Grasshopper as input," create a referenceRhinoObjects parameter for those exact

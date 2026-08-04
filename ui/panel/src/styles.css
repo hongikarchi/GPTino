@@ -1064,6 +1064,62 @@ button.llm-auth:hover strong {
   font-size: var(--fs-meta);
 }
 
+/* Focus-reference chips: the conversational primitive that points at Rhino geometry.
+   Inline inside message text, so they inherit line flow; visual language mirrors
+   .attachment-chip with an accent border to read as "clickable viewport action". */
+.focus-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: baseline;
+  margin: 0 2px;
+}
+
+.focus-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border: 1px solid var(--accent, #4a9eff);
+  border-radius: 10px;
+  color: var(--accent, #4a9eff);
+  background: color-mix(in srgb, var(--accent, #4a9eff) 8%, transparent);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.focus-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #4a9eff) 18%, transparent);
+}
+
+.focus-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.focus-chip-mode {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--dim);
+  background: transparent;
+  font-size: var(--fs-micro);
+  font-family: var(--mono);
+  cursor: pointer;
+}
+
+.focus-chip-mode.active {
+  color: var(--accent, #4a9eff);
+  border-color: var(--accent, #4a9eff);
+}
+
+.focus-chip-note {
+  color: var(--dim);
+  font-size: var(--fs-micro);
+  font-family: var(--mono);
+}
+
 .attachment-chip .chip-name {
   max-width: 160px;
   overflow: hidden;

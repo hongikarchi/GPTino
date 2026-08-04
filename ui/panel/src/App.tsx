@@ -564,6 +564,7 @@ export default function App() {
               if (selectedId === deletedId) setSelectedId(null);
             }}
             onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
+            onFocus={actions.focusObjects}
           />
           )}
       </main>
@@ -688,6 +689,7 @@ export default function App() {
             onDelete={() => undefined /* the resident curator is not deletable; the server 409s anyway */}
             onStopEdit={() =>
               curatorSession ? actions.retractLast(curatorSession.id) : Promise.resolve(null)}
+            onFocus={actions.focusObjects}
           />
       </main>
 

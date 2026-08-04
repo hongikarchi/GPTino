@@ -263,7 +263,8 @@ const demoState: RuntimeState = {
           id: "m-c-2",
           role: "assistant",
           content:
-            "Check-up complete (tolerance 0.001 mm). Endpoint gaps: 2 near-miss pairs (largest 0.42 mm) on Facade::Boundary. " +
+            "Check-up complete (tolerance 0.001 mm). Endpoint gaps: 2 near-miss pairs (largest 0.42 mm) " +
+            "[[focus:a0b1c2d3-0001-4e4e-9f9f-000000000001,a0b1c2d3-0002-4e4e-9f9f-000000000002|끝점 갭 2쌍 보기]] on Facade::Boundary. " +
             "Near-duplicates: 1 candidate pair on Atrium::Boundary — which copy to keep is your call. " +
             "Purge candidates: 3 unused block definitions, 1 empty leaf layer. Data ledger: 2 broken references in Atrium_Options.gh. " +
             "Nothing was changed; tell me which findings to fix.",

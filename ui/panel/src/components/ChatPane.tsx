@@ -11,6 +11,8 @@ import {
 import type {
   ChatMessage,
   CodexLimits,
+  FocusMode,
+  FocusResult,
   GptinoSession,
   GrasshopperDocInfo,
   MessageAttachment,
@@ -23,6 +25,8 @@ import type {
 } from "../types";
 import { Icon } from "./Icons";
 import { StatusBadge } from "./StatusBadge";
+import { FocusChip } from "./FocusChip";
+import { parseMessageSegments } from "../messageMarkers";
 
 interface ChatPaneProps {
   session: GptinoSession | undefined;
@@ -48,6 +52,12 @@ interface ChatPaneProps {
   onDelete(): void;
   /** Stop the current turn and retract the last user message; resolves its text (or null) to edit. */
   onStopEdit(): Promise<string | null>;
+  /**
+   * Drive the Rhino viewport onto a set of objects (GPTino's focus-reference primitive:
+   * [[focus:guids|label]] markers in assistant text render as chips that call this).
+   * Optional — without it markers degrade to their plain-text labels.
+   */
+  onFocus?(objectIds: string[], mode: FocusMode): Promise<FocusResult>;
 }
 
 /** One staged composer attachment; the bytes stay in the File until send encodes them. */
@@ -224,8 +234,20 @@ function UsageStatusLine({ usage, limits }: { usage?: SessionUsage; limits?: Cod
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onGoal, onTarget, onSend, onResume, onDelete, onStopEdit }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onGoal, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
+  // True while a focus chip has left the document isolated/locked. Chips share ONE
+  // server-side restore stack, so restore policy lives here, not in the chip: a header
+  // button plus an unmount cleanup (session switch remounts via key={session.id}).
+  const [focusIsolating, setFocusIsolating] = useState(false);
+  const focusIsolatingRef = useRef(false);
+  focusIsolatingRef.current = focusIsolating;
+  useEffect(
+    () => () => {
+      if (focusIsolatingRef.current) void onFocus?.([], "restore");
+    },
+    [onFocus],
+  );
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -454,6 +476,18 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             Resume
           </button>
         ) : null}
+        {focusIsolating ? (
+          <button
+            type="button"
+            className="chat-resume"
+            title="포커스 칩이 숨긴/잠근 객체를 전부 복구"
+            onClick={() => {
+              void onFocus?.([], "restore").then(() => setFocusIsolating(false));
+            }}
+          >
+            Restore view
+          </button>
+        ) : null}
         {session.role !== "curator" ? (
           // The resident curator is not deletable (the server 409s); a Delete button whose
           // confirm dialog promises restoration would be a lie here, so it does not render.
@@ -503,7 +537,24 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
                 </span>
                 <time dateTime={item.message.createdAt}>{formatTime(item.message.createdAt)}</time>
               </div>
-              <p>{item.message.content}</p>
+              <p>
+                {parseMessageSegments(item.message.content).map((segment, index) =>
+                  segment.kind === "text" ? (
+                    <span key={index}>{segment.text}</span>
+                  ) : onFocus ? (
+                    <FocusChip
+                      key={index}
+                      objectIds={segment.objectIds}
+                      label={segment.label}
+                      onFocus={onFocus}
+                      onIsolated={setFocusIsolating}
+                    />
+                  ) : (
+                    // No viewport in this context: the marker degrades to its label.
+                    <span key={index}>{segment.label}</span>
+                  ),
+                )}
+              </p>
               {item.message.pending ? <span className="pending-label">Sending…</span> : null}
             </article>
           ) : (
