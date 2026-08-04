@@ -1,0 +1,6 @@
+{
+  "asserts": [
+    { "component": "(?i)real ?model ?viz", "output": "defLines", "kind": "count", "min": 1372, "max": 1372 },
+    { "component": "(?i)real ?model ?viz", "output": "dispMm", "kind": "count", "min": 1372, "max": 1372 }
+  ]
+}

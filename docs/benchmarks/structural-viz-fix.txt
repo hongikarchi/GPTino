@@ -1,0 +1,5 @@
+RealModelViz 수정 (변형 표시 폭주 해결): 지금 캐노피 체인의 변위(최대 21,660mm)에 배율 50이 그대로 곱해져 km급 선이 뷰포트를 관통하고 있어. 다음처럼 고쳐줘.
+1. RealModelViz 스크립트에 dispCapMm 입력 추가 (item, float — 슬라이더 1~200, 기본 30): 변형 선을 만들 때 각 노드의 변위 벡터를 "방향은 유지, 크기는 min(|d|, dispCapMm)"로 클램프한 뒤 scale을 곱해. (색상용 tColor 클램프는 기존 colorCapMm 그대로 별도 유지)
+2. scale 슬라이더 기본값을 20으로 낮춰.
+3. 출력에 clampedCount (item, int — 클램프가 실제로 걸린 노드 수)를 추가해.
+4. 재실행 후: defLines의 전체 바운딩박스 크기(대각선, m)와 clampedCount를 보고해줘 — 이제 건물 크기(~90m) 스케일 안에 들어와야 정상이야.

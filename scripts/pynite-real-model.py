@@ -295,4 +295,21 @@ report = {
     "hot_chain_member_marks": dict(chain_marks),
 }
 json.dump(report, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-print(json.dumps(report, ensure_ascii=False, indent=1))
+
+# Visualization export: solved geometry + per-node displacement vectors so a lightweight
+# GH component can draw the deformed model (ModelView-style) without re-solving.
+viz_nodes = {}
+for n in used_nodes:
+    node = fe.nodes["N%d" % n]
+    viz_nodes[n] = {
+        "xyz_mm": [round(v, 1) for v in node_xyz[n]],
+        "d_mm": [round(node.DX["SW"] * 1000.0, 3), round(node.DY["SW"] * 1000.0, 3),
+                 round(node.DZ["SW"] * 1000.0, 3)],
+    }
+viz = {
+    "note": "real-model self-weight solve; displacements in mm at nodes; draw deformed = xyz + d*scale",
+    "nodes": viz_nodes,
+    "edges": [{"a": e["a"], "b": e["b"], "mark": e["mark"]} for e in main_edges],
+}
+json.dump(viz, open(OUT.replace(".json", "-viz.json"), "w", encoding="utf-8"))
+print("viz export:", OUT.replace(".json", "-viz.json"), "nodes:", len(viz_nodes), "edges:", len(viz["edges"]))
