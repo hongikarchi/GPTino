@@ -540,6 +540,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     /// </summary>
     private const string ApprovalRequiredFailureCode = "approval_required";
 
+    /// <summary>
+    /// Deterministic PRE-WRITE refusal from the Rhino adapter (layer not empty, block still
+    /// referenced, style still current…). Nothing was applied, so this is a plain failure the
+    /// session can act on — not a recoveryRequired document review.
+    /// </summary>
+    private const string PreconditionRefusedFailureCode = "precondition_refused";
+
     // Destructive rhino ops that honor the user-approval flag; the flag is injected ONLY when the
     // grant covers the op's target object at its exact audited fingerprint.
     private static readonly string[] ApprovableOperations =
@@ -2024,7 +2031,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             // (unless an earlier operation in the batch already landed) nothing changed: report a
             // deterministic Failed the session can act on, not a recoveryRequired review task.
             var approvalRefusal =
-                exception is BridgeProtocolException { Code: ApprovalRequiredFailureCode } && !liveChanged;
+                exception is BridgeProtocolException { Code: ApprovalRequiredFailureCode or PreconditionRefusedFailureCode } &&
+                !liveChanged;
             var state = !approvalRefusal && (liveChanged || writeMayHaveChanged)
                 ? JobState.RecoveryRequired
                 : JobState.Failed;
@@ -4199,7 +4207,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 "expectedAnchorFingerprint", "expectedFingerprint", "tolerance"
             },
             "rhino.purgeTableEntries" => new[] { "operationId", "entries" },
-            "rhino.ensureLayer" => new[] { "operationId", "fullPath" },
+            // layerId is required even for a brand-new layer: the caller picks the identity so the
+            // writeSet can declare it with the absent sentinel before it exists.
+            "rhino.ensureLayer" => new[] { "operationId", "layerId", "fullPath" },
             "rhino.moveObjectsToLayer" => new[] { "operationId", "items", "targetLayerId" },
             "rhino.updateLayer" => new[] { "operationId", "layerId", "expectedFingerprint" },
             "rhino.deleteLayer" => new[] { "operationId", "layerId", "expectedFingerprint" },
@@ -5286,7 +5296,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             "rhino.transform" or "rhino.upsert" or "rhino.delete" => ["objectId"],
         "rhino.fixEndpointPair" => ["anchorObjectId", "moveObjectId"],
         "rhino.moveObjectsToLayer" => ["targetLayerId"],
-        "rhino.updateLayer" or "rhino.deleteLayer" => ["layerId"],
+        "rhino.updateLayer" or "rhino.deleteLayer" or "rhino.ensureLayer" => ["layerId"],
         _ => Array.Empty<string>()
     };
 
@@ -7231,6 +7241,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             return;
         }
 
+        if (resource.Kind == ResourceKind.RhinoLayerTable)
+        {
+            // The layer table is a single per-document resource, so it is addressed by the bound
+            // Grasshopper document id — the same convention the whole-document resource uses.
+            if (!string.Equals(resource.Id, grasshopperDocumentId.ToString("D"), StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "rhinoLayerTable resource ids must be the bound Grasshopper document UUID in D format.");
+            }
+            return;
+        }
+
         if (!Guid.TryParse(resource.Id, out var id) || id == Guid.Empty ||
             !string.Equals(resource.Id, id.ToString("D"), StringComparison.Ordinal))
         {
@@ -7314,6 +7336,13 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 resource = new ResourceAddress(
                     ResourceKind.RhinoObject,
                     RequireArgumentGuid(arguments, "objectId", prepared.Operation.OperationId).ToString("D"));
+                return true;
+            case OperationKind.EnsureRhinoLayer:
+                // ensureLayer is create-or-update by path: a brand-new layer declares its intended
+                // id with the absent sentinel, an existing one declares its concrete fingerprint.
+                resource = new ResourceAddress(
+                    ResourceKind.RhinoLayer,
+                    RequireArgumentGuid(arguments, "layerId", prepared.Operation.OperationId).ToString("D"));
                 return true;
             case OperationKind.ConnectWire:
                 var wire = arguments.GetProperty("wire");

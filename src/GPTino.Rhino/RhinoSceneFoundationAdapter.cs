@@ -27,6 +27,16 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
     private const string BakeFamilyKey = "gptino_bake_family";
     /// <summary>Bridge failure code for the human-wins refusal; see RequireProvenanceOrApproval.</summary>
     public const string ApprovalRequiredCode = "approval_required";
+    /// <summary>
+    /// Bridge failure code for a deterministic PRE-WRITE refusal (a proof the adapter runs before
+    /// touching the document: layer not empty, block still referenced, style still current…).
+    /// Nothing changed, so the executor reports a plain failure instead of "outcome unknown".
+    /// </summary>
+    public const string PreconditionRefusedCode = "precondition_refused";
+
+    /// <summary>Refuses an operation before any document change, with the no-write guarantee.</summary>
+    private static Exception Refuse(string message) =>
+        new BridgeProtocolException(PreconditionRefusedCode, $"{message} No change was applied.");
 
     public RhinoSceneFoundationAdapter(ExplicitRhinoDocumentResolver resolver)
         : base(resolver)
@@ -237,6 +247,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         // Audits count what exists, not what is visible — hidden and locked included. Block
         // definition members are opt-in: the layer census needs them (a layer holding only block
         // member geometry is NOT empty), while geometry analyses stay top-level.
+        NormalObjects = true,
         ActiveObjects = true,
         HiddenObjects = true,
         LockedObjects = true,
@@ -249,6 +260,29 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         ReferenceObjects = true,
         ObjectTypeFilter = typeFilter ?? ObjectType.AnyObject,
     };
+
+    /// <summary>
+    /// Every object that OCCUPIES a layer: top-level objects plus block-definition members.
+    /// IdefObjects is a MODE, not an additive flag — the live gate caught a layer holding six
+    /// objects reported as empty because the single idef-enabled pass returned definition members
+    /// only. Two passes, unioned by id, is the only correct enumeration.
+    /// </summary>
+    private static IReadOnlyList<RhinoObject> EnumerateLayerOccupants(global::Rhino.RhinoDoc document)
+    {
+        // Each pass is MATERIALIZED before the next starts: a lazy walk would keep the first
+        // pass's native object iterator open while the second one runs.
+        var occupants = document.Objects.GetObjectList(AuditEnumerator()).ToList();
+        if (document.InstanceDefinitions.Count == 0)
+        {
+            return occupants;
+        }
+        var seen = occupants.Select(item => item.Id).ToHashSet();
+        var definitionMembers = document.Objects
+            .GetObjectList(AuditEnumerator(includeDefinitionMembers: true))
+            .ToList();
+        occupants.AddRange(definitionMembers.Where(item => seen.Add(item.Id)));
+        return occupants;
+    }
 
     // Open-curve endpoints that ALMOST meet: gap in (tolerance, band]. Detection is endpoint-to-
     // endpoint via RTree; T-junctions (endpoint near a curve's interior) are a separate future
@@ -527,8 +561,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         // Layer census must include block-definition members: a block-library layer holding only
         // member geometry is IN USE, not empty.
         var layersWithObjects = new HashSet<int>();
-        foreach (var rhinoObject in document.Objects.GetObjectList(
-                     AuditEnumerator(includeDefinitionMembers: true)))
+        foreach (var rhinoObject in EnumerateLayerOccupants(document))
         {
             cancellationToken.ThrowIfCancellationRequested();
             layersWithObjects.Add(rhinoObject.Attributes.LayerIndex);
@@ -966,6 +999,36 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         {
             throw new KeyNotFoundException($"Parent layer {parentLayerId:D} was not found.");
         }
+        // A nested path implies its ancestors. Without this, "GPTino::Quarantine" silently created
+        // a TOP-LEVEL layer named "Quarantine" and reported success — a different layer than the
+        // caller asked for, which the live gate caught.
+        if (existing < 0 && parentLayerId == Guid.Empty)
+        {
+            var segments = normalizedPath
+                .Split(new[] { "::" }, StringSplitOptions.None)
+                .Select(segment => segment.Trim())
+                .ToArray();
+            if (segments.Length > 1)
+            {
+                var ancestorPath = string.Empty;
+                for (var depth = 0; depth < segments.Length - 1; depth++)
+                {
+                    ancestorPath = depth == 0 ? segments[0] : $"{ancestorPath}::{segments[depth]}";
+                    var ancestorIndex = document.Layers.FindByFullPath(ancestorPath, -1);
+                    if (ancestorIndex < 0)
+                    {
+                        var ancestor = new Layer { Name = segments[depth], ParentLayerId = parentLayerId };
+                        ancestorIndex = document.Layers.Add(ancestor);
+                        if (ancestorIndex < 0)
+                        {
+                            throw new InvalidOperationException(
+                                $"Rhino could not create the parent layer '{ancestorPath}'.");
+                        }
+                    }
+                    parentLayerId = document.Layers[ancestorIndex].Id;
+                }
+            }
+        }
         if (existing >= 0 && document.Layers[existing].ParentLayerId != parentLayerId)
         {
             throw new InvalidOperationException(
@@ -1003,6 +1066,18 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 }
                 throw new InvalidOperationException(
                     "Rhino could not preserve the requested LayerId; the unexpected layer was removed.");
+            }
+            // Verify the layer actually landed at the REQUESTED path: reporting success for a
+            // layer at a different path is the false-success class this project exists to prevent.
+            if (!string.Equals(actual.FullPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                if (existing < 0)
+                {
+                    document.Layers.Delete(actual.Id, quiet: true);
+                }
+                throw new InvalidOperationException(
+                    $"Rhino placed the layer at '{actual.FullPath}' instead of '{normalizedPath}'" +
+                    (existing < 0 ? "; the unexpected layer was removed." : "."));
             }
             var after = LayerFingerprint(actual);
             return Task.FromResult(new RhinoSceneMutationResult(
@@ -1715,8 +1790,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         // Object counts include hidden objects AND block-definition members: a layer holding only
         // block geometry is in use, and deleteLayer's emptiness proof depends on this listing.
         var objectCounts = new Dictionary<int, int>();
-        foreach (var rhinoObject in document.Objects.GetObjectList(
-                     AuditEnumerator(includeDefinitionMembers: true)))
+        foreach (var rhinoObject in EnumerateLayerOccupants(document))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var index = rhinoObject.Attributes.LayerIndex;
@@ -1937,24 +2011,21 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         // count, children count, and the current layer is never deletable.
         if (index == document.Layers.CurrentLayerIndex)
         {
-            throw new InvalidOperationException($"Layer '{layer.FullPath}' is the current layer and cannot be deleted.");
+            throw Refuse($"Layer '{layer.FullPath}' is the current layer and cannot be deleted.");
         }
         foreach (var candidate in document.Layers)
         {
             if (candidate is not null && !candidate.IsDeleted && candidate.ParentLayerId == layer.Id)
             {
-                throw new InvalidOperationException(
-                    $"Layer '{layer.FullPath}' has child layers; delete or re-parent them first.");
+                throw Refuse($"Layer '{layer.FullPath}' has child layers; delete or re-parent them first.");
             }
         }
-        foreach (var rhinoObject in document.Objects.GetObjectList(
-                     AuditEnumerator(includeDefinitionMembers: true)))
+        foreach (var rhinoObject in EnumerateLayerOccupants(document))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (rhinoObject.Attributes.LayerIndex == index)
             {
-                throw new InvalidOperationException(
-                    $"Layer '{layer.FullPath}' still holds objects (including hidden or block members).");
+                throw Refuse($"Layer '{layer.FullPath}' still holds objects (including hidden or block members).");
             }
         }
 
@@ -2104,8 +2175,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                     // other definitions.
                     if (definition.InUse(1) || definition.InUse(2))
                     {
-                        throw new InvalidOperationException(
-                            $"Block definition '{definition.Name}' is in use and cannot be purged.");
+                        throw Refuse($"Block definition '{definition.Name}' is in use and cannot be purged.");
                     }
                     break;
                 }
@@ -2115,8 +2185,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                         ?? throw new KeyNotFoundException($"Dimension style {entry.Id:D} was not found.");
                     if (document.DimStyles.CurrentIndex == style.Index)
                     {
-                        throw new InvalidOperationException(
-                            $"Dimension style '{style.Name}' is the current style and cannot be purged.");
+                        throw Refuse($"Dimension style '{style.Name}' is the current style and cannot be purged.");
                     }
                     break;
                 }
@@ -2130,8 +2199,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                     if (document.Layers.Any(layer =>
                             layer is not null && !layer.IsDeleted && layer.LinetypeIndex == linetype.Index))
                     {
-                        throw new InvalidOperationException(
-                            $"Linetype '{linetype.Name}' is referenced by a layer and cannot be purged.");
+                        throw Refuse($"Linetype '{linetype.Name}' is referenced by a layer and cannot be purged.");
                     }
                     break;
                 }
@@ -2142,8 +2210,7 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                     if (document.Layers.Any(layer =>
                             layer is not null && !layer.IsDeleted && layer.RenderMaterialIndex == material.Index))
                     {
-                        throw new InvalidOperationException(
-                            $"Material '{material.Name}' is referenced by a layer and cannot be purged.");
+                        throw Refuse($"Material '{material.Name}' is referenced by a layer and cannot be purged.");
                     }
                     break;
                 }
