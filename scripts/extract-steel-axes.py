@@ -122,10 +122,46 @@ for obj in model.Objects:
             "approx": True,
         })
 
+# Dedupe pass: real assemblies are modeled as several solids (main member + cover
+# plates / gussets) and some braces exist both as instances and loose solids — each
+# yielding a near-identical axis. Merge axes that are near-parallel and near-coincident;
+# prefer exact (instance-derived) axes over PCA, then longer over shorter.
+def _u(m):
+    a, b = m["ax"], m["bx"]
+    L = max(m["len_mm"], 1e-6)
+    return [(b[i] - a[i]) / L for i in range(3)]
+
+def _mid(m):
+    return [(m["ax"][i] + m["bx"][i]) / 2.0 for i in range(3)]
+
+members.sort(key=lambda m: (bool(m.get("approx")), -m["len_mm"]))
+kept = []
+merged_away = 0
+for m in members:
+    um, mm_ = _u(m), _mid(m)
+    dup = False
+    for k in kept:
+        if k["mark"].split(" ")[0] != m["mark"].split(" ")[0]:
+            continue
+        uk = _u(k)
+        dot = abs(sum(um[i] * uk[i] for i in range(3)))
+        if dot < 0.9986:  # > ~3 deg apart
+            continue
+        mk = _mid(k)
+        if sum((mm_[i] - mk[i]) ** 2 for i in range(3)) ** 0.5 < 250.0:
+            dup = True
+            break
+    if dup:
+        merged_away += 1
+    else:
+        kept.append(m)
+members = kept
+
 by_mark = collections.Counter(m["mark"] for m in members)
 summary = {
     "units": str(model.Settings.ModelUnitSystem),
     "member_count": len(members),
+    "merged_duplicate_axes": merged_away,
     "by_mark": dict(by_mark),
     "skipped": dict(skipped),
     "prototype_outer_dims_mm": proto_dims,
