@@ -217,7 +217,8 @@ public sealed class GptinoPanel : Panel
                 <h3>GPTino is starting</h3>
                 <p>{{status}}</p>
                 {{stateNotice}}
-                <p><small>GPTino attaches to a saved Rhino document. Grasshopper is optional — open a definition when you want to work on the canvas; the curator needs only the Rhino file.</small></p>
+                <a class="cta" href="gptino://open-grasshopper">Open Grasshopper to start</a>
+                <p><small>GPTino pairs one saved Rhino file with one saved Grasshopper file. Open (and save) a Grasshopper definition to begin.</small></p>
                 <small>Rhino document {{_documentSerial}}</small>
               </body>
             </html>

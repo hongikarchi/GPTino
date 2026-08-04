@@ -1530,7 +1530,8 @@ button.llm-auth:hover strong {
   padding: 6px 16px 0;
 }
 
-.view-tabs { width: 300px; }
+/* Three tabs, so three columns: .segmented defaults to two and the third wrapped onto its own row. */
+.view-tabs { width: 260px; grid-template-columns: repeat(3, 1fr); }
 .view-tabs button { position: relative; }
 
 .tab-dot {

@@ -542,11 +542,10 @@ export function SessionCanvas({
         />
       ))}
       {sessionNodes.length === 0 ? (
-        // Two centered lines so the actionable half never sits off-screen on a
-        // narrow clamped view (the single line was wider than a 320px panel).
+        // Only the actionable line: an empty rail already says "no sessions yet", so naming it
+        // was noise sitting behind the graph. Centered so it never clips on a narrow panel.
         <g className="canvas-empty" textAnchor="middle">
-          <text x={view.x + view.w / 2} y={model.height / 2 - 8}>No sessions yet</text>
-          <text x={view.x + view.w / 2} y={model.height / 2 + 12}>
+          <text x={view.x + view.w / 2} y={model.height / 2 + 4}>
             Create one with the + Session button
           </text>
         </g>
