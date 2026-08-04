@@ -16,6 +16,10 @@
 [CmdletBinding()]
 param(
     [string]$RunId = (Get-Date -Format 'yyyyMMddTHHmmssZ') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8)),
+    # Scene fixture kind: 'paneling' (default, original fixture) or 'structural'
+    # (column axes + perimeter beams + isolated test beam for Karamba benchmarks).
+    [ValidateSet('paneling', 'structural')]
+    [string]$SceneKind = 'paneling',
     [switch]$RegenerateScene,
     # Launch WITHOUT opening Grasshopper, to exercise the Rhino-only target (curator-only panel).
     [switch]$NoGrasshopper,
@@ -43,7 +47,10 @@ $bytes = New-Object 'System.Byte[]' 32
 $token = -join ($bytes | ForEach-Object { $_.ToString('x2') })
 
 # --- scene assets --------------------------------------------------------------
-$scene3dm = Join-Path $runRoot 'scene.3dm'
+# Non-paneling kinds get a kind-suffixed filename so a reused run directory can never
+# serve a stale scene of the wrong kind.
+$sceneName = if ($SceneKind -eq 'paneling') { 'scene.3dm' } else { "scene-$SceneKind.3dm" }
+$scene3dm = Join-Path $runRoot $sceneName
 $sceneGh = Join-Path $runRoot 'scene.gh'
 
 # Empty saved Grasshopper doc (canonical 1631-byte template reused from a prior run).
@@ -61,7 +68,8 @@ if ($RegenerateScene -or -not (Test-Path -LiteralPath $scene3dm)) {
     $genPsi.Arguments = "/nosplash /runscript=`"_-RunPythonScript $genScript _Exit`""
     $genPsi.UseShellExecute = $false
     $genPsi.EnvironmentVariables['GPTINO_SCENE_3DM'] = $scene3dm
-    Write-Host "Generating paneling scene -> $scene3dm"
+    $genPsi.EnvironmentVariables['GPTINO_SCENE_KIND'] = $SceneKind
+    Write-Host "Generating $SceneKind scene -> $scene3dm"
     $gen = [System.Diagnostics.Process]::Start($genPsi)
     # The python writes a '.scene-ok' marker when it has saved the .3dm. Poll for it
     # rather than trusting Rhino's _Exit (a stray dialog can leave the GUI running);
