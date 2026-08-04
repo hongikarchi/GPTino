@@ -2775,6 +2775,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 return cached;
             }
 
+            // No Grasshopper document means the canvas contributes no resources — which is a state,
+            // not a failure. Refusing here would deny the curator its ChangeSet envelope (projectId
+            // and sessionId come from snapshot_read) and its preflight, even though every resource
+            // it touches lives outside the snapshot anyway and is resolved by a rhinoTables scope.
+            if (!targetState.Target.HasGrasshopper)
+            {
+                return CaptureCanvaslessSnapshot(targetState);
+            }
+
             RequireAdapter(targetState, BridgeAdapterOwner.CordycepsCanvas);
             var currentTarget = targetState.Target;
             var request = BridgeOperationRequest.Create(
@@ -2828,6 +2837,47 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             targetState.SnapshotGate.Release();
         }
+    }
+
+    /// <summary>
+    /// The snapshot of a target with no Grasshopper document: a real envelope carrying the target,
+    /// the history head and the project identity, with an EMPTY canvas and no resources. Curator
+    /// resources (layers, document tables) live outside the snapshot in every target anyway — they
+    /// are resolved by a rhinoTables inspection scope — so nothing is lost by having none here.
+    /// The revision only advances when the target changes; with no canvas there is nothing else to
+    /// churn it, so repeated reads are stable and CAS on Rhino resources stays meaningful.
+    /// Callers hold the snapshot gate.
+    /// </summary>
+    private SnapshotEnvelope CaptureCanvaslessSnapshot(TargetState targetState)
+    {
+        var currentTarget = targetState.Target;
+        var previous = targetState.Snapshot;
+        var sameTarget = previous is not null &&
+            string.Equals(previous.State.Target.Identity, currentTarget.Identity, StringComparison.Ordinal);
+        var revision = sameTarget ? previous!.State.Revision : 1;
+        var canvas = new CanvasSnapshot(
+            Guid.Empty,
+            string.Empty,
+            Array.Empty<CanvasObjectState>(),
+            Array.Empty<WireState>(),
+            Array.Empty<GroupState>());
+        var state = new StateSnapshot(
+            currentTarget.ProjectId,
+            revision,
+            GetHistory(targetState).ReadHead(),
+            DateTimeOffset.UtcNow,
+            currentTarget,
+            Array.Empty<ResourceFingerprint>());
+        var envelope = new SnapshotEnvelope(
+            BuildSnapshotId(state, canvas.DocumentFingerprint),
+            state,
+            canvas);
+        targetState.Snapshot = envelope;
+        if (!sameTarget)
+        {
+            _events.Publish();
+        }
+        return envelope;
     }
 
     private static IReadOnlyList<ResourceFingerprint> BuildResources(
@@ -5350,6 +5400,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
             if (!targetState.Adapters.Contains(owner))
             {
+                // Name the cause, not the plumbing: "no adapter 'CordycepsCanvas'" reads like a
+                // broken bridge, when the truth is simply that no definition is open — a state the
+                // reader can act on (open one, or do Rhino-side work instead).
+                if (!targetState.Target.HasGrasshopper)
+                {
+                    throw new InvalidOperationException(
+                        "No Grasshopper definition is open for this Rhino document, so canvas work " +
+                        "is unavailable. Rhino-side operations (layers, document tables, objects) " +
+                        "still work.");
+                }
                 throw new InvalidOperationException(
                     $"The bound document does not advertise adapter '{owner}'.");
             }
