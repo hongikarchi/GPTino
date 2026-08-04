@@ -91,6 +91,18 @@ if ($RegenerateScene -or -not (Test-Path -LiteralPath $scene3dm)) {
 # stale (dead) endpoint as ready before the new AgentHost overwrites it. Clear it first.
 Remove-Item -LiteralPath (Join-Path $runtime 'endpoint.json') -Force -ErrorAction SilentlyContinue
 
+# A killed Rhino leaves its instance lock behind, and the next Rhino defers AgentHost startup to
+# the "already running" instance that no longer exists — the endpoint then never appears. Clear
+# the lock only when its pid is genuinely gone, so a real second instance still wins the race.
+$lockPath = Join-Path $runtime '.gptino-instance.lock'
+if (Test-Path -LiteralPath $lockPath) {
+    $lockPid = ((Get-Content -LiteralPath $lockPath | Where-Object { $_ -match '^pid=' }) -replace 'pid=', '').Trim()
+    if (-not $lockPid -or -not (Get-Process -Id $lockPid -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+        Write-Host "Cleared a stale instance lock (pid $lockPid is gone)."
+    }
+}
+
 # --- live launch: open scene, panel, and Grasshopper doc via runscript ----------
 # Order: open the panel (starts the AgentHost) then open the saved .gh (forms the
 # rhino+gh target). Paths carry no spaces, so the .gh path is passed unquoted.
