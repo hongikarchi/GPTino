@@ -8,7 +8,14 @@ param(
     [string]$Content,
     [string]$ContentFile,
     [int]$TimeoutSeconds = 300,
-    [string]$Run
+    [string]$Run,
+    # Optional numeric-assertion spec (harness-side grading; the agent under test never
+    # sees or writes these). JSON: { "asserts": [ { "component": <name regex>,
+    # "output": <socket name>, "kind": "count"|"number"|"json", "path": <dot/[i] path,
+    # json kind only>, "min": <num>, "max": <num> } ] }. Values are read live via the
+    # dev endpoints (/dev/snapshot for name->objectId, /dev/grasshopper/{id}/outputs
+    # for sampleValues/dataCount). Asserts only run when the session ended idle.
+    [string]$ExpectFile
 )
 $ErrorActionPreference = 'Stop'
 if ($ContentFile) { $Content = Get-Content -LiteralPath $ContentFile -Raw }
@@ -64,15 +71,85 @@ foreach ($d in $newDiag) {
     }
 }
 
+# --- numeric assertions (harness-side, optional) ---
+$assertResults = @()
+$assertsFailed = 0
+if ($ExpectFile) {
+    $spec = Get-Content -LiteralPath $ExpectFile -Raw | ConvertFrom-Json
+    if ($status -ne 'idle') {
+        $assertsFailed = $spec.asserts.Count
+        $assertResults += "SKIP-ALL: session ended '$status', not idle - all $($spec.asserts.Count) asserts count as failed"
+    }
+    else {
+        function Get-JsonPath($obj, $path) {
+            $cur = $obj
+            foreach ($seg in ($path -split '\.')) {
+                if ($seg -match '^(.*?)\[(\d+)\]$') {
+                    if ($Matches[1]) { $cur = $cur.($Matches[1]) }
+                    $cur = $cur[[int]$Matches[2]]
+                }
+                else { $cur = $cur.$seg }
+                if ($null -eq $cur) { return $null }
+            }
+            return $cur
+        }
+        $snap = Api GET '/dev/snapshot'
+        foreach ($a in $spec.asserts) {
+            $label = "$($a.component) / $($a.output) [$($a.kind)]"
+            $hits = @($snap.canvas.objects | Where-Object { $_.name -match $a.component })
+            if ($hits.Count -ne 1) {
+                $assertsFailed++
+                $assertResults += "FAIL $label - component regex matched $($hits.Count) objects (need exactly 1)"
+                continue
+            }
+            $outs = (Api GET "/dev/grasshopper/$($hits[0].objectId)/outputs").result.outputs
+            $sock = $outs | Where-Object { $_.name -eq $a.output } | Select-Object -First 1
+            if (-not $sock) {
+                $assertsFailed++
+                $assertResults += "FAIL $label - output socket not found (have: $(($outs | ForEach-Object { $_.name }) -join ', '))"
+                continue
+            }
+            $value = $null
+            switch ($a.kind) {
+                'count' { $value = $sock.dataCount }
+                'number' { if ($sock.sampleValues.Count -gt 0) { $value = [double]$sock.sampleValues[0] } }
+                'json' {
+                    if ($sock.sampleValues.Count -gt 0) {
+                        try { $value = Get-JsonPath ($sock.sampleValues[0] | ConvertFrom-Json) $a.path } catch { $value = $null }
+                    }
+                }
+            }
+            if ($null -eq $value) {
+                $assertsFailed++
+                $assertResults += "FAIL $label - no value (dataCount=$($sock.dataCount), samples=$($sock.sampleValues.Count))"
+            }
+            elseif ([double]$value -lt [double]$a.min -or [double]$value -gt [double]$a.max) {
+                $assertsFailed++
+                $assertResults += "FAIL $label - value $value outside [$($a.min), $($a.max)]"
+            }
+            else {
+                $assertResults += "PASS $label - $value in [$($a.min), $($a.max)]"
+            }
+        }
+    }
+}
+
+$gate = ($status -eq 'idle') -and ($fails.Count -eq 0) -and ($assertsFailed -eq 0)
 [pscustomobject]@{
-    status       = $status
-    elapsedSec   = $elapsed
-    commits      = "$revBefore -> $revAfter"
-    conflicts    = $rt.conflicts.Count
-    queue        = $rt.queue.Count
-    newDiagTotal = $newDiag.Count
-    failCount    = $fails.Count
+    status        = $status
+    elapsedSec    = $elapsed
+    commits       = "$revBefore -> $revAfter"
+    conflicts     = $rt.conflicts.Count
+    queue         = $rt.queue.Count
+    newDiagTotal  = $newDiag.Count
+    failCount     = $fails.Count
+    assertsFailed = $assertsFailed
+    gate          = if ($gate) { 'PASS' } else { 'FAIL' }
 } | Format-List
+if ($assertResults.Count -gt 0) {
+    "--- numeric asserts ---"
+    $assertResults | ForEach-Object { $_ }
+}
 if ($fails.Count -gt 0) {
     "--- failure/crash diagnostics this wave ---"
     $fails | ForEach-Object { $_ }

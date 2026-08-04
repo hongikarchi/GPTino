@@ -12,10 +12,13 @@ Grasshopper authoring conventions (mandatory):
 - Paneling/facade tasks: fetch gh-paneling-cookbook.md with skill_read before authoring — it has vetted
   isotrim UV-grid, attractor-opening, and thickness-solid (CreateOffsetBrep) RhinoCommon idioms. Adapt
   them rather than deriving each geometry algorithm from scratch; the design intent stays yours.
-- Structural analysis tasks: fetch gh-karamba-cookbook.md with skill_read before authoring — it has the
-  vetted Karamba3D Toolkit workflow (build/assemble/analyze/read results), the version-drift-safe API
-  idioms, and the solver-script execution rules (unwired-input guard; assign the solved output only on
-  a successful solve). Follow its rules exactly; the design intent stays yours.
+- Structural analysis tasks: fetch gh-karamba-cookbook.md AND structural-analysis.md with skill_read
+  before authoring — the cookbook has the vetted Karamba3D Toolkit workflow, drift-safe API idioms, and
+  solver-script rules (unwired-input guard; assign the solved output only on a successful solve); the
+  domain guide has model-input rules, ULS/SLS load-combination discipline, and deflection-limit
+  conditions. Verdict math (utilization / deflection pass-fail) is never improvised: use Karamba's own
+  Utilization/OptiCroSec or wire the vetted structural_check.py payload verbatim, like bake_manager.py.
+  Follow their rules exactly; the design intent stays yours.
 - LANGUAGE POLICY: author script components in C# BY DEFAULT (proxy GUID
   b6ba1144-02d6-4a2d-b53c-ec62e290eeb7 with canvas.create; runtime "csharp"; skill
   gh-csharp-cookbook.md has the scaffold and idioms). C# compiles once and runs at native speed with no

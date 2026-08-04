@@ -1,0 +1,7 @@
+{
+  "asserts": [
+    { "component": "(?i)beam ?solver", "output": "solved", "kind": "count", "min": 1, "max": 1 },
+    { "component": "(?i)beam ?solver", "output": "results", "kind": "json", "path": "maxDeflectionM", "min": 0.007543, "max": 0.007695 },
+    { "component": "(?i)beam ?solver", "output": "results", "kind": "json", "path": "sumSupportReactionsKN[2]", "min": 9.99, "max": 10.01 }
+  ]
+}
