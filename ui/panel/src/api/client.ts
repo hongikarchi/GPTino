@@ -13,6 +13,8 @@ import type {
   SessionMode,
   SessionOrderRequest,
   SessionRole,
+  FocusMode,
+  FocusResult,
 } from "../types";
 import { createMockApiClient } from "./mock";
 
@@ -26,6 +28,7 @@ export interface GptinoApiClient {
   listModels(): Promise<ModelInfo[]>;
   createSession(name: string, grasshopperDoc?: string, role?: SessionRole): Promise<void>;
   /** On-demand Rhino<->GH data-flow detail for one GH doc (omit docId when only one is open). */
+  focusObjects(objectIds: string[], mode: FocusMode, zoom?: boolean): Promise<FocusResult>;
   getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail>;
   /** Server-computed document-hygiene audit (deterministic; the card renders it verbatim). */
   getAudit(kind: RhinoAuditKind, options?: { tolerance?: number; bandFactor?: number; limit?: number }): Promise<RhinoAuditResult>;
@@ -175,6 +178,13 @@ class HttpApiClient implements GptinoApiClient {
         model: "gpt-5.6-sol",
         ...(grasshopperDoc ? { grasshopperDoc } : {}),
       }),
+    });
+  }
+
+  focusObjects(objectIds: string[], mode: FocusMode, zoom = true): Promise<FocusResult> {
+    return this.request<FocusResult>("/focus", {
+      method: "POST",
+      body: JSON.stringify({ objectIds, mode, zoom }),
     });
   }
 

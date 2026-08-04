@@ -321,6 +321,23 @@ api.MapGet("/layers", async (
     CancellationToken cancellationToken) =>
     Results.Ok(await liveBackend.ReadRhinoLayersAsync(cancellationToken)));
 
+// Viewport focus for the audit card: select + zoom the objects behind a finding, optionally
+// isolating or locking everything else so the user can judge it themselves. Not a ChangeSet step —
+// a human pressed a row — and deliberately absent from the agent's tool schema.
+api.MapPost("/focus", async (
+    FocusRequest request,
+    LiveDocumentBackend liveBackend,
+    CancellationToken cancellationToken) =>
+{
+    var arguments = JsonSerializer.SerializeToElement(new
+    {
+        objectIds = request.ObjectIds ?? Array.Empty<Guid>(),
+        mode = string.IsNullOrWhiteSpace(request.Mode) ? "select" : request.Mode,
+        zoom = request.Zoom ?? true,
+    });
+    return Results.Ok(await liveBackend.FocusRhinoObjectsAsync(arguments, cancellationToken));
+});
+
 // Mints a user-approval grant for the audit card's Approve action: bound to exactly the
 // (objectId, fingerprint) pairs the user saw, expiring, and required before destructive ops can
 // touch objects without GPTino provenance stamps.

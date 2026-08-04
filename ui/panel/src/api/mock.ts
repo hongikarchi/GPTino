@@ -15,6 +15,7 @@ import type {
   SessionMode,
   SessionOrderRequest,
   SessionRole,
+  FocusMode,
 } from "../types";
 
 const demoModels: ModelInfo[] = [
@@ -410,6 +411,78 @@ const demoAudits: Record<RhinoAuditKind, RhinoAuditResult> = {
     fingerprint: "audit-fixture-open-brep",
     findings: [],
   },
+  geometryIntegrity: {
+    kind: "geometryIntegrity",
+    docTolerance: 0.001,
+    docUnits: "Millimeters",
+    toleranceUsed: 0.001,
+    bandUsed: 0.01,
+    scannedObjects: 2484,
+    truncated: false,
+    fingerprint: "audit-fixture-geometry-qc",
+    findings: [
+      {
+        findingId: "sliver-31af",
+        kind: "sliverObject",
+        objectIds: ["c1d2e3f4-0001-4a4a-9b9b-000000000011"],
+        fingerprints: ["fp-g1"],
+        measure: 0.004,
+        detail: "Solid is 0.004 thin across 3200 — a ratio of 1:800000. A failed offset, trim, or boolean looks like this.",
+        proposedFixes: [],
+      },
+      {
+        findingId: "stray-77c0",
+        kind: "strayObject",
+        objectIds: ["c1d2e3f4-0002-4a4a-9b9b-000000000012"],
+        fingerprints: ["fp-g2"],
+        measure: 184000,
+        detail: "Object sits 184000 from the model centre, more than 10x the median 5400. Check whether it was dragged or imported by accident.",
+        proposedFixes: [],
+      },
+    ],
+  },
+  layerIntegrity: {
+    kind: "layerIntegrity",
+    docTolerance: 0.001,
+    docUnits: "Millimeters",
+    toleranceUsed: 0.001,
+    bandUsed: null,
+    scannedObjects: 70,
+    truncated: false,
+    fingerprint: "audit-fixture-layer-qc",
+    findings: [
+      {
+        findingId: "lname-4d21",
+        kind: "layerNameHazard",
+        objectIds: ["d1e2f3a4-0003-4b4b-8c8c-000000000021"],
+        fingerprints: ["fp-l1"],
+        measure: null,
+        detail: "Layer '3D::F-Panel ': the name has leading or trailing whitespace, which name-based selection will not match.",
+        proposedFixes: [],
+      },
+    ],
+  },
+  blockIntegrity: {
+    kind: "blockIntegrity",
+    docTolerance: 0.001,
+    docUnits: "Millimeters",
+    toleranceUsed: 0.001,
+    bandUsed: null,
+    scannedObjects: 18,
+    truncated: false,
+    fingerprint: "audit-fixture-block-qc",
+    findings: [
+      {
+        findingId: "bsplit-9e40",
+        kind: "blockInstancesSplitAcrossLayers",
+        objectIds: ["e1f2a3b4-0004-4c4c-9d9d-000000000031"],
+        fingerprints: ["fp-b1"],
+        measure: 3,
+        detail: "Block 'MULLION-A' is placed on 3 different layers (3D::A-Wall, 3D::F-Panel, Default). Usually one of them is a slip.",
+        proposedFixes: [],
+      },
+    ],
+  },
   nearDuplicates: {
     kind: "nearDuplicates",
     docTolerance: 0.001,
@@ -700,6 +773,17 @@ export function createMockApiClient(): GptinoApiClient {
       return {
         grantId: `grant-${items.length}-${Math.abs(items.length * 7919).toString(16)}`,
         expiresAt: minutesAgo(-10),
+      };
+    },
+    async focusObjects(objectIds: string[], mode: FocusMode, zoom = true) {
+      await delay(60);
+      return {
+        selectedCount: mode === "restore" ? 0 : objectIds.length,
+        missingCount: 0,
+        hiddenCount: mode === "isolate" ? 42 : 0,
+        lockedCount: mode === "lock" ? 42 : 0,
+        restored: mode === "restore",
+        fingerprint: `focus-${mode}-${objectIds.length}-${zoom ? "z" : "n"}`,
       };
     },
     async getDataFlowDetail(docId?: string | null) {

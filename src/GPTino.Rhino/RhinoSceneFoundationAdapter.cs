@@ -225,13 +225,26 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
                 outcome = AuditOpenBrepEdges(document, tolerance, bandUsed.Value, limit, cancellationToken);
                 break;
             }
+            case "geometryIntegrity":
+            {
+                var bandFactor = request.BandFactor is > 1 ? Math.Min(request.BandFactor.Value, 100.0) : 10.0;
+                bandUsed = tolerance * bandFactor;
+                outcome = AuditGeometryIntegrity(document, tolerance, bandUsed.Value, limit, cancellationToken);
+                break;
+            }
+            case "layerIntegrity":
+                outcome = AuditLayerIntegrity(document, limit, cancellationToken);
+                break;
+            case "blockIntegrity":
+                outcome = AuditBlockIntegrity(document, limit, cancellationToken);
+                break;
             case "purgeCandidates":
                 outcome = AuditPurgeCandidates(document, limit, cancellationToken);
                 break;
             default:
                 throw new InvalidOperationException(
-                    $"Unknown audit kind '{request.Kind}'. " +
-                    "Use nearMissEndpoints|nearDuplicates|openBrepEdges|purgeCandidates.");
+                    $"Unknown audit kind '{request.Kind}'. Use nearMissEndpoints|nearDuplicates|" +
+                    "openBrepEdges|geometryIntegrity|layerIntegrity|blockIntegrity|purgeCandidates.");
         }
         var fingerprint = Hash(
             $"audit|{kind}|{tolerance:R}|" +
@@ -712,6 +725,713 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             truncated = true;
         }
         return (findings, scanned, truncated);
+    }
+
+    // ── QC sweeps ────────────────────────────────────────────────────────────────────────────
+    // Three grouped checks the user asked for by name. Every threshold is DERIVED FROM THE
+    // DOCUMENT — its absolute tolerance, or the model's own spread — never a number invented here:
+    // a millimetre threshold hard-coded for one project is a trap in the next one. Each subkind
+    // carries its own budget so a noisy category cannot starve the others, exactly as
+    // purgeCandidates does. Everything is report-only triage; nothing proposes a destructive fix.
+
+    /// <summary>Geometry integrity: the defects that survive SelDup and a visual pass.</summary>
+    private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditGeometryIntegrity(
+        global::Rhino.RhinoDoc document,
+        double tolerance,
+        double band,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const int MaxObjects = 6000;
+        var perKind = Math.Max(1, limit / 5);
+        var scanned = 0;
+        var truncated = false;
+
+        var items = new List<(RhinoObject Object, BoundingBox Box)>();
+        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator())
+                     .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rhinoObject.Geometry is null)
+            {
+                continue;
+            }
+            if (++scanned > MaxObjects)
+            {
+                truncated = true;
+                break;
+            }
+            var box = rhinoObject.Geometry.GetBoundingBox(accurate: true);
+            if (box.IsValid)
+            {
+                items.Add((rhinoObject, box));
+            }
+        }
+
+        var findings = new List<RhinoAuditFinding>();
+        findings.AddRange(FindTinyAndSliverObjects(items, tolerance, perKind, cancellationToken));
+        findings.AddRange(FindStrayObjects(items, perKind, cancellationToken));
+        findings.AddRange(FindPartialDuplicates(items, tolerance, perKind, cancellationToken));
+        findings.AddRange(FindAdjacentFaceGaps(items, tolerance, band, perKind, cancellationToken));
+        findings.AddRange(FindMappingHazards(items, perKind, cancellationToken));
+        return (Bounded(findings, limit, ref truncated), scanned, truncated);
+    }
+
+    /// <summary>
+    /// Fragments and slivers. "Too small" is a bbox diagonal within an order of magnitude of the
+    /// document tolerance — below that a shape cannot be modelled meaningfully anyway. "Too thin"
+    /// is a shape whose SHORTEST extent is in that same range while its longest is a thousand times
+    /// bigger: the signature of a failed offset, trim, or boolean rather than an intended detail.
+    /// </summary>
+    private static IEnumerable<RhinoAuditFinding> FindTinyAndSliverObjects(
+        IReadOnlyList<(RhinoObject Object, BoundingBox Box)> items,
+        double tolerance,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var tiny = new List<RhinoAuditFinding>();
+        var slivers = new List<RhinoAuditFinding>();
+        var degenerate = tolerance * 10.0;
+        foreach (var (rhinoObject, box) in items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (tiny.Count >= limit && slivers.Count >= limit)
+            {
+                break;
+            }
+            var size = box.Diagonal;
+            var extents = new[] { Math.Abs(size.X), Math.Abs(size.Y), Math.Abs(size.Z) };
+            var longest = extents.Max();
+            var diagonal = size.Length;
+            if (diagonal <= degenerate)
+            {
+                if (tiny.Count < limit)
+                {
+                    tiny.Add(new RhinoAuditFinding(
+                        Hash($"tiny|{rhinoObject.Id:D}")[..16],
+                        "tinyObject",
+                        new[] { rhinoObject.Id },
+                        new[] { ToState(rhinoObject).Fingerprint },
+                        diagonal,
+                        $"Object is {diagonal:G4} across — within 10x the document tolerance " +
+                        $"({tolerance:G4}). Almost always a leftover fragment rather than geometry.",
+                        Array.Empty<string>(),
+                        null));
+                }
+                continue;
+            }
+            // Zero-thickness is expected for curves and surfaces; only shapes that claim volume
+            // can be "too thin". A flat panel is legitimately thin, so the ratio does the work.
+            var shortest = extents.Min();
+            if (slivers.Count < limit && rhinoObject.Geometry is Brep or Extrusion &&
+                shortest <= degenerate && longest >= tolerance * 1000.0)
+            {
+                slivers.Add(new RhinoAuditFinding(
+                    Hash($"sliver|{rhinoObject.Id:D}")[..16],
+                    "sliverObject",
+                    new[] { rhinoObject.Id },
+                    new[] { ToState(rhinoObject).Fingerprint },
+                    shortest,
+                    $"Solid is {shortest:G4} thin across {longest:G4} — a ratio of 1:{longest / Math.Max(shortest, 1e-12):G3}. " +
+                    "A failed offset, trim, or boolean looks like this.",
+                    Array.Empty<string>(),
+                    null));
+            }
+        }
+        return tiny.Concat(slivers);
+    }
+
+    /// <summary>
+    /// Objects sitting alone far from everything else — the classic accidental drag or a stray
+    /// import. The threshold is the MODEL'S OWN spread, not a distance: an object more than ten
+    /// times the median remove from the median centre is an outlier at any project scale.
+    /// </summary>
+    private static IEnumerable<RhinoAuditFinding> FindStrayObjects(
+        IReadOnlyList<(RhinoObject Object, BoundingBox Box)> items,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        // Below this a "median" says nothing; a handful of objects are all equally alone.
+        if (items.Count < 12)
+        {
+            return Array.Empty<RhinoAuditFinding>();
+        }
+        static double Median(List<double> values)
+        {
+            values.Sort();
+            return values[values.Count / 2];
+        }
+        var centre = new Point3d(
+            Median(items.Select(item => item.Box.Center.X).ToList()),
+            Median(items.Select(item => item.Box.Center.Y).ToList()),
+            Median(items.Select(item => item.Box.Center.Z).ToList()));
+        var distances = items.Select(item => item.Box.Center.DistanceTo(centre)).ToList();
+        var medianDistance = Median(new List<double>(distances));
+        if (medianDistance <= 0)
+        {
+            return Array.Empty<RhinoAuditFinding>();
+        }
+        var threshold = medianDistance * 10.0;
+        var strays = new List<RhinoAuditFinding>();
+        for (var index = 0; index < items.Count && strays.Count < limit; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var distance = items[index].Box.Center.DistanceTo(centre);
+            if (distance <= threshold)
+            {
+                continue;
+            }
+            var rhinoObject = items[index].Object;
+            strays.Add(new RhinoAuditFinding(
+                Hash($"stray|{rhinoObject.Id:D}")[..16],
+                "strayObject",
+                new[] { rhinoObject.Id },
+                new[] { ToState(rhinoObject).Fingerprint },
+                distance,
+                $"Object sits {distance:G4} from the model centre, more than 10x the median " +
+                $"{medianDistance:G4}. Check whether it was dragged or imported by accident.",
+                Array.Empty<string>(),
+                null));
+        }
+        return strays;
+    }
+
+    /// <summary>
+    /// The same solid twice, slightly moved — what SelDup cannot see because nothing matches
+    /// exactly. Accepted only when the two agree on VOLUME to within a percent while their centres
+    /// differ by more than tolerance: same shape, different place. Vertex-identical copies are the
+    /// nearDuplicates analyzer's job and are left to it.
+    /// </summary>
+    private static IEnumerable<RhinoAuditFinding> FindPartialDuplicates(
+        IReadOnlyList<(RhinoObject Object, BoundingBox Box)> items,
+        double tolerance,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const int MaxPairChecks = 4000;
+        var solids = items
+            .Where(item => item.Object.Geometry is Brep or Extrusion)
+            .ToList();
+        if (solids.Count < 2)
+        {
+            return Array.Empty<RhinoAuditFinding>();
+        }
+        var tree = new RTree();
+        for (var index = 0; index < solids.Count; index++)
+        {
+            tree.Insert(solids[index].Box.Center, index);
+        }
+        var volumes = new double?[solids.Count];
+        double? VolumeOf(int index)
+        {
+            if (volumes[index] is { } cached)
+            {
+                return cached;
+            }
+            var brep = AsBrep(solids[index].Object.Geometry);
+            if (brep is null)
+            {
+                return null;
+            }
+            var properties = VolumeMassProperties.Compute(brep);
+            if (properties is null || properties.Volume <= 0)
+            {
+                return null;
+            }
+            volumes[index] = properties.Volume;
+            return properties.Volume;
+        }
+
+        var pairChecks = 0;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var findings = new List<RhinoAuditFinding>();
+        for (var index = 0; index < solids.Count && findings.Count < limit; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (objectA, boxA) = solids[index];
+            // Search radius is a fraction of the object's own size, so the same rule reads the
+            // same on a door handle and on a tower.
+            var radius = boxA.Diagonal.Length * 0.05;
+            if (radius <= tolerance)
+            {
+                continue;
+            }
+            var hits = new List<int>();
+            tree.Search(new Sphere(boxA.Center, radius), (_, args) => hits.Add(args.Id));
+            foreach (var hit in hits)
+            {
+                if (hit <= index || ++pairChecks > MaxPairChecks)
+                {
+                    continue;
+                }
+                var (objectB, boxB) = solids[hit];
+                var offset = boxA.Center.DistanceTo(boxB.Center);
+                if (offset <= tolerance)
+                {
+                    continue;
+                }
+                var volumeA = VolumeOf(index);
+                var volumeB = VolumeOf(hit);
+                if (volumeA is not { } a || volumeB is not { } b)
+                {
+                    continue;
+                }
+                if (Math.Abs(a - b) / Math.Max(a, b) > 0.01)
+                {
+                    continue;
+                }
+                var key = string.CompareOrdinal(objectA.Id.ToString("D"), objectB.Id.ToString("D")) <= 0
+                    ? $"{objectA.Id:D}|{objectB.Id:D}"
+                    : $"{objectB.Id:D}|{objectA.Id:D}";
+                if (!seen.Add(key))
+                {
+                    continue;
+                }
+                findings.Add(new RhinoAuditFinding(
+                    Hash($"partialDup|{key}")[..16],
+                    "partialDuplicate",
+                    new[] { objectA.Id, objectB.Id },
+                    new[] { ToState(objectA).Fingerprint, ToState(objectB).Fingerprint },
+                    offset,
+                    $"Two solids of the same volume ({a:G4}) sit {offset:G4} apart — the same shape " +
+                    "copied and nudged. Which one is intended is a human decision.",
+                    Array.Empty<string>(),
+                    null));
+                if (findings.Count >= limit)
+                {
+                    break;
+                }
+            }
+        }
+        return findings;
+    }
+
+    /// <summary>
+    /// Faces of DIFFERENT solids that almost meet: naked edge endpoints a hair apart, in the same
+    /// (tolerance, band] window the curve check uses. Two walls that look joined and are not fail
+    /// booleans and leak in every downstream export.
+    /// </summary>
+    private static IEnumerable<RhinoAuditFinding> FindAdjacentFaceGaps(
+        IReadOnlyList<(RhinoObject Object, BoundingBox Box)> items,
+        double tolerance,
+        double band,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const int MaxEnds = 40000;
+        const int MaxPairChecks = 20000;
+        var ends = new List<(Guid Id, Point3d Point)>();
+        var objectsById = new Dictionary<Guid, RhinoObject>();
+        foreach (var (rhinoObject, _) in items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (ends.Count >= MaxEnds || AsBrep(rhinoObject.Geometry) is not { } brep || brep.IsSolid)
+            {
+                continue;
+            }
+            objectsById[rhinoObject.Id] = rhinoObject;
+            foreach (var edge in brep.Edges.Where(edge => edge.Valence == EdgeAdjacency.Naked))
+            {
+                if (ends.Count >= MaxEnds)
+                {
+                    break;
+                }
+                ends.Add((rhinoObject.Id, edge.PointAtStart));
+                ends.Add((rhinoObject.Id, edge.PointAtEnd));
+            }
+        }
+        if (ends.Count < 2)
+        {
+            return Array.Empty<RhinoAuditFinding>();
+        }
+
+        var tree = new RTree();
+        for (var index = 0; index < ends.Count; index++)
+        {
+            tree.Insert(ends[index].Point, index);
+        }
+        var pairChecks = 0;
+        var pairs = new Dictionary<string, (Guid A, Guid B, double Gap)>(StringComparer.Ordinal);
+        for (var index = 0; index < ends.Count && pairs.Count < limit; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (idA, pointA) = ends[index];
+            var hits = new List<int>();
+            tree.Search(new Sphere(pointA, band), (_, args) => hits.Add(args.Id));
+            foreach (var hit in hits)
+            {
+                if (hit <= index || ++pairChecks > MaxPairChecks)
+                {
+                    continue;
+                }
+                var (idB, pointB) = ends[hit];
+                if (idA == idB)
+                {
+                    continue;
+                }
+                var gap = pointA.DistanceTo(pointB);
+                if (gap <= tolerance || gap > band)
+                {
+                    continue;
+                }
+                var key = string.CompareOrdinal(idA.ToString("D"), idB.ToString("D")) <= 0
+                    ? $"{idA:D}|{idB:D}"
+                    : $"{idB:D}|{idA:D}";
+                // Keep the WIDEST gap per object pair: it is the join tolerance that closes them.
+                if (!pairs.TryGetValue(key, out var existing) || gap > existing.Gap)
+                {
+                    pairs[key] = (idA, idB, gap);
+                }
+            }
+        }
+        return pairs.Values
+            .OrderByDescending(pair => pair.Gap)
+            .Take(limit)
+            .Select(pair => new RhinoAuditFinding(
+                Hash($"faceGap|{pair.A:D}|{pair.B:D}")[..16],
+                "adjacentFaceGap",
+                new[] { pair.A, pair.B },
+                new[] { ToState(objectsById[pair.A]).Fingerprint, ToState(objectsById[pair.B]).Fingerprint },
+                pair.Gap,
+                $"Two open solids have naked edges {pair.Gap:G4} apart (doc tolerance {tolerance:G4}) — " +
+                "they look joined and are not.",
+                Array.Empty<string>(),
+                null))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Texture-mapping hazards. More than one mapping channel is reported outright — it is
+    /// ambiguous for every downstream renderer. Missing mapping is reported ONLY for objects that
+    /// carry their own render material: without a material there is nothing to map, and flagging
+    /// every untextured object would bury the real ones.
+    /// </summary>
+    private static IEnumerable<RhinoAuditFinding> FindMappingHazards(
+        IReadOnlyList<(RhinoObject Object, BoundingBox Box)> items,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var multiple = new List<RhinoAuditFinding>();
+        var missing = new List<RhinoAuditFinding>();
+        foreach (var (rhinoObject, _) in items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (multiple.Count >= limit && missing.Count >= limit)
+            {
+                break;
+            }
+            int[] channels;
+            try
+            {
+                channels = rhinoObject.GetTextureChannels() ?? Array.Empty<int>();
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Some object types have no mapping table at all; that is not a finding.
+                continue;
+            }
+            if (channels.Length > 1 && multiple.Count < limit)
+            {
+                multiple.Add(new RhinoAuditFinding(
+                    Hash($"mapChannels|{rhinoObject.Id:D}")[..16],
+                    "multipleMappingChannels",
+                    new[] { rhinoObject.Id },
+                    new[] { ToState(rhinoObject).Fingerprint },
+                    channels.Length,
+                    $"Object carries {channels.Length} texture mapping channels " +
+                    $"({string.Join(", ", channels)}). Which one renders is ambiguous downstream.",
+                    Array.Empty<string>(),
+                    null));
+                continue;
+            }
+            if (channels.Length == 0 && missing.Count < limit &&
+                rhinoObject.Attributes.MaterialSource == ObjectMaterialSource.MaterialFromObject &&
+                rhinoObject.Attributes.MaterialIndex >= 0)
+            {
+                missing.Add(new RhinoAuditFinding(
+                    Hash($"noMapping|{rhinoObject.Id:D}")[..16],
+                    "noTextureMapping",
+                    new[] { rhinoObject.Id },
+                    new[] { ToState(rhinoObject).Fingerprint },
+                    null,
+                    "Object has its own render material but no texture mapping, so it falls back " +
+                    "to surface parameters — usually not what a material with textures expects.",
+                    Array.Empty<string>(),
+                    null));
+            }
+        }
+        return multiple.Concat(missing);
+    }
+
+    /// <summary>
+    /// Layer integrity: emptiness, names that break name-based selection, missing materials, and
+    /// layers that exist only to hold block geometry.
+    /// </summary>
+    private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditLayerIntegrity(
+        global::Rhino.RhinoDoc document,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var perKind = Math.Max(1, limit / 4);
+        var truncated = false;
+        var scanned = 0;
+
+        var topLevelLayers = new HashSet<int>();
+        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator()))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            topLevelLayers.Add(rhinoObject.Attributes.LayerIndex);
+        }
+        var occupiedLayers = new HashSet<int>();
+        foreach (var rhinoObject in EnumerateLayerOccupants(document))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            occupiedLayers.Add(rhinoObject.Attributes.LayerIndex);
+        }
+        var parentIds = new HashSet<Guid>();
+        foreach (var layer in document.Layers)
+        {
+            if (layer is not null && !layer.IsDeleted && layer.ParentLayerId != Guid.Empty)
+            {
+                parentIds.Add(layer.ParentLayerId);
+            }
+        }
+
+        var empty = new List<RhinoAuditFinding>();
+        var nameHazards = new List<RhinoAuditFinding>();
+        var noMaterial = new List<RhinoAuditFinding>();
+        var blockOnly = new List<RhinoAuditFinding>();
+        // Sibling names that differ only by case make "select by layer name" ambiguous.
+        var siblingNames = new Dictionary<string, List<Layer>>(StringComparer.Ordinal);
+        foreach (var layer in document.Layers)
+        {
+            if (layer is null || layer.IsDeleted)
+            {
+                continue;
+            }
+            var key = $"{layer.ParentLayerId:D}|{layer.Name.Trim().ToUpperInvariant()}";
+            if (!siblingNames.TryGetValue(key, out var bucket))
+            {
+                siblingNames[key] = bucket = [];
+            }
+            bucket.Add(layer);
+        }
+
+        foreach (var layer in document.Layers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (layer is null || layer.IsDeleted)
+            {
+                continue;
+            }
+            scanned++;
+            var fingerprint = LayerFingerprint(layer);
+            if (empty.Count < perKind && !occupiedLayers.Contains(layer.Index) &&
+                !parentIds.Contains(layer.Id) && layer.Index != document.Layers.CurrentLayerIndex)
+            {
+                empty.Add(new RhinoAuditFinding(
+                    Hash($"emptyLayer|{layer.Id:D}")[..16],
+                    "emptyLayer",
+                    new[] { layer.Id },
+                    new[] { fingerprint },
+                    null,
+                    $"Layer '{layer.FullPath}' is an empty leaf (no objects including hidden and " +
+                    "block members, and no children).",
+                    new[] { "deleteLayer" },
+                    null));
+            }
+            if (blockOnly.Count < perKind && occupiedLayers.Contains(layer.Index) &&
+                !topLevelLayers.Contains(layer.Index))
+            {
+                blockOnly.Add(new RhinoAuditFinding(
+                    Hash($"blockOnlyLayer|{layer.Id:D}")[..16],
+                    "blockOnlyLayer",
+                    new[] { layer.Id },
+                    new[] { fingerprint },
+                    null,
+                    $"Layer '{layer.FullPath}' holds only block-definition geometry — nothing is " +
+                    "placed on it directly. Intentional for a block library, a leftover otherwise.",
+                    Array.Empty<string>(),
+                    null));
+            }
+            if (nameHazards.Count < perKind)
+            {
+                var name = layer.Name;
+                var trimmed = name.Trim();
+                var caseKey = $"{layer.ParentLayerId:D}|{trimmed.ToUpperInvariant()}";
+                var caseTwins = siblingNames.TryGetValue(caseKey, out var bucket) ? bucket.Count : 1;
+                string? hazard = null;
+                if (trimmed.Length == 0)
+                {
+                    hazard = "the name is blank";
+                }
+                else if (!string.Equals(name, trimmed, StringComparison.Ordinal))
+                {
+                    hazard = "the name has leading or trailing whitespace, which name-based " +
+                        "selection will not match";
+                }
+                else if (caseTwins > 1)
+                {
+                    hazard = $"{caseTwins} sibling layers differ only by letter case, so selecting " +
+                        "by name is ambiguous";
+                }
+                if (hazard is not null)
+                {
+                    nameHazards.Add(new RhinoAuditFinding(
+                        Hash($"layerName|{layer.Id:D}")[..16],
+                        "layerNameHazard",
+                        new[] { layer.Id },
+                        new[] { fingerprint },
+                        null,
+                        $"Layer '{layer.FullPath}': {hazard}.",
+                        Array.Empty<string>(),
+                        null));
+                }
+            }
+            if (noMaterial.Count < perKind && layer.RenderMaterialIndex < 0 &&
+                occupiedLayers.Contains(layer.Index))
+            {
+                noMaterial.Add(new RhinoAuditFinding(
+                    Hash($"layerMaterial|{layer.Id:D}")[..16],
+                    "layerWithoutMaterial",
+                    new[] { layer.Id },
+                    new[] { fingerprint },
+                    null,
+                    $"Layer '{layer.FullPath}' holds geometry but has no render material assigned.",
+                    Array.Empty<string>(),
+                    null));
+            }
+        }
+
+        var findings = empty.Concat(nameHazards).Concat(blockOnly).Concat(noMaterial).ToList();
+        return (Bounded(findings, limit, ref truncated), scanned, truncated);
+    }
+
+    /// <summary>
+    /// Block integrity: definitions holding nothing, one definition placed across several layers
+    /// (usually a slip), and definitions whose members sit on layers nothing else uses — the
+    /// signature of geometry pulled in from CAD.
+    /// </summary>
+    private (List<RhinoAuditFinding> Findings, int Scanned, bool Truncated) AuditBlockIntegrity(
+        global::Rhino.RhinoDoc document,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var perKind = Math.Max(1, limit / 3);
+        var truncated = false;
+        var scanned = 0;
+
+        var topLevelLayers = new HashSet<int>();
+        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator()))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            topLevelLayers.Add(rhinoObject.Attributes.LayerIndex);
+        }
+        // Instance placements per definition, so "one block on several layers" is answerable.
+        var layersByDefinition = new Dictionary<int, HashSet<int>>();
+        foreach (var rhinoObject in document.Objects
+                     .GetObjectList(AuditEnumerator(ObjectType.InstanceReference)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rhinoObject is not InstanceObject instance || instance.InstanceDefinition is null)
+            {
+                continue;
+            }
+            var definitionIndex = instance.InstanceDefinition.Index;
+            if (!layersByDefinition.TryGetValue(definitionIndex, out var layers))
+            {
+                layersByDefinition[definitionIndex] = layers = [];
+            }
+            layers.Add(rhinoObject.Attributes.LayerIndex);
+        }
+
+        var emptyDefinitions = new List<RhinoAuditFinding>();
+        var splitPlacements = new List<RhinoAuditFinding>();
+        var foreignLayers = new List<RhinoAuditFinding>();
+        foreach (var definition in document.InstanceDefinitions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (definition is null || definition.IsDeleted)
+            {
+                continue;
+            }
+            scanned++;
+            var fingerprint = Hash($"blockDefinition|{definition.Id:D}|{definition.Name}|{definition.ObjectCount}");
+            if (emptyDefinitions.Count < perKind && definition.ObjectCount == 0)
+            {
+                emptyDefinitions.Add(new RhinoAuditFinding(
+                    Hash($"emptyBlock|{definition.Id:D}")[..16],
+                    "emptyBlockDefinition",
+                    new[] { definition.Id },
+                    new[] { fingerprint },
+                    0,
+                    $"Block definition '{definition.Name}' contains no objects. Every instance of " +
+                    "it draws nothing.",
+                    new[] { "purgeBlockDefinition" },
+                    null));
+                continue;
+            }
+            if (splitPlacements.Count < perKind &&
+                layersByDefinition.TryGetValue(definition.Index, out var placementLayers) &&
+                placementLayers.Count > 1)
+            {
+                var names = placementLayers
+                    .Select(index => document.Layers.FindIndex(index)?.FullPath ?? $"#{index}")
+                    .OrderBy(name => name, StringComparer.Ordinal);
+                splitPlacements.Add(new RhinoAuditFinding(
+                    Hash($"blockSplit|{definition.Id:D}")[..16],
+                    "blockInstancesSplitAcrossLayers",
+                    new[] { definition.Id },
+                    new[] { fingerprint },
+                    placementLayers.Count,
+                    $"Block '{definition.Name}' is placed on {placementLayers.Count} different " +
+                    $"layers ({string.Join(", ", names)}). Usually one of them is a slip.",
+                    Array.Empty<string>(),
+                    null));
+            }
+            if (foreignLayers.Count < perKind)
+            {
+                var stranger = definition.GetObjects()
+                    .Where(member => member is not null)
+                    .Select(member => member.Attributes.LayerIndex)
+                    .Distinct()
+                    .Where(index => !topLevelLayers.Contains(index))
+                    .Select(index => document.Layers.FindIndex(index)?.FullPath ?? $"#{index}")
+                    .OrderBy(name => name, StringComparer.Ordinal)
+                    .ToList();
+                if (stranger.Count > 0)
+                {
+                    foreignLayers.Add(new RhinoAuditFinding(
+                        Hash($"blockForeignLayer|{definition.Id:D}")[..16],
+                        "foreignLayerInBlock",
+                        new[] { definition.Id },
+                        new[] { fingerprint },
+                        stranger.Count,
+                        $"Block '{definition.Name}' has members on {stranger.Count} layer(s) nothing " +
+                        $"else in the document uses ({string.Join(", ", stranger.Take(4))}" +
+                        $"{(stranger.Count > 4 ? ", …" : string.Empty)}). Typical of CAD imports.",
+                        Array.Empty<string>(),
+                        null));
+                }
+            }
+        }
+
+        var findings = emptyDefinitions.Concat(splitPlacements).Concat(foreignLayers).ToList();
+        return (Bounded(findings, limit, ref truncated), scanned, truncated);
+    }
+
+    /// <summary>Caps a grouped finding list at the caller's limit, reporting truncation honestly.</summary>
+    private static List<RhinoAuditFinding> Bounded(
+        List<RhinoAuditFinding> findings,
+        int limit,
+        ref bool truncated)
+    {
+        if (findings.Count <= limit)
+        {
+            return findings;
+        }
+        truncated = true;
+        return findings.Take(limit).ToList();
     }
 
     // Junk census: unused block definitions (no references anywhere — not placed in the document
@@ -1986,6 +2706,123 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             attributesJson,
             fingerprint);
     }
+
+    // What the last isolate/lock touched, per document runtime serial, so "restore" can put exactly
+    // that back. In-memory and ephemeral by design: this is view state, and a Rhino restart or a
+    // reopened document legitimately forgets it — the same way Rhino's own Isolate does.
+    private readonly Dictionary<uint, (List<Guid> Hidden, List<Guid> Locked)> _focusStack = [];
+
+    protected override Task<FocusObjectsResult> FocusObjectsCoreAsync(
+        global::Rhino.RhinoDoc document,
+        FocusObjectsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var mode = (request.Mode ?? "select").Trim().ToLowerInvariant();
+        if (mode is not ("select" or "isolate" or "lock" or "restore"))
+        {
+            throw new InvalidOperationException(
+                $"Unknown focus mode '{request.Mode}'. Use select|isolate|lock|restore.");
+        }
+
+        // Always undo the previous isolate/lock first, so pressing one finding after another does
+        // not accumulate hidden geometry the user then has to hunt for.
+        var restored = RestoreFocusState(document);
+        if (mode == "restore")
+        {
+            document.Objects.UnselectAll();
+            document.Views.Redraw();
+            return Task.FromResult(new FocusObjectsResult(0, 0, 0, 0, restored, FocusFingerprint(document)));
+        }
+
+        var wanted = new HashSet<Guid>(request.ObjectIds ?? Array.Empty<Guid>());
+        var targets = new List<RhinoObject>();
+        foreach (var id in wanted)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (document.Objects.FindId(id) is { } found)
+            {
+                targets.Add(found);
+            }
+        }
+        var missing = wanted.Count - targets.Count;
+
+        document.Objects.UnselectAll();
+        foreach (var rhinoObject in targets)
+        {
+            // A locked or hidden target cannot be selected; make the thing the user asked to see
+            // visible before selecting it, or the zoom lands on nothing.
+            if (!rhinoObject.IsNormal)
+            {
+                document.Objects.Show(rhinoObject, ignoreLayerMode: true);
+                document.Objects.Unlock(rhinoObject, ignoreLayerMode: true);
+            }
+            rhinoObject.Select(true);
+        }
+
+        var hidden = new List<Guid>();
+        var locked = new List<Guid>();
+        if (mode is "isolate" or "lock" && targets.Count > 0)
+        {
+            foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator()))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (wanted.Contains(rhinoObject.Id) || !rhinoObject.IsNormal)
+                {
+                    continue;
+                }
+                if (mode == "isolate" && document.Objects.Hide(rhinoObject, ignoreLayerMode: false))
+                {
+                    hidden.Add(rhinoObject.Id);
+                }
+                else if (mode == "lock" && document.Objects.Lock(rhinoObject, ignoreLayerMode: false))
+                {
+                    locked.Add(rhinoObject.Id);
+                }
+            }
+            if (hidden.Count > 0 || locked.Count > 0)
+            {
+                _focusStack[document.RuntimeSerialNumber] = (hidden, locked);
+            }
+        }
+
+        if (request.Zoom && targets.Count > 0)
+        {
+            foreach (var view in document.Views)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                view.ActiveViewport.ZoomExtentsSelected();
+            }
+        }
+        document.Views.Redraw();
+        return Task.FromResult(new FocusObjectsResult(
+            targets.Count,
+            missing,
+            hidden.Count,
+            locked.Count,
+            restored,
+            FocusFingerprint(document)));
+    }
+
+    /// <summary>Re-shows and unlocks whatever the last isolate/lock touched. True when it did anything.</summary>
+    private bool RestoreFocusState(global::Rhino.RhinoDoc document)
+    {
+        if (!_focusStack.Remove(document.RuntimeSerialNumber, out var previous))
+        {
+            return false;
+        }
+        foreach (var id in previous.Hidden)
+        {
+            document.Objects.Show(id, ignoreLayerMode: false);
+        }
+        foreach (var id in previous.Locked)
+        {
+            document.Objects.Unlock(id, ignoreLayerMode: false);
+        }
+        return previous.Hidden.Count > 0 || previous.Locked.Count > 0;
+    }
+
+    private static string FocusFingerprint(global::Rhino.RhinoDoc document) =>
+        Hash($"focus|{document.RuntimeSerialNumber}|{document.Objects.Count}");
 
     protected override Task<RhinoLayerTableResult> ListLayersCoreAsync(
         global::Rhino.RhinoDoc document,

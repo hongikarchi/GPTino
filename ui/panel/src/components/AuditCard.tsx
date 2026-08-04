@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import type { RhinoAuditFinding, RhinoAuditKind, RhinoAuditResult } from "../types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+  FocusMode,
+  FocusResult,
+  RhinoAuditFinding,
+  RhinoAuditKind,
+  RhinoAuditResult,
+} from "../types";
 
 interface AuditCardProps {
   kind: RhinoAuditKind;
@@ -11,6 +17,11 @@ interface AuditCardProps {
    */
   onApprove(result: RhinoAuditResult, approved: RhinoAuditFinding[], keepFirst: Record<string, boolean>): Promise<void>;
   onClose(): void;
+  /**
+   * Point the viewport at a finding's objects. Absent in contexts with no live document (the
+   * demo runtime still provides it, so the control is exercised there too).
+   */
+  onFocus?(objectIds: string[], mode: FocusMode): Promise<FocusResult>;
   /** False renders report-only (no checkboxes/Approve) — for kinds whose fix ops ship later. */
   approvable?: boolean;
   /** True while the curator is busy/paused — Approve would mint a grant no turn could consume. */
@@ -21,6 +32,9 @@ const KIND_TITLES: Record<RhinoAuditKind, string> = {
   nearMissEndpoints: "Endpoint gaps",
   nearDuplicates: "Near-duplicates",
   openBrepEdges: "Open solids",
+  geometryIntegrity: "Geometry QC",
+  layerIntegrity: "Layer QC",
+  blockIntegrity: "Block QC",
   purgeCandidates: "Purge candidates",
 };
 
@@ -29,6 +43,9 @@ const KIND_SCOPES: Record<RhinoAuditKind, string> = {
   nearMissEndpoints: "open curves",
   nearDuplicates: "points, curves or solids",
   openBrepEdges: "multi-face solids",
+  geometryIntegrity: "objects",
+  layerIntegrity: "layers",
+  blockIntegrity: "block definitions",
   purgeCandidates: "document entries",
 };
 
@@ -40,17 +57,85 @@ const KIND_ALTERNATIVES: Partial<Record<RhinoAuditKind, string>> = {
 };
 
 /**
+ * Kinds whose findings name Rhino OBJECTS. Layer- and block-level findings identify a layer or a
+ * definition, which the viewport cannot zoom to.
+ */
+const FOCUSABLE_KINDS = new Set([
+  "nearMissEndpoints",
+  "nearDuplicates",
+  "openBrepEdges",
+  "badObject",
+  "tinyObject",
+  "sliverObject",
+  "strayObject",
+  "partialDuplicate",
+  "adjacentFaceGap",
+  "multipleMappingChannels",
+  "noTextureMapping",
+]);
+
+/**
  * The audit approval card: server-computed findings rendered verbatim with checkboxes, and one
  * Approve action that mints a grant for exactly what was seen. This is the approve-what-you-saw
  * surface — the same card contract Plan mode's approval flow reuses.
  */
-export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = true, busy = false }: AuditCardProps) {
+export function AuditCard({
+  kind,
+  runAudit,
+  onApprove,
+  onClose,
+  onFocus,
+  approvable = true,
+  busy = false,
+}: AuditCardProps) {
   const [result, setResult] = useState<RhinoAuditResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState(false);
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [keepFirst, setKeepFirst] = useState<Record<string, boolean>>({});
+  // How "Show in Rhino" treats everything else. Kept per card, because a user inspecting a list of
+  // findings wants the same treatment for each one they press.
+  const [focusMode, setFocusMode] = useState<FocusMode>("select");
+  const [focusBusy, setFocusBusy] = useState<string | null>(null);
+  const [focusResults, setFocusResults] = useState<Record<string, string>>({});
+  const [isolating, setIsolating] = useState(false);
+
+  const focus = async (findingId: string, objectIds: string[]) => {
+    if (!onFocus) return;
+    setFocusBusy(findingId);
+    try {
+      const outcome = await onFocus(objectIds, focusMode);
+      setIsolating(outcome.hiddenCount > 0 || outcome.lockedCount > 0);
+      const parts = [`${outcome.selectedCount} selected`];
+      // A finding can outlive its objects; saying so beats an empty zoom the user has to interpret.
+      if (outcome.missingCount > 0) parts.push(`${outcome.missingCount} already gone`);
+      if (outcome.hiddenCount > 0) parts.push(`${outcome.hiddenCount} hidden`);
+      if (outcome.lockedCount > 0) parts.push(`${outcome.lockedCount} locked`);
+      setFocusResults((current) => ({ ...current, [findingId]: parts.join(" · ") }));
+    } catch (cause) {
+      setFocusResults((current) => ({
+        ...current,
+        [findingId]: cause instanceof Error ? cause.message : String(cause),
+      }));
+    } finally {
+      setFocusBusy(null);
+    }
+  };
+
+  const restore = async () => {
+    if (!onFocus) return;
+    setFocusBusy("restore");
+    try {
+      await onFocus([], "restore");
+      setIsolating(false);
+      setFocusResults({});
+    } finally {
+      setFocusBusy(null);
+    }
+  };
+
+  const focusNote = (findingId: string) => focusResults[findingId] ?? "";
 
   useEffect(() => {
     let disposed = false;
@@ -76,6 +161,17 @@ export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = tru
     };
   }, [kind, runAudit]);
 
+  // Closing the card must not strand the document with everything else hidden. The ref keeps the
+  // cleanup from re-running on every focus press.
+  const isolatingRef = useRef(false);
+  isolatingRef.current = isolating;
+  useEffect(
+    () => () => {
+      if (isolatingRef.current) void onFocus?.([], "restore");
+    },
+    [onFocus],
+  );
+
   const approved = useMemo(
     () => (result?.findings ?? []).filter((finding) => checked[finding.findingId]),
     [result, checked],
@@ -94,9 +190,33 @@ export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = tru
             </span>
           ) : null}
         </h3>
-        <button type="button" className="secondary-button" onClick={onClose} title="Close">
-          Close
-        </button>
+        <div className="audit-card-actions">
+          {onFocus ? (
+            <>
+              <label className="audit-card-focus-mode" title="What Show in Rhino does with everything else">
+                <select value={focusMode} onChange={(event) => setFocusMode(event.target.value as FocusMode)}>
+                  <option value="select">Select + zoom</option>
+                  <option value="isolate">…and hide the rest</option>
+                  <option value="lock">…and lock the rest</option>
+                </select>
+              </label>
+              {isolating ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void restore()}
+                  disabled={focusBusy === "restore"}
+                  title="Show and unlock everything this card hid or locked"
+                >
+                  Restore view
+                </button>
+              ) : null}
+            </>
+          ) : null}
+          <button type="button" className="secondary-button" onClick={onClose} title="Close">
+            Close
+          </button>
+        </div>
       </header>
       {loading ? <p className="archive-note">Auditing the document…</p> : null}
       {error ? <p className="archive-error">{error}</p> : null}
@@ -133,6 +253,23 @@ export function AuditCard({ kind, runAudit, onApprove, onClose, approvable = tru
                     ) : null}
                     <span className="audit-card-detail">{finding.detail}</span>
                   </label>
+                  {/* Layer and block findings name a layer/definition id, not an object id, so
+                      there is nothing for the viewport to zoom to. Offering a dead button would be
+                      worse than offering none. */}
+                  {onFocus && FOCUSABLE_KINDS.has(finding.kind) ? (
+                    <div className="audit-card-focus">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={focusBusy === finding.findingId}
+                        onClick={() => void focus(finding.findingId, finding.objectIds)}
+                        title="Select these objects and zoom the viewports to them"
+                      >
+                        Show in Rhino
+                      </button>
+                      <span className="audit-card-focus-note">{focusNote(finding.findingId)}</span>
+                    </div>
+                  ) : null}
                   {finding.kind === "nearDuplicates" && (checked[finding.findingId] ?? false) ? (
                     <div className="audit-card-keep" role="radiogroup" aria-label="Which copy to keep">
                       {[true, false].map((first) => (

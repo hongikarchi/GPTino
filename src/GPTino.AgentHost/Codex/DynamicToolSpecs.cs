@@ -124,7 +124,13 @@ internal static class DynamicToolSpecs
                     "are intentional), openBrepEdges (solids that are not closed, ranked by the gap that " +
                     "would close them — REPORT ONLY, rebuilding a shell is the user's modelling decision), " +
                     "purgeCandidates (unused block definitions, empty leaf layers, invalid objects — " +
-                    "quarantine bad objects, never delete them). scannedObjects tells you how many objects " +
+                    "quarantine bad objects, never delete them), and three grouped QC sweeps: " +
+                    "geometryIntegrity (fragments, slivers, strays far from the model, partial duplicates, " +
+                    "gaps between adjacent solids, texture-mapping hazards), layerIntegrity (empty layers, " +
+                    "names that break name-based selection, layers without a material, layers holding only " +
+                    "block geometry), blockIntegrity (definitions with no objects, one block placed across " +
+                    "several layers, definitions whose members sit on layers nothing else uses). QC sweeps " +
+                    "are REPORT ONLY triage — they propose no destructive fix. scannedObjects tells you how many objects " +
                     "were IN SCOPE: zero scanned means this document holds nothing this kind looks at, which " +
                     "is NOT the same as a clean document — say which it was. Every finding carries object " +
                     "fingerprints for CAS-pinned follow-up fixes; results name the tolerance and units used. " +
@@ -137,7 +143,12 @@ internal static class DynamicToolSpecs
                             kind = new
                             {
                                 type = "string",
-                                @enum = new[] { "nearMissEndpoints", "nearDuplicates", "openBrepEdges", "purgeCandidates" },
+                                @enum = new[]
+                                {
+                                    "nearMissEndpoints", "nearDuplicates", "openBrepEdges",
+                                    "geometryIntegrity", "layerIntegrity", "blockIntegrity",
+                                    "purgeCandidates",
+                                },
                             },
                             tolerance = new { type = "number", description = "Override; default = document absolute tolerance." },
                             bandFactor = new { type = "number", description = "nearMissEndpoints/openBrepEdges band multiplier; default 10." },

@@ -61,6 +61,9 @@ public sealed record ApprovalGrantItem(Guid ObjectId, string Fingerprint);
 
 public sealed record MintApprovalGrantRequest(IReadOnlyList<ApprovalGrantItem> Items);
 
+/// <summary>Panel viewport focus: mode is select | isolate | lock | restore.</summary>
+public sealed record FocusRequest(IReadOnlyList<Guid>? ObjectIds, string? Mode, bool? Zoom);
+
 public sealed record ReorderSessionsRequest(
     IReadOnlyList<Guid> OrderedSessionIds,
     long OrderVersion);

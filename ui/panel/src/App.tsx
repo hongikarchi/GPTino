@@ -585,6 +585,7 @@ export default function App() {
               key={`${auditKind}-${auditNonce}`}
               kind={auditKind}
               runAudit={actions.getAudit}
+              onFocus={actions.focusObjects}
               // Open solids are REPORT ONLY: the findings carry no proposed fix, because
               // rebuilding a shell is a modelling decision with several valid answers.
               approvable={auditKind !== "openBrepEdges"}

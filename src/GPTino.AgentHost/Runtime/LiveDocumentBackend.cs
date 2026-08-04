@@ -659,6 +659,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     /// layer inspection: every layer carries a fingerprint and the table carries one, so presence
     /// AND absence are provable — the precondition layer mutation was gated on.
     /// </summary>
+    /// <summary>
+    /// Points the viewport at objects for the panel's audit card. Panel-only: it is a human
+    /// pressing a finding, so it never enters a ChangeSet and the agent has no tool for it.
+    /// </summary>
+    public Task<object> FocusRhinoObjectsAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        ReadBridgeQueryAsync(
+            RequireDefaultTargetState(),
+            BridgeAdapterOwner.CordycepsRhino,
+            "rhino.focusObjects",
+            arguments,
+            cancellationToken);
+
     public Task<object> ReadRhinoLayersAsync(CancellationToken cancellationToken)
     {
         using var empty = JsonDocument.Parse("{}");
@@ -2166,39 +2178,69 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
     }
 
+    /// <summary>
+    /// Reads bridge frames until the connection ends. EVERY exit path is traced, including the
+    /// exception that caused it: this loop also delivers the responses to outgoing operations, so
+    /// when it dies quietly every bridge call hangs forever while health still reports "connected".
+    /// That failure mode cost a whole debugging session with no host-side trace to look at.
+    /// </summary>
     private async Task ReceiveLoopAsync(
         DocumentPipeConnection connection,
         CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested && connection.IsConnected)
+        var received = 0L;
+        try
         {
-            var frame = await connection.ReceiveAsync(cancellationToken).ConfigureAwait(false);
-            frame.Validate();
-            if (frame.Kind is BridgeMessageKind.Response or BridgeMessageKind.Error)
+            while (!cancellationToken.IsCancellationRequested && connection.IsConnected)
             {
-                CompletePending(frame);
-                continue;
-            }
+                var frame = await connection.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                frame.Validate();
+                received++;
+                if (frame.Kind is BridgeMessageKind.Response or BridgeMessageKind.Error)
+                {
+                    CompletePending(frame);
+                    continue;
+                }
 
-            if (frame.Kind == BridgeMessageKind.Event &&
-                string.Equals(frame.PayloadType, BridgeMessageTypes.RegisterDocument, StringComparison.Ordinal))
-            {
-                await RegisterTargetAsync(connection, frame, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
+                DevelopmentDiagnosticTrace.TryWrite(
+                    "AgentHost",
+                    "frame-received",
+                    $"kind={frame.Kind};type={frame.PayloadType};" +
+                    $"targetGh={frame.Target?.HasGrasshopper.ToString() ?? "none"};n={received}");
 
-            if (frame.Kind == BridgeMessageKind.Event &&
-                string.Equals(frame.PayloadType, BridgeMessageTypes.DocumentClosed, StringComparison.Ordinal))
-            {
-                CloseTarget(frame);
-                continue;
-            }
+                if (frame.Kind == BridgeMessageKind.Event &&
+                    string.Equals(frame.PayloadType, BridgeMessageTypes.RegisterDocument, StringComparison.Ordinal))
+                {
+                    await RegisterTargetAsync(connection, frame, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
 
-            if (frame.Kind == BridgeMessageKind.Event &&
-                string.Equals(frame.PayloadType, BridgeMessageTypes.SelectionChanged, StringComparison.Ordinal))
-            {
-                CacheSelection(frame);
+                if (frame.Kind == BridgeMessageKind.Event &&
+                    string.Equals(frame.PayloadType, BridgeMessageTypes.DocumentClosed, StringComparison.Ordinal))
+                {
+                    CloseTarget(frame);
+                    continue;
+                }
+
+                if (frame.Kind == BridgeMessageKind.Event &&
+                    string.Equals(frame.PayloadType, BridgeMessageTypes.SelectionChanged, StringComparison.Ordinal))
+                {
+                    CacheSelection(frame);
+                }
             }
+            DevelopmentDiagnosticTrace.TryWrite(
+                "AgentHost",
+                "receive-loop-exit",
+                $"reason=closed;cancelled={cancellationToken.IsCancellationRequested};" +
+                $"connected={connection.IsConnected};frames={received}");
+        }
+        catch (Exception exception)
+        {
+            DevelopmentDiagnosticTrace.TryWrite(
+                "AgentHost",
+                "receive-loop-faulted",
+                $"{exception.GetType().Name}: {exception.Message};frames={received}");
+            throw;
         }
     }
 
@@ -2433,6 +2475,11 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                     cancellationToken).ConfigureAwait(false);
             }
 
+            DevelopmentDiagnosticTrace.TryWrite(
+                "AgentHost",
+                "target-registered",
+                $"key={requestedTarget.StableTargetKey()[..8]};gh={requestedTarget.HasGrasshopper};" +
+                $"targets={_targets.Count};adapters={string.Join('+', request.AvailableAdapters)}");
             await RefreshScheduleAsync(cancellationToken).ConfigureAwait(false);
             var response = new DocumentRegisteredResponse(
                 request.InstanceId,
@@ -2455,6 +2502,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             var code = exception is BridgeProtocolException protocol ? protocol.Code : "registration_rejected";
+            DevelopmentDiagnosticTrace.TryWrite(
+                "AgentHost",
+                "target-registration-rejected",
+                $"code={code};{exception.GetType().Name}: {exception.Message}");
             await connection.SendAsync(
                 BridgeFrame.Create(
                     BridgeMessageKind.Error,
@@ -2559,10 +2610,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         var key = target.StableTargetKey();
         bool removed;
+        int remaining;
         lock (_connectionGate)
         {
             removed = _targets.Remove(key);
+            remaining = _targets.Count;
         }
+        DevelopmentDiagnosticTrace.TryWrite(
+            "AgentHost",
+            "target-closed",
+            $"key={key[..8]};removed={removed};remaining={remaining};gh={target.HasGrasshopper}");
         if (removed)
         {
             // Only calls addressed to the closed document fail; siblings keep running.

@@ -368,6 +368,9 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
         public Task<RhinoLayerTableResult> ListLayersAsync(DocumentTarget target, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<FocusObjectsResult> FocusObjectsAsync(DocumentTarget target, FocusObjectsRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<RhinoSceneMutationResult> UpdateLayerAsync(DocumentTarget target, UpdateRhinoLayerRequest request, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

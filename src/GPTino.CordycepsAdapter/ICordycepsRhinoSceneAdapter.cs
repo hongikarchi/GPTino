@@ -119,6 +119,17 @@ public interface ICordycepsRhinoSceneAdapter
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Points the viewport at objects so a human can judge a finding themselves. Selection and zoom
+    /// change no document content; isolate/lock DO write visibility and lock attributes, which is
+    /// why every such call records what it touched and 'restore' puts it back. Ephemeral view
+    /// state driven by a click — never a step in a ChangeSet, and not exposed to the agent.
+    /// </summary>
+    Task<FocusObjectsResult> FocusObjectsAsync(
+        DocumentTarget target,
+        FocusObjectsRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Moves objects to a layer in one undo record. Attribute-only: geometry is untouched, so the
     /// same op quarantines invalid objects (to a GPTino quarantine layer) instead of deleting
     /// them. Per-item fingerprint CAS; user-made objects still need an approval grant.
@@ -128,6 +139,24 @@ public interface ICordycepsRhinoSceneAdapter
         MoveObjectsToLayerRequest request,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// What the viewport should do. select = select + optional zoom (no document change);
+/// isolate = also hide everything else; lock = also lock everything else; restore = undo whatever
+/// the last isolate/lock hid or locked, and clear the selection.
+/// </summary>
+public sealed record FocusObjectsRequest(
+    IReadOnlyList<Guid> ObjectIds,
+    string Mode,
+    bool Zoom = true);
+
+public sealed record FocusObjectsResult(
+    int SelectedCount,
+    int MissingCount,
+    int HiddenCount,
+    int LockedCount,
+    bool Restored,
+    string Fingerprint);
 
 /// <summary>Document table an entry belongs to: block | dimStyle | linetype | material.</summary>
 public sealed record PurgeTableEntry(string Table, Guid Id);

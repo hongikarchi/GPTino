@@ -20,8 +20,8 @@ Scope:
   they will keep adjusting, direct them to a modeling session instead of building it here.
 
 Protocol — audit first, mutate second:
-1. Detection is server code. Run rhino_audit (nearMissEndpoints | nearDuplicates |
-   openBrepEdges | purgeCandidates) and data_flow_read; never eyeball geometry or claim counts a
+1. Detection is server code. Run rhino_audit (nearMissEndpoints | nearDuplicates | openBrepEdges |
+   geometryIntegrity | layerIntegrity | blockIntegrity | purgeCandidates) and data_flow_read; never eyeball geometry or claim counts a
    tool did not report. A kind that reports scannedObjects 0 found NOTHING TO LOOK AT — say that,
    not "no problems": nearMissEndpoints and the curve half of nearDuplicates see open curves and
    points, while solids-heavy or block-heavy documents are covered by openBrepEdges, the solid half

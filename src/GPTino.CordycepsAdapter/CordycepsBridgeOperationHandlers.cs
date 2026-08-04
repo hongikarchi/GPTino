@@ -193,6 +193,7 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
             "rhino.transform" => await TransformAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.fixEndpointPair" => await MutationAsync<FixEndpointPairRequest>(target, request, _adapter.FixEndpointPairAsync, cancellationToken).ConfigureAwait(false),
             "rhino.listLayers" => await ListLayersAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "rhino.focusObjects" => await FocusObjectsAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.updateLayer" => await MutationAsync<UpdateRhinoLayerRequest>(target, request, _adapter.UpdateLayerAsync, cancellationToken).ConfigureAwait(false),
             "rhino.deleteLayer" => await MutationAsync<DeleteRhinoLayerRequest>(target, request, _adapter.DeleteLayerAsync, cancellationToken).ConfigureAwait(false),
             "rhino.layerState" => await LayerStateAsync(target, request, cancellationToken).ConfigureAwait(false),
@@ -252,6 +253,27 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
     {
         RequireAccess(request, BridgeOperationAccess.Read);
         var result = await _adapter.ListLayersAsync(target, cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: false,
+            result,
+            afterFingerprint: result.Fingerprint);
+    }
+
+    private async Task<BridgeOperationResponse> FocusObjectsAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        // Read access on purpose. Isolate/lock do write visibility attributes, but this is a human
+        // pressing a finding to go look at it — routing viewport state through the writer lease
+        // would let a running job block the user from inspecting the very thing it is arguing
+        // about. The op is panel-only (absent from the agent's tool schema) and self-restoring.
+        RequireAccess(request, BridgeOperationAccess.Read);
+        var result = await _adapter.FocusObjectsAsync(
+            target,
+            request.DeserializeArguments<FocusObjectsRequest>(),
+            cancellationToken).ConfigureAwait(false);
         return BridgeOperationResponse.Create(
             request.OperationId,
             changed: false,

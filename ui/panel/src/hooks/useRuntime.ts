@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient, createMockApiClient, type GptinoApiClient } from "../api/client";
 import { moveById, shiftById } from "../order";
-import type { MessageAttachment, ModelInfo, ModelProfile, RhinoAuditKind, RuntimeState, SessionMode } from "../types";
+import type {
+  FocusMode,
+  MessageAttachment,
+  ModelInfo,
+  ModelProfile,
+  RhinoAuditKind,
+  RuntimeState,
+  SessionMode,
+} from "../types";
 
 type OptimisticUpdate = (current: RuntimeState) => RuntimeState;
 
@@ -147,6 +155,11 @@ export function useRuntime() {
   const listArchive = useCallback(() => clientRef.current!.listArchive(), []);
   const listDeleted = useCallback(() => clientRef.current!.listDeletedSessions(), []);
   // Read-only like the archive callbacks: the data-flow drawer keys its fetch effect on this.
+  const focusObjects = useCallback(
+    (objectIds: string[], mode: FocusMode) => clientRef.current!.focusObjects(objectIds, mode),
+    [],
+  );
+
   const getDataFlowDetail = useCallback(
     (docId?: string | null) => clientRef.current!.getDataFlowDetail(docId),
     [],
@@ -299,6 +312,7 @@ export function useRuntime() {
       },
       listArchive,
       readArchiveMessages,
+      focusObjects,
       getDataFlowDetail,
       getAudit,
       mintApprovalGrant,
@@ -312,7 +326,7 @@ export function useRuntime() {
         );
       },
     }),
-    [getAudit, getDataFlowDetail, listArchive, listDeleted, mintApprovalGrant, readArchiveMessages, reorder, runAction, shift, updateSession],
+    [focusObjects, getAudit, getDataFlowDetail, listArchive, listDeleted, mintApprovalGrant, readArchiveMessages, reorder, runAction, shift, updateSession],
   );
 
   return {

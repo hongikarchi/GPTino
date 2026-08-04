@@ -118,7 +118,23 @@ export type RhinoAuditKind =
   | "nearMissEndpoints"
   | "nearDuplicates"
   | "openBrepEdges"
+  | "geometryIntegrity"
+  | "layerIntegrity"
+  | "blockIntegrity"
   | "purgeCandidates";
+
+/** Viewport focus modes: select+zoom, or additionally hide/lock everything else, or put it back. */
+export type FocusMode = "select" | "isolate" | "lock" | "restore";
+
+export interface FocusResult {
+  selectedCount: number;
+  /** Findings can outlive their objects — a deleted target is reported, never silently dropped. */
+  missingCount: number;
+  hiddenCount: number;
+  lockedCount: number;
+  restored: boolean;
+  fingerprint: string;
+}
 
 export interface RhinoAuditFinding {
   findingId: string;

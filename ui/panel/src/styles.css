@@ -1598,6 +1598,17 @@ button.llm-auth:hover strong {
 .audit-card-keep { display: flex; gap: 14px; padding: 4px 0 0 24px; color: var(--muted); font-size: var(--fs-meta); }
 .audit-card-keep label { display: inline-flex; gap: 4px; align-items: center; font-family: var(--mono); }
 .audit-card-footer { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.audit-card-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.audit-card-focus-mode select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  padding: 3px 6px;
+}
+.audit-card-focus { display: flex; align-items: center; gap: 8px; padding: 4px 0 0 24px; }
+.audit-card-focus-note { color: var(--dim); font-size: var(--fs-meta); font-family: var(--mono); }
 /* "Nothing was in scope" is a warning, not a result: it must not read like the calm grey of a
    clean scan, because the two are exactly what the user must be able to tell apart. */
 .audit-card-nothing-scanned {
