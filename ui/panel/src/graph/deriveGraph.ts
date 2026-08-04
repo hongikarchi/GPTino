@@ -243,7 +243,7 @@ export function deriveGraph(state: RuntimeState): GraphModel {
           w: DOC_W,
           h: DOC_H,
           label: "Grasshopper",
-          sublabel: shortFile(state.grasshopperFile),
+          sublabel: state.grasshopperFile ? shortFile(state.grasshopperFile) : "No definition open",
           detail: ghDetail,
           tooltip: ghTooltip,
           docTarget: "grasshopper" as const,

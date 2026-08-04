@@ -1544,6 +1544,34 @@ button.llm-auth:hover strong {
 }
 .tab-dot.warning { background: var(--red); }
 
+/* Tab body shown when a Grasshopper-dependent tab has no definition to work on. The panel is up
+   and Curator is fully usable, so this is an empty state, not an error screen. */
+.tab-empty {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  min-height: 0;
+}
+
+.tab-empty-body { max-width: 380px; text-align: center; }
+.tab-empty-body strong { display: block; font-size: var(--fs-title); margin-bottom: 6px; }
+.tab-empty-body p { margin: 0 0 14px; color: var(--muted); font-size: var(--fs-sec); line-height: 1.55; }
+
+.tab-empty-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+}
+/* The CTA is an anchor (it navigates a custom scheme, not an HTTP request) styled as the button
+   it visually is. */
+.tab-empty-actions a.new-session-button { text-decoration: none; }
+
+.tab-empty-note { margin-top: 14px !important; color: var(--dim) !important; font-size: var(--fs-meta) !important; }
+
 /* Audit approval card: server-computed findings + approve-what-you-saw. */
 .audit-card {
   margin: 6px 16px 4px;

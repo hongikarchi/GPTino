@@ -163,12 +163,18 @@ internal sealed class AgentHostBootstrapper : IDisposable
         startInfo.ArgumentList.Add("--rhino-document-serial");
         startInfo.ArgumentList.Add(
             target.RhinoDocumentSerial.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        startInfo.ArgumentList.Add("--grasshopper");
-        startInfo.ArgumentList.Add(target.GrasshopperPath);
+        if (target.GrasshopperPath is { } grasshopperPath)
+        {
+            startInfo.ArgumentList.Add("--grasshopper");
+            startInfo.ArgumentList.Add(grasshopperPath);
+        }
+        // The durable data root is fingerprinted over the Rhino path alone (AgentHostOptions
+        // .ResolveDataDirectory), so this directory is display/back-compat only. Falling back to the
+        // Rhino file's directory keeps a Rhino-only launch from having to invent one.
         startInfo.ArgumentList.Add("--project-directory");
         startInfo.ArgumentList.Add(
-            Path.GetDirectoryName(target.GrasshopperPath)
-            ?? throw new InvalidOperationException("Cannot resolve the Grasshopper project directory."));
+            Path.GetDirectoryName(target.GrasshopperPath ?? target.RhinoPath)
+            ?? throw new InvalidOperationException("Cannot resolve the project directory."));
         var developmentDataDirectory = DevelopmentDataDirectoryPolicy.ResolveFromEnvironment();
         if (developmentDataDirectory is not null)
         {

@@ -190,11 +190,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             lock (_connectionGate)
             {
+                // A Rhino-only target has no Grasshopper document to list. It is a real registered
+                // target (the curator runs on it), it just contributes no row here.
                 return _targets.Values
                     .OrderBy(state => state.Sequence)
+                    .Where(state => state.Target.GrasshopperPath is not null)
                     .Select(state => new RegisteredGrasshopperDocument(
                         state.DocKey,
-                        state.Target.GrasshopperPath))
+                        state.Target.GrasshopperPath!))
                     .ToArray();
             }
         }
@@ -1289,7 +1292,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         ValidateExpectationCoverage(
             changeSet,
             draftOperations,
-            targetState.Target.GrasshopperDocumentId);
+            targetState.Target.GrasshopperDocumentId,
+            targetState.Target.ProjectId);
 
         SnapshotEnvelope snapshot;
         using (await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false))
@@ -2834,9 +2838,15 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             // The whole-document resource is addressed by the runtime Grasshopper DocumentID (an
             // in-memory scope), never by the now Rhino-scoped ProjectId, which would collide the
-            // Document rows of sibling documents in the snapshot and the ledger.
+            // Document rows of sibling documents in the snapshot and the ledger. A canvas snapshot
+            // only exists for a target that HAS a Grasshopper document, so the id is present here.
             new(
-                new ResourceAddress(ResourceKind.Document, target.GrasshopperDocumentId.ToString("D")),
+                new ResourceAddress(
+                    ResourceKind.Document,
+                    (target.GrasshopperDocumentId
+                        ?? throw new InvalidOperationException(
+                            "A canvas snapshot requires a bound Grasshopper document."))
+                        .ToString("D")),
                 canvas.DocumentFingerprint)
         };
         foreach (var item in canvas.Objects)
@@ -3134,7 +3144,8 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         ValidateExpectationCoverage(
             entry.Job.ChangeSet,
             prepared,
-            targetState.Target.GrasshopperDocumentId);
+            targetState.Target.GrasshopperDocumentId,
+            targetState.Target.ProjectId);
         foreach (var owner in prepared.Select(item => item.Owner).Distinct())
         {
             RequireAdapter(targetState, owner);
@@ -6769,11 +6780,12 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private static void ValidateExpectationCoverage(
         ChangeSet changeSet,
         IReadOnlyList<PreparedOperation> prepared,
-        Guid grasshopperDocumentId)
+        Guid? grasshopperDocumentId,
+        Guid projectId)
     {
         foreach (var expectation in changeSet.ReadSet.Concat(changeSet.WriteSet))
         {
-            ValidateResourceAddress(expectation.Resource, grasshopperDocumentId);
+            ValidateResourceAddress(expectation.Resource, grasshopperDocumentId, projectId);
             if (string.IsNullOrWhiteSpace(expectation.ExpectedFingerprint))
             {
                 throw new InvalidOperationException("Resource expectations require a fingerprint.");
@@ -6792,7 +6804,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             var operation = preparedOperation.Operation;
             foreach (var resource in operation.Reads)
             {
-                ValidateResourceAddress(resource, grasshopperDocumentId);
+                ValidateResourceAddress(resource, grasshopperDocumentId, projectId);
                 var expectation = FindExpectation(changeSet.ReadSet, resource);
                 if (expectation is null || expectation.ExpectsAbsence)
                 {
@@ -6803,7 +6815,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
             foreach (var resource in operation.Writes)
             {
-                ValidateResourceAddress(resource, grasshopperDocumentId);
+                ValidateResourceAddress(resource, grasshopperDocumentId, projectId);
                 if (FindExpectation(changeSet.WriteSet, resource) is null)
                 {
                     throw new InvalidOperationException(
@@ -6830,7 +6842,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         foreach (var predicate in changeSet.AcceptancePredicates.Where(item => item.Resource is not null))
         {
-            ValidateResourceAddress(predicate.Resource!, grasshopperDocumentId);
+            ValidateResourceAddress(predicate.Resource!, grasshopperDocumentId, projectId);
             if (!prepared.SelectMany(item => item.Operation.Reads.Concat(item.Operation.Writes))
                     .Any(resource => ExactDomainOverlaps(resource, predicate.Resource!)))
             {
@@ -6840,7 +6852,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         }
         foreach (var beforeImage in changeSet.RollbackBeforeImages)
         {
-            ValidateResourceAddress(beforeImage.Resource, grasshopperDocumentId);
+            ValidateResourceAddress(beforeImage.Resource, grasshopperDocumentId, projectId);
             if (string.IsNullOrWhiteSpace(beforeImage.ArtifactReference) ||
                 string.IsNullOrWhiteSpace(beforeImage.Fingerprint) ||
                 !prepared.SelectMany(item => item.Operation.Writes)
@@ -7207,7 +7219,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             ResourceKind.GrasshopperComponentValue);
     }
 
-    private static void ValidateResourceAddress(ResourceAddress resource, Guid grasshopperDocumentId)
+    private static void ValidateResourceAddress(
+        ResourceAddress resource,
+        Guid? grasshopperDocumentId,
+        Guid projectId)
     {
         if (string.IsNullOrWhiteSpace(resource.Id) || resource.Field != "*")
         {
@@ -7219,10 +7234,14 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         {
             // The whole-document resource is scoped to the bound Grasshopper document (its runtime
             // DocumentID), not the ProjectId, which is Rhino-scoped and shared by sibling documents.
-            if (!string.Equals(
-                    resource.Id,
-                    grasshopperDocumentId.ToString("D"),
-                    StringComparison.Ordinal))
+            if (grasshopperDocumentId is not { } documentId)
+            {
+                throw new InvalidOperationException(
+                    "No Grasshopper document is open, so there is no document resource to address. " +
+                    "Open a Grasshopper definition to work on the canvas.");
+            }
+
+            if (!string.Equals(resource.Id, documentId.ToString("D"), StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
                     "Document resource ids must be the bound Grasshopper document UUID in D format.");
@@ -7243,12 +7262,16 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
         if (resource.Kind == ResourceKind.RhinoLayerTable)
         {
-            // The layer table is a single per-document resource, so it is addressed by the bound
-            // Grasshopper document id — the same convention the whole-document resource uses.
-            if (!string.Equals(resource.Id, grasshopperDocumentId.ToString("D"), StringComparison.Ordinal))
+            // The Rhino layer table is addressed by the RHINO-scoped ProjectId. It used to borrow
+            // the bound Grasshopper document id, which was wrong twice over: a Rhino layer table has
+            // nothing to do with Grasshopper, and sibling .gh documents open on one Rhino file would
+            // each name the same physical table by a different id — so two layer writes could not
+            // see each other's CAS domain. Curator work also has no .gh to borrow an id from.
+            if (!string.Equals(resource.Id, projectId.ToString("D"), StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    "rhinoLayerTable resource ids must be the bound Grasshopper document UUID in D format.");
+                    "rhinoLayerTable resource ids must be the project id (the Rhino document's " +
+                    "identity) in D format.");
             }
             return;
         }

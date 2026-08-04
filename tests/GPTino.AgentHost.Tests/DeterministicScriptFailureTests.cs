@@ -462,7 +462,7 @@ public sealed class DeterministicScriptFailureTests
             LayoutFingerprint = "layout-2in",
         };
         return new CanvasSnapshot(
-            harness.Target.GrasshopperDocumentId,
+            harness.Target.GrasshopperDocumentId!.Value,
             "two-input-document-v1",
             [component],
             Array.Empty<WireState>(),

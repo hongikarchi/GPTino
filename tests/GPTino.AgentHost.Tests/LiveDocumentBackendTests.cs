@@ -108,7 +108,7 @@ public sealed class LiveDocumentBackendTests
 
         Assert.Equal(1, snapshot.GetProperty("revision").GetInt64());
         Assert.Equal(
-            harness.Target.GrasshopperDocumentId,
+            harness.Target.GrasshopperDocumentId!.Value,
             snapshot.GetProperty("canvas").GetProperty("grasshopperDocumentId").GetGuid());
     }
 
@@ -2011,7 +2011,7 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
             ? new[] { new WireState(CanvasObjectId, Guid.NewGuid(), SecondCanvasObjectId, Guid.NewGuid()) }
             : Array.Empty<WireState>();
         return new(
-            target.GrasshopperDocumentId,
+            target.GrasshopperDocumentId!.Value,
             "document-v1",
             objects,
             wires,

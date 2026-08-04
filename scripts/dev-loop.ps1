@@ -17,6 +17,8 @@
 param(
     [string]$RunId = (Get-Date -Format 'yyyyMMddTHHmmssZ') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8)),
     [switch]$RegenerateScene,
+    # Launch WITHOUT opening Grasshopper, to exercise the Rhino-only target (curator-only panel).
+    [switch]$NoGrasshopper,
     [int]$ReadyTimeoutSeconds = 120,
     [string]$RhinoExe = 'C:\Program Files\Rhino 8\System\Rhino.exe'
 )
@@ -84,7 +86,14 @@ Remove-Item -LiteralPath (Join-Path $runtime 'endpoint.json') -Force -ErrorActio
 # --- live launch: open scene, panel, and Grasshopper doc via runscript ----------
 # Order: open the panel (starts the AgentHost) then open the saved .gh (forms the
 # rhino+gh target). Paths carry no spaces, so the .gh path is passed unquoted.
-$runscript = "_GPTinoOpenPanel _Enter -_Grasshopper _Document _Open $sceneGh _Enter"
+# -NoGrasshopper leaves Grasshopper closed: the Rhino-only target must bring the panel
+# up on its own, which is the curator's whole premise and cannot be gated any other way.
+$runscript = if ($NoGrasshopper) {
+    '_GPTinoOpenPanel _Enter'
+}
+else {
+    "_GPTinoOpenPanel _Enter -_Grasshopper _Document _Open $sceneGh _Enter"
+}
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $RhinoExe
 $psi.Arguments = "/nosplash `"$scene3dm`" /runscript=`"$runscript`""

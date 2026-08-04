@@ -155,7 +155,7 @@ public sealed class DomainFingerprintTests
             var snapshot = Volatile.Read(ref created) == 1
                 ? DomainSnapshot(harness)
                 : new CanvasSnapshot(
-                    harness.Target.GrasshopperDocumentId,
+                    harness.Target.GrasshopperDocumentId!.Value,
                     "empty-document-v1",
                     Array.Empty<CanvasObjectState>(),
                     Array.Empty<WireState>(),
@@ -229,7 +229,7 @@ public sealed class DomainFingerprintTests
             ValueFingerprint = ValueFingerprint,
         };
         return new CanvasSnapshot(
-            harness.Target.GrasshopperDocumentId,
+            harness.Target.GrasshopperDocumentId!.Value,
             "domain-document-v1",
             [slider],
             Array.Empty<WireState>(),

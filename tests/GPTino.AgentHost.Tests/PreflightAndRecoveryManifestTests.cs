@@ -986,7 +986,7 @@ public sealed class PreflightAndRecoveryManifestTests
             StructureFingerprint = harness.SecondObjectFingerprint,
         };
         return new CanvasSnapshot(
-            harness.Target.GrasshopperDocumentId,
+            harness.Target.GrasshopperDocumentId!.Value,
             "wired-pair-document-v1",
             [source, target],
             Array.Empty<WireState>(),
@@ -1011,7 +1011,7 @@ public sealed class PreflightAndRecoveryManifestTests
             StructureFingerprint = InitialFingerprint,
         };
         return new CanvasSnapshot(
-            harness.Target.GrasshopperDocumentId,
+            harness.Target.GrasshopperDocumentId!.Value,
             "python-script-document-v1",
             [component],
             Array.Empty<WireState>(),
@@ -1049,7 +1049,7 @@ public sealed class PreflightAndRecoveryManifestTests
             StructureFingerprint = InitialFingerprint,
         };
         return new CanvasSnapshot(
-            harness.Target.GrasshopperDocumentId,
+            harness.Target.GrasshopperDocumentId!.Value,
             "csharp-script-document-v1",
             [component],
             Array.Empty<WireState>(),

@@ -32,7 +32,7 @@ public sealed class DocumentTargetTests
         var target = CreateTarget();
 
         Assert.True(Path.IsPathFullyQualified(target.RhinoPath));
-        Assert.True(Path.IsPathFullyQualified(target.GrasshopperPath));
+        Assert.True(Path.IsPathFullyQualified(target.GrasshopperPath!));
         Assert.DoesNotContain("..", target.RhinoPath, StringComparison.Ordinal);
     }
 
@@ -75,6 +75,67 @@ public sealed class DocumentTargetTests
         Assert.NotEqual(original.StableTargetKey(), differentGrasshopperDocument.StableTargetKey());
     }
 
+    [Fact]
+    public void RhinoOnlyTarget_IsValid_AndDistinctFromEveryPair()
+    {
+        // A saved Rhino document with no .gh open is a complete target: the curator works on the
+        // Rhino document alone, so the panel must come up on it.
+        var rhinoOnly = CreateRhinoOnlyTarget();
+
+        Assert.False(rhinoOnly.HasGrasshopper);
+        Assert.Null(rhinoOnly.GrasshopperDocumentId);
+        Assert.Null(rhinoOnly.GrasshopperPath);
+        // Its own key, so registering a real pair later REPLACES it instead of merging into it.
+        Assert.NotEqual(CreateTarget().StableTargetKey(), rhinoOnly.StableTargetKey());
+        Assert.Contains("none", rhinoOnly.Identity, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Create_RejectsHalfSpecifiedGrasshopperPair()
+    {
+        // One-of-two would let a canvas op resolve a document id with no path to display, or show
+        // a path that resolves to nothing.
+        Assert.Throws<ArgumentException>(() => DocumentRuntimeTarget.Create(
+            Guid.Parse("bd368228-75d8-43a9-a67e-f50946b0a029"),
+            4321,
+            new DateTimeOffset(2026, 7, 16, 1, 2, 3, TimeSpan.Zero),
+            19,
+            Guid.Parse("75cfe50c-7ca1-47c6-87ad-425c43522b55"),
+            Path.Combine(Path.GetTempPath(), "model", "sample.3dm"),
+            grasshopperPath: null));
+
+        Assert.Throws<ArgumentException>(() => DocumentRuntimeTarget.Create(
+            Guid.Parse("bd368228-75d8-43a9-a67e-f50946b0a029"),
+            4321,
+            new DateTimeOffset(2026, 7, 16, 1, 2, 3, TimeSpan.Zero),
+            19,
+            grasshopperDocumentId: null,
+            Path.Combine(Path.GetTempPath(), "model", "sample.3dm"),
+            Path.Combine(Path.GetTempPath(), "model", "sample.gh")));
+    }
+
+    [Fact]
+    public void Create_RejectsEmptyGrasshopperId_WhichIsNeitherAPairNorRhinoOnly()
+    {
+        Assert.Throws<ArgumentException>(() => DocumentRuntimeTarget.Create(
+            Guid.Parse("bd368228-75d8-43a9-a67e-f50946b0a029"),
+            4321,
+            new DateTimeOffset(2026, 7, 16, 1, 2, 3, TimeSpan.Zero),
+            19,
+            Guid.Empty,
+            Path.Combine(Path.GetTempPath(), "model", "sample.3dm"),
+            Path.Combine(Path.GetTempPath(), "model", "sample.gh")));
+    }
+
+    [Fact]
+    public void RhinoOnlyTargetKey_IgnoresFilePaths_SoSaveAsPreservesIdentity()
+    {
+        var target = CreateRhinoOnlyTarget();
+        var renamed = target with { RhinoPath = Path.Combine(Path.GetTempPath(), "model", "renamed.3dm") };
+
+        Assert.Equal(target.StableTargetKey(), renamed.StableTargetKey());
+    }
+
     internal static DocumentTarget CreateTarget() =>
         DocumentRuntimeTarget.Create(
             Guid.Parse("bd368228-75d8-43a9-a67e-f50946b0a029"),
@@ -84,4 +145,14 @@ public sealed class DocumentTargetTests
             Guid.Parse("75cfe50c-7ca1-47c6-87ad-425c43522b55"),
             Path.Combine(Path.GetTempPath(), "model", "sample.3dm"),
             Path.Combine(Path.GetTempPath(), "model", "sample.gh"));
+
+    internal static DocumentTarget CreateRhinoOnlyTarget() =>
+        DocumentRuntimeTarget.Create(
+            Guid.Parse("bd368228-75d8-43a9-a67e-f50946b0a029"),
+            4321,
+            new DateTimeOffset(2026, 7, 16, 1, 2, 3, TimeSpan.Zero),
+            19,
+            grasshopperDocumentId: null,
+            Path.Combine(Path.GetTempPath(), "model", "sample.3dm"),
+            grasshopperPath: null);
 }

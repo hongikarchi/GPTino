@@ -7,14 +7,18 @@ namespace GPTino.BridgeContract;
 
 public static class DocumentRuntimeTarget
 {
+    /// <param name="grasshopperDocumentId">
+    /// Null for a Rhino-only target — a saved Rhino document with no Grasshopper definition open.
+    /// Must be null exactly when <paramref name="grasshopperPath"/> is null.
+    /// </param>
     public static DocumentRuntime Create(
         Guid projectId,
         int rhinoProcessId,
         DateTimeOffset rhinoProcessStart,
         uint rhinoDocumentSerial,
-        Guid grasshopperDocumentId,
+        Guid? grasshopperDocumentId,
         string rhinoPath,
-        string grasshopperPath,
+        string? grasshopperPath,
         long generation = 1)
     {
         var target = new DocumentRuntime(
@@ -24,7 +28,7 @@ public static class DocumentRuntimeTarget
             rhinoDocumentSerial,
             grasshopperDocumentId,
             NormalizePath(rhinoPath),
-            NormalizePath(grasshopperPath),
+            grasshopperPath is null ? null : NormalizePath(grasshopperPath),
             generation);
         target.Validate();
         return target;
@@ -52,6 +56,8 @@ public static class DocumentRuntimeExtensions
     /// Stable process/document identity. Deliberately PATH-FREE: the RhinoDoc serial and Grasshopper
     /// DocumentID uniquely identify the live pair, and a Save As / rename changes the file paths without
     /// changing this key — so the AgentHost binding survives a rename in place. Generation is also excluded.
+    /// A Rhino-only target hashes "none" for the Grasshopper half, giving it a key of its own that no
+    /// real pair can collide with — so the placeholder can be replaced, not merged, once a .gh opens.
     /// </summary>
     public static string StableTargetKey(this DocumentRuntime target)
     {
@@ -62,7 +68,7 @@ public static class DocumentRuntimeExtensions
             target.RhinoProcessId.ToString(CultureInfo.InvariantCulture),
             target.RhinoProcessStartedAt.UtcTicks.ToString(CultureInfo.InvariantCulture),
             target.RhinoDocumentSerial.ToString(CultureInfo.InvariantCulture),
-            target.GrasshopperDocumentId.ToString("D"));
+            target.GrasshopperDocumentId is { } id ? id.ToString("D") : "none");
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
@@ -90,13 +96,27 @@ public static class DocumentRuntimeExtensions
             throw new ArgumentOutOfRangeException(nameof(target), "Rhino document serial must be positive.");
         }
 
+        // The two Grasshopper fields move together: a target either describes a pair or describes
+        // Rhino alone. One-of-two would let a canvas op resolve a document id with no path to
+        // display, or show a path that resolves to nothing.
         if (target.GrasshopperDocumentId == Guid.Empty)
         {
-            throw new ArgumentException("GrasshopperDocumentId is required.", nameof(target));
+            throw new ArgumentException(
+                "GrasshopperDocumentId must be a real id or null, never Guid.Empty.", nameof(target));
+        }
+
+        if ((target.GrasshopperDocumentId is null) != (target.GrasshopperPath is null))
+        {
+            throw new ArgumentException(
+                "GrasshopperDocumentId and GrasshopperPath must both be set or both be null.",
+                nameof(target));
         }
 
         ValidateAbsolutePath(target.RhinoPath, "RhinoPath");
-        ValidateAbsolutePath(target.GrasshopperPath, "GrasshopperPath");
+        if (target.GrasshopperPath is { } grasshopperPath)
+        {
+            ValidateAbsolutePath(grasshopperPath, "GrasshopperPath");
+        }
 
         if (target.Generation <= 0)
         {

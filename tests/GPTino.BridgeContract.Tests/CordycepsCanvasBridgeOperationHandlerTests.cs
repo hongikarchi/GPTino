@@ -25,7 +25,7 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
         var adapter = new FakeCanvasAdapter
         {
             CatalogResult = new ComponentCatalogSearchResult(
-                DocumentTargetTests.CreateTarget().GrasshopperDocumentId,
+                DocumentTargetTests.CreateTarget().GrasshopperDocumentId!.Value,
                 "point",
                 10,
                 new[]
@@ -102,7 +102,7 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
     {
         var objectId = Guid.NewGuid();
         var result = new CanvasOutputInspection(
-            DocumentTargetTests.CreateTarget().GrasshopperDocumentId,
+            DocumentTargetTests.CreateTarget().GrasshopperDocumentId!.Value,
             objectId,
             [
                 new CanvasOutputParameterInspection(

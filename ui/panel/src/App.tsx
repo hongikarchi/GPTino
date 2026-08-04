@@ -6,6 +6,7 @@ import { CuratorActions } from "./components/CuratorActions";
 import { DataView } from "./components/DataView";
 import { DeletedSessions } from "./components/DeletedSessions";
 import { Icon } from "./components/Icons";
+import { NoGrasshopper } from "./components/NoGrasshopper";
 import { SessionCanvas } from "./components/SessionCanvas";
 import { ToastStack } from "./components/Toast";
 import { useRuntime } from "./hooks/useRuntime";
@@ -271,6 +272,10 @@ export default function App() {
   const curatorSession = runtime.sessions.find((session) => session.role === "curator");
   const selected = modelSessions.find(({ id }) => id === selectedId);
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
+  // No definition open is a normal state, not a failure: the panel comes up on a saved Rhino file
+  // alone and Curator is fully usable. Only Model and Data need a canvas. The legacy single-doc
+  // server sends grasshopperFile without grasshopperDocs, so either signal counts.
+  const hasGrasshopper = ghDocs != null || runtime.grasshopperFile != null;
   const modelUnread = modelSessions.some((session) => completion.unseen.has(session.id));
   const curatorUnread = curatorSession != null && completion.unseen.has(curatorSession.id);
   // A definition pointing at deleted Rhino objects emits empty data with no error — the one
@@ -329,7 +334,7 @@ export default function App() {
           <div className="toolbar-group">
             {/* Graph/+Session act on the Model tab's canvas and rail; showing them on another
                 tab would mutate invisible state. Deleted/Past sessions stay global. */}
-            {tab === "model" ? (
+            {tab === "model" && hasGrasshopper ? (
             <button
               type="button"
               className="secondary-button"
@@ -340,7 +345,7 @@ export default function App() {
               {canvasCollapsed ? `▸ Graph (${modelSessions.length})` : "▾ Graph"}
             </button>
             ) : null}
-            <div className="new-session-anchor" ref={newSessionAnchorRef} hidden={tab !== "model"}>
+            <div className="new-session-anchor" ref={newSessionAnchorRef} hidden={tab !== "model" || !hasGrasshopper}>
               <button
                 type="button"
                 className="new-session-button"
@@ -486,7 +491,7 @@ export default function App() {
         </div>
       </nav>
 
-      {tab === "model" && !canvasCollapsed ? (
+      {tab === "model" && hasGrasshopper && !canvasCollapsed ? (
         <section className="canvas-row" aria-label="Session graph">
           <SessionCanvas
             runtime={runtime}
@@ -499,16 +504,26 @@ export default function App() {
         </section>
       ) : null}
 
+      {/* Model and Data are the only Grasshopper-dependent tabs. Without a definition they show
+          the CTA in place of their own body — the panel itself is up, and Curator is fully usable. */}
       {tab === "data" ? (
         <main className="chat-region data-region">
-          <DataView
-            docs={ghDocs}
-            summaries={runtime.dataFlow ?? []}
-            unattributedBakeCount={runtime.unattributedBakeCount ?? 0}
-            rhinoFile={runtime.rhinoFile}
-            grasshopperFile={runtime.grasshopperFile}
-            getDetail={actions.getDataFlowDetail}
-          />
+          {hasGrasshopper ? (
+            <DataView
+              docs={ghDocs}
+              summaries={runtime.dataFlow ?? []}
+              unattributedBakeCount={runtime.unattributedBakeCount ?? 0}
+              rhinoFile={runtime.rhinoFile}
+              grasshopperFile={runtime.grasshopperFile ?? ""}
+              getDetail={actions.getDataFlowDetail}
+            />
+          ) : (
+            <NoGrasshopper
+              detail="This tab shows what a definition references from Rhino and what it bakes back, so it needs one open."
+              curatorAvailable={curatorSession != null}
+              onOpenCurator={() => switchTab("curator")}
+            />
+          )}
         </main>
       ) : null}
 
@@ -516,6 +531,13 @@ export default function App() {
           silently discard its composer draft and staged attachments on every tab switch. The Data
           region holds no draft, so it unmounts — and re-reads the ledger on every visit. */}
       <main className="chat-region" hidden={tab !== "model"}>
+          {!hasGrasshopper ? (
+            <NoGrasshopper
+              detail="Modeling sessions drive a Grasshopper definition, so they need one open and saved."
+              curatorAvailable={curatorSession != null}
+              onOpenCurator={() => switchTab("curator")}
+            />
+          ) : (
           <ChatPane
             key={selected?.id ?? "none"}
             session={selected}
@@ -543,6 +565,7 @@ export default function App() {
             }}
             onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
           />
+          )}
       </main>
       <main className="chat-region curator-region" hidden={tab !== "curator"}>
           <CuratorActions

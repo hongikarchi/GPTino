@@ -20,10 +20,19 @@ public sealed class ExplicitGrasshopperDocumentResolver :
         target.Validate();
         VerifyCurrentProcess(target);
 
-        if (!GrasshopperDocumentCatalog.TryResolve(target.GrasshopperDocumentId, out var document))
+        // A Rhino-only target is a legitimate runtime (curator work needs no canvas), so this is a
+        // plain unavailability, not a corrupt target: canvas ops refuse, Rhino ops carry on.
+        if (target.GrasshopperDocumentId is not { } documentId)
         {
             throw new GrasshopperDocumentUnavailableException(
-                $"Grasshopper document {target.GrasshopperDocumentId:D} is not registered.");
+                "No Grasshopper document is open for this Rhino document. Open a Grasshopper " +
+                "definition to work on the canvas.");
+        }
+
+        if (!GrasshopperDocumentCatalog.TryResolve(documentId, out var document))
+        {
+            throw new GrasshopperDocumentUnavailableException(
+                $"Grasshopper document {documentId:D} is not registered.");
         }
 
         // Identity is the GH DocumentID (resolved above) plus the paired RhinoDoc serial — not the file

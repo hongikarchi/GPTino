@@ -187,7 +187,10 @@ public sealed class RuntimeStateProjector
             projectId,
             projectName = rhinoName,
             rhinoFile = rhinoPath ?? "Untitled.3dm",
-            grasshopperFile = grasshopperPath ?? "No Grasshopper definition",
+            // NULL, not a placeholder string: "no Grasshopper document is open" is a real state the
+            // panel acts on (the curator runs without one), and a sentinel string would make the
+            // panel pattern-match prose to discover it.
+            grasshopperFile = grasshopperPath,
             grasshopperDocs = registeredDocs.Count > 0
                 ? registeredDocs.Select(doc => new { id = doc.Id, file = doc.File }).ToArray()
                 : null,

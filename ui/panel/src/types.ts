@@ -256,7 +256,12 @@ export interface RuntimeState {
   projectId: string;
   projectName: string;
   rhinoFile: string;
-  grasshopperFile: string;
+  /**
+   * The bound Grasshopper file, or null when no definition is open. Null is a normal state, not a
+   * failure: the curator works on the Rhino document alone. Model and Data are the only tabs that
+   * need a definition.
+   */
+  grasshopperFile: string | null;
   /** All registered GH docs; null/absent = legacy single-doc server (fall back to grasshopperFile). */
   grasshopperDocs?: GrasshopperDocInfo[] | null;
   health: RuntimeHealth;

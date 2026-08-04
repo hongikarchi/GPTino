@@ -98,7 +98,7 @@ public sealed class GptinoRuntimeHost : IDisposable
                 return;
             }
             _plugInAssemblyPath = Path.GetFullPath(plugInAssemblyPath);
-            _bridgeStatus = "Waiting for one saved Rhino and Grasshopper file pair.";
+            _bridgeStatus = "Waiting for one saved Rhino document.";
         }
 
         foreach (var target in _targets.Values)
@@ -1016,7 +1016,7 @@ public sealed class GptinoRuntimeHost : IDisposable
             {
                 ResetAutomaticRestartPolicyLocked();
                 detached = DetachRuntimeLocked(
-                    "Waiting for one saved Rhino and Grasshopper file pair.");
+                    "Waiting for one saved Rhino document.");
             }
         }
 
@@ -1167,7 +1167,7 @@ public sealed class GptinoRuntimeHost : IDisposable
             if (_targets.IsEmpty)
             {
                 ResetAutomaticRestartPolicyLocked();
-                _bridgeStatus = "Waiting for one saved Rhino and Grasshopper file pair.";
+                _bridgeStatus = "Waiting for one saved Rhino document.";
                 restartDelay = Timeout.InfiniteTimeSpan;
             }
             else if (!TryScheduleAutomaticRestartLocked(failureStatus, out restartDelay))
@@ -1237,7 +1237,7 @@ public sealed class GptinoRuntimeHost : IDisposable
                 if (replacement is null)
                 {
                     ResetAutomaticRestartPolicyLocked();
-                    _bridgeStatus = "Waiting for one saved Rhino and Grasshopper file pair.";
+                    _bridgeStatus = "Waiting for one saved Rhino document.";
                     return;
                 }
                 // Keep the restart lease and target selection under the same re-entrant gate.
@@ -1433,7 +1433,10 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
         // Canvas selection is captured by the .gha watcher and read back from the hub here, so
         // one event carries the settled selection of the Rhino document AND this target's GH doc.
-        var grasshopperObjects = BridgeProcessHub.GetGrasshopperSelection(target.GrasshopperDocumentId);
+        IReadOnlyList<GrasshopperSelectedObject> grasshopperObjects =
+            target.GrasshopperDocumentId is { } grasshopperDocumentId
+                ? BridgeProcessHub.GetGrasshopperSelection(grasshopperDocumentId)
+                : Array.Empty<GrasshopperSelectedObject>();
         return new SelectionChangedEvent(
             ids,
             document.Layers.CurrentLayer?.FullPath,
@@ -1543,10 +1546,9 @@ public sealed class GptinoRuntimeHost : IDisposable
         lock (_observationGate)
         {
             return targets
-                .OrderBy(target =>
-                    _grasshopperObservationOrdinals.GetValueOrDefault(
-                        target.GrasshopperDocumentId,
-                        long.MaxValue))
+                .OrderBy(target => target.GrasshopperDocumentId is { } documentId
+                    ? _grasshopperObservationOrdinals.GetValueOrDefault(documentId, long.MaxValue)
+                    : long.MaxValue)
                 .ThenBy(target => target.StableTargetKey(), StringComparer.Ordinal)
                 .ToArray();
         }
@@ -1555,18 +1557,22 @@ public sealed class GptinoRuntimeHost : IDisposable
     /// <summary>
     /// Registers one DocumentTarget per observed Grasshopper document when exactly one saved Rhino
     /// document is observed. All targets share the Rhino-scoped ProjectId, so N GH docs bind to the
-    /// same AgentHost; with zero GH docs nothing registers (the waiting page stays up).
+    /// same AgentHost. With zero GH docs a RHINO-ONLY target registers instead: the curator works on
+    /// the Rhino document alone, so a saved .3dm with no .gh open is a complete runtime and the
+    /// panel must come up. Because the ProjectId is Rhino-scoped, opening a .gh later ADDS a target
+    /// to the same AgentHost — no rebind, no teardown, no interrupted curator session.
     /// </summary>
     private void TryRegisterUnambiguousTargets()
     {
         List<DocumentTarget> targets = [];
+        string? supersededRhinoOnlyKey = null;
         lock (_observationGate)
         {
             DevelopmentDiagnosticTrace.TryWrite(
                 "Rhino",
                 "pair-evaluated",
                 $"rhino={_observedRhinoDocuments.Count};grasshopper={_observedGrasshopperDocuments.Count}");
-            if (_observedRhinoDocuments.Count != 1 || _observedGrasshopperDocuments.Count == 0)
+            if (_observedRhinoDocuments.Count != 1)
             {
                 return;
             }
@@ -1575,19 +1581,44 @@ public sealed class GptinoRuntimeHost : IDisposable
             using var process = Process.GetCurrentProcess();
             var startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
             var projectId = CreateProjectId(process.Id, startedAt.UtcTicks, rhinoPair.Key);
-            // Observation order (not dictionary order) so the first-registered/default target on
-            // the AgentHost is the first/primary observed document, deterministically.
-            foreach (var grasshopperPair in _observedGrasshopperDocuments
-                .OrderBy(pair => _grasshopperObservationOrdinals.GetValueOrDefault(pair.Key, long.MaxValue)))
+            if (_observedGrasshopperDocuments.Count == 0)
             {
                 targets.Add(DocumentRuntimeTarget.Create(
                     projectId,
                     process.Id,
                     startedAt,
                     rhinoPair.Key,
-                    grasshopperPair.Key,
+                    grasshopperDocumentId: null,
                     rhinoPair.Value,
-                    grasshopperPair.Value));
+                    grasshopperPath: null));
+            }
+            else
+            {
+                // The Rhino-only placeholder is superseded the moment a real pair exists: leaving it
+                // registered would let target selection land on a target that reports no Grasshopper
+                // document while one is open.
+                supersededRhinoOnlyKey = DocumentRuntimeTarget.Create(
+                    projectId,
+                    process.Id,
+                    startedAt,
+                    rhinoPair.Key,
+                    grasshopperDocumentId: null,
+                    rhinoPair.Value,
+                    grasshopperPath: null).StableTargetKey();
+                // Observation order (not dictionary order) so the first-registered/default target on
+                // the AgentHost is the first/primary observed document, deterministically.
+                foreach (var grasshopperPair in _observedGrasshopperDocuments
+                    .OrderBy(pair => _grasshopperObservationOrdinals.GetValueOrDefault(pair.Key, long.MaxValue)))
+                {
+                    targets.Add(DocumentRuntimeTarget.Create(
+                        projectId,
+                        process.Id,
+                        startedAt,
+                        rhinoPair.Key,
+                        grasshopperPair.Key,
+                        rhinoPair.Value,
+                        grasshopperPair.Value));
+                }
             }
         }
 
@@ -1596,6 +1627,14 @@ public sealed class GptinoRuntimeHost : IDisposable
         foreach (var target in targets)
         {
             RegisterDocument(target);
+        }
+        // AFTER the pair registers, never before: _targets is non-empty at this point, so the
+        // shared detach-when-empty path cannot tear down the AgentHost the curator is talking to.
+        if (supersededRhinoOnlyKey is not null)
+        {
+            RemoveTargets(
+                target => target.StableTargetKey() == supersededRhinoOnlyKey,
+                "Superseded by a Rhino/Grasshopper pair.");
         }
     }
 

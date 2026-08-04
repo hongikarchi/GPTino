@@ -16,7 +16,10 @@ public static class BridgeProtocol
     // v7: CanvasObjectState gained BoundsOrigin (bounds top-left) feeding deterministic component
     //     auto-placement. It is EXCLUDED from every fingerprint, so it never churns the revision;
     //     the bump only guards the wire shape against a stale AgentHost, as SampleValues did in v4.
-    public const int Version = 10;
+    // v11: DocumentRuntime's Grasshopper half is nullable — a saved Rhino document with no .gh open
+    //      is a complete target (the curator needs no canvas). rhinoLayerTable resources are now
+    //      addressed by the Rhino-scoped ProjectId instead of the bound Grasshopper document id.
+    public const int Version = 11;
 
     public const int DefaultMaximumFrameBytes = 8 * 1024 * 1024;
 
