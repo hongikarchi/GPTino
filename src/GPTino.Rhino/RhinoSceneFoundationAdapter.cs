@@ -240,19 +240,16 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             fingerprint));
     }
 
-    private static ObjectEnumeratorSettings AuditEnumerator(
-        ObjectType? typeFilter = null,
-        bool includeDefinitionMembers = false) => new()
+    private static ObjectEnumeratorSettings AuditEnumerator(ObjectType? typeFilter = null) => new()
     {
         // Audits count what exists, not what is visible — hidden and locked included. Block
-        // definition members are opt-in: the layer census needs them (a layer holding only block
-        // member geometry is NOT empty), while geometry analyses stay top-level.
+        // definition members are NOT reachable through this enumerator (see
+        // EnumerateLayerOccupants); geometry analyses stay top-level by design anyway.
         NormalObjects = true,
         ActiveObjects = true,
         HiddenObjects = true,
         LockedObjects = true,
         DeletedObjects = false,
-        IdefObjects = includeDefinitionMembers,
         // Lights, page/phantom objects and linked-block references are still objects ON a layer:
         // omitting them would report an occupied layer as an empty leaf and offer it for deletion.
         IncludeLights = true,
@@ -263,24 +260,38 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
 
     /// <summary>
     /// Every object that OCCUPIES a layer: top-level objects plus block-definition members.
-    /// IdefObjects is a MODE, not an additive flag — the live gate caught a layer holding six
-    /// objects reported as empty because the single idef-enabled pass returned definition members
-    /// only. Two passes, unioned by id, is the only correct enumeration.
+    /// Members come from the instance-definition table, NOT from an ObjectEnumeratorSettings flag:
+    /// the live gate proved that a document with a real definition whose member sits on a layer
+    /// still enumerated zero members through <c>IdefObjects</c>, whichever way it was combined with
+    /// the mode flags. A missed member makes an occupied layer look like an empty leaf, which the
+    /// deleteLayer proof would then happily approve.
     /// </summary>
     private static IReadOnlyList<RhinoObject> EnumerateLayerOccupants(global::Rhino.RhinoDoc document)
     {
-        // Each pass is MATERIALIZED before the next starts: a lazy walk would keep the first
-        // pass's native object iterator open while the second one runs.
+        // The top-level pass is MATERIALIZED before the definitions are walked: a lazy walk would
+        // keep the native object iterator open across the definition reads.
         var occupants = document.Objects.GetObjectList(AuditEnumerator()).ToList();
         if (document.InstanceDefinitions.Count == 0)
         {
             return occupants;
         }
         var seen = occupants.Select(item => item.Id).ToHashSet();
-        var definitionMembers = document.Objects
-            .GetObjectList(AuditEnumerator(includeDefinitionMembers: true))
-            .ToList();
-        occupants.AddRange(definitionMembers.Where(item => seen.Add(item.Id)));
+        foreach (var definition in document.InstanceDefinitions)
+        {
+            if (definition is null || definition.IsDeleted)
+            {
+                continue;
+            }
+            // Nested definitions are covered without recursion: every definition in the table is
+            // visited, so a member of a nested one is reached when that definition comes up.
+            foreach (var member in definition.GetObjects())
+            {
+                if (member is not null && seen.Add(member.Id))
+                {
+                    occupants.Add(member);
+                }
+            }
+        }
         return occupants;
     }
 

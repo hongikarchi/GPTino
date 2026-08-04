@@ -35,7 +35,13 @@ rs.AddPoint(2000, 1000, 0)
 # objects, so the definition exists and is unused -- the one thing purgeCandidates can report
 # besides empty layers. It also gives the document a non-empty InstanceDefinitions table, which
 # is what makes the layer census take its second (block-member) enumeration pass.
+#
+# The member is parked on its own layer 'BlockLib' on purpose: that layer has no top-level
+# objects, so it is the fixture for the safety-critical claim that a layer holding only block
+# geometry must never be reported as an empty leaf and offered for deletion.
+rs.AddLayer("BlockLib")
 _marker = rs.AddCircle(rs.WorldXYPlane(), 250)
+rs.ObjectLayer(_marker, "BlockLib")
 rs.AddBlock([_marker], (0, 0, 0), "GPTinoUnusedFixture", True)
 
 # Scripted SaveAs (dash-prefixed = no dialog). Path has no spaces in the dev-loop tree.
