@@ -20,6 +20,33 @@
 provenance default-deny + 승인 grant, fingerprint CAS, managed history/undo, 데이터 플로우 뷰.
 **비싼 자산은 전부 role과 무관하게 이미 작동한다** — 이번 개편은 프롬프트/UI 계층만 건드린다.
 
+## 진행 상태 (2026-08-05)
+
+- ✅ **goal 카드** (`5e55768`) — goal_propose/goal_score 툴, goal_card 컬럼, 확정 카드가 매 턴
+  주입, 증거 강제 자기채점, 패널 GoalCard 컴포넌트. 기존 GOAL 토글은 제거됨.
+- ✅ **선행조건 A** (`3a82295`) — curator.md의 감사 규율(스캔0 정직성·tolerance 인계·격리·참조객체
+  확인·GH스크립트 금지)을 house-rules로 병합. **curator.md는 이제 삭제 가능.**
+- ✅ **선행조건 B** (`4393a5b`) — 승인 카드를 에이전트 주도로 전환(approval_request 툴,
+  approval_card 컬럼, PUT /sessions/{id}/approval이 승인 항목만 grant 발급, 승인 블록 턴 주입,
+  패널 ApprovalCard). **승인 UI가 curator 탭에서 독립했으므로 탭 삭제가 안전해짐.**
+- ⬜ **다음: curator/role/mode 제거** — 아래 순서대로. 전수 접점은 조사 결과 기준:
+  1. 서버 게이트: DynamicToolDispatcher의 IsPlanMode/IsReadOnlyRole 분기 + ProblemLog.RecordRoleDenial
+  2. 지시문 주입: SessionOrchestrator의 curator 분기, CuratorInstructions.cs, assets/instructions/curator.md,
+     InstructionAssetParityTests의 curator 검증
+  3. 엔드포인트: PUT /sessions/{id}/mode, POST /sessions의 curator 거부, Program.cs 부팅 시 상주 curator 프로비저닝
+  4. 투영: RuntimeStateProjector의 mode/role, ApiModels의 Mode/SetModeRequest/CreateSessionRequest.Role
+  5. 스케줄러: LiveDocumentBackend의 curator 우선순위 제외
+  6. SessionStore: 파킹/삭제가드/SetModeAsync/재정렬필터/NormalizeRoleAndMode 제거.
+     **role 컬럼은 NOT NULL·DEFAULT 없음 → 컬럼 유지 + 상수 'modeler' 공급** (DROP 금지)
+  7. 마이그레이션 3종: sort_order ≥1,000,000 복구 / curator 행을 일반 세션으로 흡수(이름·기록 보존) /
+     기존 plan·read-only 세션에 "이제 쓰기 가능해졌다" 시스템 메시지 통보
+  8. 패널: 탭 model|data 2개로, curator 리전·CuratorActions 삭제, ChatPane의 Plan/Auto·Shift+Tab·
+     role 분기 삭제, types/useRuntime/client/mock/deriveGraph/NoGrasshopper/styles 정리
+  9. 테스트·스크립트: CuratorSessionTests 삭제, SessionStoreTests의 planner/SetMode 케이스,
+     DynamicToolDispatcherTests의 거부 케이스, smoke-agenthost.ps1의 role='planner', docs/modes.md 폐기
+  10. 라이브 게이트: 감사→승인카드→grant→수정이 새 위치에서 끝까지 통과하는지 확인
+- ⬜ **artifacts 프루닝** (26.4GB, dev-loop 런 1,234개) — dry-run 목록 승인 후 실행 + 자동 프루닝 추가
+
 ## 실행 순서
 
 1. **goal 카드** — 신규 기능이라 기존 것을 안 깨뜨리고, "확인받고 진행" 흐름이 자리를 잡아야
