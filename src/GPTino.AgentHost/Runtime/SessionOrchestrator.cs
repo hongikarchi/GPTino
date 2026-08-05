@@ -610,12 +610,25 @@ public sealed class SessionOrchestrator : IDisposable
             return null;
         }
         var approved = card.ApprovedItemIds ?? [];
+        // The chosen option rides with its item. It is the half of the answer only a human could
+        // give (which near-duplicate survives), so omitting it makes the agent ask a question the
+        // user already answered — and leaves it holding a grant over both copies with no verdict.
         var labels = card.Items
             .Where(item => approved.Contains(item.Id))
-            .Select(item => $"{item.Id} ({item.Label})");
+            .Select(item =>
+            {
+                var chosen = card.Choices is not null && card.Choices.TryGetValue(item.Id, out var choice)
+                    ? choice
+                    : null;
+                return string.IsNullOrWhiteSpace(chosen)
+                    ? $"{item.Id} ({item.Label})"
+                    : $"{item.Id} ({item.Label}) — the user chose: {chosen}";
+            });
         var builder = new StringBuilder("<gptino_approval>");
         builder.Append("approvalGrantId: ").Append(card.GrantId).Append(". ");
         builder.Append("Approved items ONLY: ").Append(string.Join(" | ", labels)).Append(". ");
+        builder.Append("Where an item names the user's choice, that choice is already made — act on " +
+            "it, do not ask again. ");
         builder.Append("Anything not listed here was refused — do not touch it.");
         builder.Append("</gptino_approval>");
         return builder.ToString();

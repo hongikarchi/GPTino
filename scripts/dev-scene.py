@@ -7,6 +7,7 @@
 # $GPTINO_SCENE_3DM.  Kinds:
 #   paneling   (default) warped surface + boundary + reveal curves + attractor points
 #   structural column axis lines + perimeter beam lines + isolated test beam (Karamba)
+#   hygiene    geometry with DELIBERATE audit defects (endpoint gaps, near-duplicates)
 # Run via:  Rhino  /runscript="_-RunPythonScript ""scripts\dev-scene.py"" _-Exit"
 # The output path is passed through the GPTINO_SCENE_3DM environment variable
 # (RunPythonScript takes no CLI args). A '.scene-ok' marker is written on success;
@@ -52,6 +53,46 @@ def build_structural():
     _on_layer(rs.AddLine((8000, -2000, 0), (16000, -2000, 0)), "TestBeam")
 
 
+def build_hygiene():
+    # Document-hygiene fixture: geometry carrying KNOWN, deliberate defects so the
+    # audit -> approval card -> grant -> fix path runs on real findings. A fixture with
+    # nothing wrong lets a live gate report PASS without ever executing the path it
+    # claims to prove (the empty-InstanceDefinitions block census did exactly that).
+    #
+    # Tolerance is pinned here rather than inherited from whatever template Rhino
+    # opened, because every gap below is expressed as a multiple of it.
+    rs.UnitSystem(2, False, True)          # 2 = millimeters
+    rs.UnitAbsoluteTolerance(0.001, True)
+
+    # --- nearMissEndpoints ------------------------------------------------------
+    # Detected when an endpoint-to-endpoint gap lands in (tolerance, tolerance*band],
+    # i.e. (0.001, 0.01] at the default band factor of 10. Two L-corners that look
+    # closed at any sane zoom and are not: exactly the defect a person cannot see.
+    # Both are open curves; same-object pairs are out of scope for this kind.
+    _on_layer(rs.AddLine((0, 0, 0), (5000, 0, 0)), "Walls")
+    _on_layer(rs.AddLine((5000.005, 0, 0), (5000.005, 4000, 0)), "Walls")
+    _on_layer(rs.AddLine((0, 8000, 0), (5000, 8000, 0)), "Walls")
+    _on_layer(rs.AddLine((5000.003, 8000, 0), (5000.003, 12000, 0)), "Walls")
+
+    # --- nearDuplicates ---------------------------------------------------------
+    # Detected when max curve-to-curve deviation is <= tolerance. Offset by half a
+    # tolerance: SelDup (exact match only) misses this, which is the whole point of
+    # the analyzer. The endpoint gap here is 0.0005 -- BELOW tolerance -- so this pair
+    # deliberately does not also surface as a near-miss.
+    _on_layer(rs.AddLine((0, -3000, 0), (6000, -3000, 0)), "Slab")
+    _on_layer(rs.AddLine((0, -2999.9995, 0), (6000, -2999.9995, 0)), "Slab")
+
+    # --- purgeCandidates --------------------------------------------------------
+    # An unused block definition and a genuinely empty leaf layer. 'BlockLib' holds
+    # only block geometry, so it is the fixture for the safety claim that such a layer
+    # must NEVER be offered for deletion as an empty leaf.
+    rs.AddLayer("Scratch")
+    rs.AddLayer("BlockLib")
+    _marker = rs.AddCircle(rs.WorldXYPlane(), 250)
+    rs.ObjectLayer(_marker, "BlockLib")
+    rs.AddBlock([_marker], (0, 0, 0), "GPTinoUnusedFixture", True)
+
+
 def build_paneling():
     # A gently warped NURBS surface to panelize (10 m x 8 m, mm units), plus its
     # boundary and a couple of freeform reveal curves and attractor points. This gives
@@ -91,6 +132,8 @@ try:
 
     if kind == "structural":
         build_structural()
+    elif kind == "hygiene":
+        build_hygiene()
     else:
         build_paneling()
 

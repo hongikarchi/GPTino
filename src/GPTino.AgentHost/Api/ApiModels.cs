@@ -93,7 +93,11 @@ public sealed record ApprovalCard(
     IReadOnlyList<ApprovalItem> Items,
     string? GrantId = null,
     IReadOnlyList<string>? ApprovedItemIds = null,
-    DateTimeOffset? ProposedAt = null);
+    DateTimeOffset? ProposedAt = null,
+    // The option the user picked per item (item id -> chosen label), for the items whose fix the
+    // machine must NOT decide. Persisted because it IS the answer: without it the next turn carries
+    // a grant covering both near-duplicates and no word on which one the user meant to lose.
+    IReadOnlyDictionary<string, string>? Choices = null);
 
 /// <summary>
 /// One reviewable fix. Choices exist for findings where the machine must not decide — which of two

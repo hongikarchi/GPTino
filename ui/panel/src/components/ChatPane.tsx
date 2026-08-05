@@ -836,7 +836,6 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
         <div className="composer-hint">
           <div className="hint-keys">
             <span>Ctrl ↵ to send</span>
-            <span>Shift ⇥ toggles Plan / Auto</span>
           </div>
           <UsageStatusLine usage={session.usage} limits={limits} />
         </div>

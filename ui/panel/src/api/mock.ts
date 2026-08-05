@@ -246,7 +246,7 @@ const demoState: RuntimeState = {
         {
           id: "m-l-2",
           role: "assistant",
-          content: "I drafted a six-layer convention and mapped every managed object. This session is paused in Plan mode, so no live ChangeSet has been submitted.",
+          content: "I drafted a six-layer convention and mapped every managed object. This session is paused, so no live ChangeSet has been submitted.",
           createdAt: minutesAgo(25),
         },
       ],

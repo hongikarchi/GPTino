@@ -37,6 +37,57 @@ public sealed class SessionOrchestratorTests
         Assert.Equal("final_answer", assistant.Phase);
     }
 
+    /// <summary>
+    /// A granted approval must reach the next turn whole: the grant key, exactly which items it
+    /// covers, the refusal of everything else, AND the option the user picked. The choice is the
+    /// half only a human can give — which near-duplicate survives — and dropping it was a real
+    /// defect: the agent held a grant over both copies, had no verdict, and asked again for an
+    /// answer the user had already given.
+    /// </summary>
+    [Fact]
+    public async Task TurnInputCarriesTheGrantedApprovalIncludingTheUsersChoice()
+    {
+        using var directory = new TestDirectory();
+        var client = new FakeCodexSessionClient
+        {
+            ReadTurn = (_, _, _) => Task.FromResult<CodexTurnReadResult?>(Completed("done"))
+        };
+        using var harness = await CreateHarnessAsync(directory, client);
+        var card = new ApprovalCard(
+            "granted",
+            "Fix two findings.",
+            [
+                new ApprovalItem("keep-one", "Remove one of two near-duplicates", "0.0005 mm",
+                    [new ApprovalGrantItem(Guid.NewGuid(), "fp-a"), new ApprovalGrantItem(Guid.NewGuid(), "fp-b")],
+                    ["keep A / remove B", "keep B / remove A"]),
+                new ApprovalItem("gap", "Close a 0.005 mm endpoint gap", "0.005 mm",
+                    [new ApprovalGrantItem(Guid.NewGuid(), "fp-c")]),
+                new ApprovalItem("refused", "Close a 0.003 mm endpoint gap", "0.003 mm",
+                    [new ApprovalGrantItem(Guid.NewGuid(), "fp-d")]),
+            ],
+            GrantId: "grant-xyz",
+            ApprovedItemIds: ["keep-one", "gap"],
+            Choices: new Dictionary<string, string> { ["keep-one"] = "keep A / remove B" });
+        await harness.Store.SetApprovalCardAsync(
+            harness.Session.Id,
+            JsonSerializer.Serialize(card, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+        await harness.Orchestrator.SubmitMessageAsync(
+            harness.Session.Id,
+            new SendMessageRequest("승인했어. 진행해줘.", "approval-1"),
+            CancellationToken.None);
+
+        await WaitForStateAsync(harness.Store, harness.Session.Id, SessionStates.Idle);
+        var startedTurn = Assert.Single(client.StartedTurns);
+        Assert.Contains("approvalGrantId: grant-xyz", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("the user chose: keep A / remove B", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("do not ask again", startedTurn.Message, StringComparison.Ordinal);
+        Assert.Contains("Anything not listed here was refused", startedTurn.Message, StringComparison.Ordinal);
+        // The refused item is named nowhere: the block lists what was granted, not what was asked.
+        Assert.DoesNotContain("0.003 mm", startedTurn.Message, StringComparison.Ordinal);
+        Assert.EndsWith("승인했어. 진행해줘.", startedTurn.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task TurnInputCarriesSelectionContextHintWithoutAlteringTheStoredMessage()
     {

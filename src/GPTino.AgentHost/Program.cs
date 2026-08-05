@@ -374,11 +374,18 @@ api.MapPut("/sessions/{id:guid}/approval", async (
         return Results.BadRequest(new ApiError("nothing_approved", "Approving requires at least one item."));
     }
     var grantJson = JsonSerializer.SerializeToElement(liveBackend.MintApprovalGrant(targets), GoalCardJson);
+    // Choices are kept only for items that were actually granted: a choice attached to a refused
+    // item is not a decision the user made about anything that will happen, and injecting it next
+    // turn would read as permission to act on the item they declined.
+    var choices = request.Choices?
+        .Where(entry => approvedIds.Contains(entry.Key))
+        .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
     var updated = card with
     {
         Status = "granted",
         GrantId = grantJson.GetProperty("grantId").GetString(),
         ApprovedItemIds = approvedIds.ToArray(),
+        Choices = choices is { Count: > 0 } ? choices : null,
     };
     await sessionStore.SetApprovalCardAsync(id, JsonSerializer.Serialize(updated, GoalCardJson), cancellationToken);
     events.Publish();
@@ -659,6 +666,26 @@ if (developmentDataDirectory is not null)
         // 500 is the adapter's hard cap (ValidateListRequest); 1000 made every dev call fail.
         var arguments = JsonSerializer.SerializeToElement(new { limit = 500 });
         return Results.Ok(await liveBackend.ListRhinoObjectsAsync(arguments, cancellationToken));
+    });
+    // Server-computed document audit, for harnesses that must check a claim WITHOUT asking the
+    // agent whether it is true. The product surface for this is the rhino_audit tool; this is the
+    // same backend call with no model in the loop, which is what a live gate needs to grade one.
+    api.MapGet("/dev/audit", async (
+        string kind,
+        double? tolerance,
+        double? bandFactor,
+        int? limit,
+        LiveDocumentBackend liveBackend,
+        CancellationToken cancellationToken) =>
+    {
+        var arguments = JsonSerializer.SerializeToElement(new
+        {
+            kind,
+            tolerance,
+            bandFactor,
+            limit = limit ?? 50,
+        });
+        return Results.Ok(await liveBackend.ReadRhinoAuditAsync(arguments, cancellationToken));
     });
     api.MapGet("/dev/grasshopper/{objectId:guid}/outputs", async (
         Guid objectId,

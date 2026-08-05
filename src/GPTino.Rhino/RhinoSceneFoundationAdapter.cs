@@ -54,7 +54,13 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
         ValidateListRequest(request);
 
         var matches = new List<RhinoSceneObjectSummary>(request.Limit + 1);
-        foreach (var rhinoObject in document.Objects
+        // The SAME enumerator the audits use, and for the same reason: this answers "what is in the
+        // document", which must mean one thing. Iterating `document.Objects` bare took RhinoCommon's
+        // default settings and listed DELETED objects — a live gate caught rhino_list still
+        // reporting an object the broker had just deleted and verified gone, which is a ghost the
+        // model would then reference, re-audit, and reason about. Hidden and locked objects DO
+        // exist and stay listed; deleted ones do not.
+        foreach (var rhinoObject in document.Objects.GetObjectList(AuditEnumerator())
                      .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
