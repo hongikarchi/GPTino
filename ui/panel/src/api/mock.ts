@@ -18,6 +18,28 @@ import type {
   FocusMode,
 } from "../types";
 
+/** A goal card mid-conversation so the demo shows the frame-before-you-build flow. */
+const demoGoalCard = JSON.stringify({
+  status: "proposing",
+  objective: "남측 파사드 패널을 네 가지 패밀리로 줄이되 주 그리드는 유지한다",
+  criteria: [
+    "패널 패밀리 수 <= 4 (컴포넌트 출력 카운트로 확인)",
+    "주 그리드 교점 좌표가 현재와 동일 (스냅샷 대조)",
+    "모든 컴포넌트가 런타임 오류 없이 커밋",
+  ],
+  assumptions: ["'남측'은 Facade::South 레이어를 뜻한다", "개구부 비율은 현재 값을 유지"],
+  outOfScope: ["구조 검토", "베이크"],
+  options: [
+    { id: "approve", label: "이대로 진행", detail: "위 기준으로 작업을 시작합니다" },
+    {
+      id: "keep-openings",
+      label: "개구부도 재계산",
+      detail: "패밀리 축소에 맞춰 개구부 비율까지 다시 잡습니다",
+      objectIds: ["a0b1c2d3-0001-4e4e-9f9f-000000000001"],
+    },
+    { id: "narrow", label: "한 베이만 시범", detail: "먼저 한 베이에만 적용해 결과를 봅니다" },
+  ],
+});
 const demoModels: ModelInfo[] = [
   {
     id: "gpt-5.6-sol",
@@ -89,6 +111,7 @@ const demoState: RuntimeState = {
       title: "Facade rationalization",
       summary: "Panel grid and boundary cleanup",
       status: "verifying",
+      goalCard: demoGoalCard,
       mode: "auto",
       role: "modeler",
       modelProfile: "xhigh",
@@ -368,6 +391,7 @@ const demoState: RuntimeState = {
 
 /** Demo-only prose-language preference so the header toggle round-trips without a server. */
 let demoLanguage = "en";
+
 
 const demoAudits: Record<RhinoAuditKind, RhinoAuditResult> = {
   nearMissEndpoints: {
@@ -930,10 +954,22 @@ export function createMockApiClient(): GptinoApiClient {
         if (model) state.sessions[index].effectiveModel = model;
       });
     },
-    async setSessionGoal(sessionId, enabled: boolean) {
+    async answerGoalCard(
+      sessionId: string,
+      answer: { status: "confirmed" | "rejected"; chosenOption?: string; objective?: string; criteria?: string[] },
+    ) {
       await delay();
       mutateSession(sessionId, (index) => {
-        state.sessions[index].goalEnabled = enabled;
+        const raw = state.sessions[index].goalCard;
+        if (!raw) return;
+        const card = JSON.parse(raw);
+        state.sessions[index].goalCard = JSON.stringify({
+          ...card,
+          status: answer.status,
+          objective: answer.objective ?? card.objective,
+          criteria: answer.criteria ?? card.criteria,
+          chosenOption: answer.chosenOption ?? card.chosenOption,
+        });
       });
     },
     async sendMessage(sessionId, request: MessageRequest) {

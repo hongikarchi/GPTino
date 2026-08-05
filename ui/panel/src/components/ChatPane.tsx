@@ -13,6 +13,7 @@ import type {
   CodexLimits,
   FocusMode,
   FocusResult,
+  GoalCard as GoalCardData,
   GptinoSession,
   GrasshopperDocInfo,
   MessageAttachment,
@@ -27,6 +28,7 @@ import { Icon } from "./Icons";
 import { StatusBadge } from "./StatusBadge";
 import { FocusChip } from "./FocusChip";
 import { AltChip } from "./AltChip";
+import { GoalCard } from "./GoalCard";
 import { parseMessageSegments } from "../messageMarkers";
 
 interface ChatPaneProps {
@@ -41,8 +43,13 @@ interface ChatPaneProps {
   onMode(mode: SessionMode): void;
   onModel(profile: ModelProfile): void;
   onPinModel(model: string | null): void;
-  /** Toggle the session's native Codex goal (objective + budget tracking) on/off. */
-  onGoal(enabled: boolean): void;
+  /** Answer the agent's proposed goal card (approve, optionally edited, or reject). */
+  onAnswerGoal(answer: {
+    status: "confirmed" | "rejected";
+    chosenOption?: string;
+    objective?: string;
+    criteria?: string[];
+  }): void;
   /** Bind the session's writes to a GH doc (docKey) or unbind with null. */
   onTarget(grasshopperDoc: string | null): void;
   /** Resolves false when the send failed (the composer restores its draft). */
@@ -240,7 +247,7 @@ function UsageStatusLine({ usage, limits }: { usage?: SessionUsage; limits?: Cod
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onGoal, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt, onAnswerGoal }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   // Which proposed alternative the user last asked to see, so the chips show what is on
   // screen right now (the preview itself lives wherever the owner renders it).
@@ -278,6 +285,17 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pasteCounter = useRef(0);
   const submitGate = useRef(false);
+
+  // The card travels as raw JSON so the wire shape has exactly one owner; a malformed card is
+  // dropped rather than crashing the stream.
+  const goalCard = useMemo(() => {
+    if (!session?.goalCard) return null;
+    try {
+      return JSON.parse(session.goalCard) as GoalCardData;
+    } catch {
+      return null;
+    }
+  }, [session?.goalCard]);
 
   const sessionConflicts = useMemo(
     () => (session ? conflicts.filter((conflict) => conflict.sessionIds.includes(session.id)) : []),
@@ -594,6 +612,16 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             </div>
           ),
         )}
+        {goalCard ? (
+          // Pinned after the transcript: a proposed card is the live question, and a confirmed
+          // or scored one is the standing contract for everything above it.
+          <GoalCard
+            card={goalCard}
+            busy={busyActions.has(`goal:${session.id}`)}
+            onAnswer={onAnswerGoal}
+            onFocus={onFocus}
+          />
+        ) : null}
         {session.status === "drafting" || session.status === "working" ? (
           <div className="thinking-row" aria-label="GPTino is working">
             <span />
@@ -685,21 +713,8 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
               </select>
             </div>
           ) : null}
-          <div className="quality-control goal-control">
-            <label htmlFor="goal-toggle">Goal</label>
-            <button
-              type="button"
-              id="goal-toggle"
-              className={`goal-toggle${session.goalEnabled ? " on" : ""}`}
-              role="switch"
-              aria-checked={session.goalEnabled ?? false}
-              onClick={() => onGoal(!(session.goalEnabled ?? false))}
-              disabled={busyActions.has(`goal:${session.id}`)}
-              title="Give this session's Codex thread a native goal (objective + progress/budget tracking). GPTino acceptance predicates still decide 'done'."
-            >
-              {session.goalEnabled ? "On" : "Off"}
-            </button>
-          </div>
+          {/* The Goal toggle is gone: goals are no longer a switch the user flips but a card the
+              agent proposes and the user answers (rendered in the stream above). */}
           {(grasshopperDocs && grasshopperDocs.length > 1) || session.boundGrasshopperDocId != null ? (
             // Also rendered when the bound doc is no longer registered (even with 0-1 docs
             // left): the selector is the panel's only unbind path, so hiding it would strand

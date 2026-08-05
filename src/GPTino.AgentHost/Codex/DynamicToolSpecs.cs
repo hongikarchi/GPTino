@@ -309,6 +309,99 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "goal_propose",
+                    "Frame what the user asked for BEFORE doing the work, and stop for their confirmation. " +
+                    "Use it when the request is ambiguous, large, destructive, or hard to reverse — not for " +
+                    "small obvious edits. Write the objective in one sentence in the user's own terms; make " +
+                    "each criterion something a tool result can decide (a predicate, a job outcome, a measured " +
+                    "value), never a feeling; list the assumptions you had to invent and what you are " +
+                    "deliberately leaving out. Options are the user's structured replies — give 2-4, put the " +
+                    "one you recommend first, and attach objectIds to an option when choosing it should also " +
+                    "show that geometry in the viewport. This tool does NOT run the work: after calling it, " +
+                    "end your turn and wait. The confirmed card returns on every later turn, and you will be " +
+                    "asked to score yourself against these exact criteria.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            objective = new { type = "string", description = "One sentence: what will be true when this is done." },
+                            criteria = new
+                            {
+                                type = "array",
+                                items = new { type = "string" },
+                                description = "Checks that decide success, each answerable from a tool result."
+                            },
+                            assumptions = new
+                            {
+                                type = "array",
+                                items = new { type = "string" },
+                                description = "What you had to assume because the request did not say."
+                            },
+                            outOfScope = new
+                            {
+                                type = "array",
+                                items = new { type = "string" },
+                                description = "What you are deliberately NOT doing, so the user can object now."
+                            },
+                            options = new
+                            {
+                                type = "array",
+                                items = new
+                                {
+                                    type = "object",
+                                    properties = new
+                                    {
+                                        id = new { type = "string", description = "Short stable id, e.g. approve / narrow-scope." },
+                                        label = new { type = "string", description = "What the user is choosing, in their language." },
+                                        detail = new { type = "string", description = "One line on what changes if they pick this." },
+                                        objectIds = new
+                                        {
+                                            type = "array",
+                                            items = new { type = "string", format = "uuid" },
+                                            description = "Rhino objects this option is about; the panel can show them."
+                                        }
+                                    },
+                                    required = new[] { "id", "label" },
+                                    additionalProperties = false
+                                }
+                            }
+                        },
+                        required = new[] { "objective", "criteria" },
+                        additionalProperties = false
+                    }),
+                Function(
+                    "goal_score",
+                    "Close out a confirmed goal by answering ITS criteria one by one. Every verdict must quote " +
+                    "the evidence that decided it — a job id, a predicate outcome, a measured output value. " +
+                    "'It looks right' is not evidence; if nothing verified a criterion, mark it failed and say " +
+                    "what is missing. Call this once the work is done, before your closing report.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            scores = new
+                            {
+                                type = "array",
+                                items = new
+                                {
+                                    type = "object",
+                                    properties = new
+                                    {
+                                        criterion = new { type = "string", description = "The criterion verbatim from the confirmed card." },
+                                        passed = new { type = "boolean" },
+                                        evidence = new { type = "string", description = "Job id / predicate / measured value that decided it." }
+                                    },
+                                    required = new[] { "criterion", "passed", "evidence" },
+                                    additionalProperties = false
+                                }
+                            }
+                        },
+                        required = new[] { "scores" },
+                        additionalProperties = false
+                    }),
+                Function(
                     "memory_append",
                     "Append a durable note to this project's MEMORY.md (append-only, folded into every future session for " +
                     "this project). Use ONLY for a non-obvious, reusable lesson: a symptom -> cause -> fix, a hard project " +

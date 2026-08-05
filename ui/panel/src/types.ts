@@ -124,6 +124,29 @@ export type RhinoAuditKind =
   | "purgeCandidates";
 
 /** Viewport focus modes: select+zoom, or additionally hide/lock everything else, or put it back. */
+/**
+ * What the agent understood the request to be, framed before the work starts. The user answers
+ * it (approve / narrow / correct), and the same criteria come back as the self-score at the end.
+ */
+export interface GoalCard {
+  status: "proposing" | "confirmed" | "rejected" | "scored";
+  objective: string;
+  criteria: string[];
+  assumptions?: string[];
+  outOfScope?: string[];
+  options?: GoalOption[];
+  chosenOption?: string | null;
+  scores?: { criterion: string; passed: boolean; evidence: string }[];
+}
+
+export interface GoalOption {
+  id: string;
+  label: string;
+  detail?: string | null;
+  /** Rhino objects this option is about — choosing it can show them in the viewport. */
+  objectIds?: string[] | null;
+}
+
 export type FocusMode = "select" | "isolate" | "lock" | "restore";
 
 export interface FocusResult {
@@ -201,6 +224,8 @@ export interface GptinoSession {
   modelProfile: ModelProfile;
   pinnedModel?: string | null;
   goalEnabled?: boolean;
+  /** Raw goal-card JSON from the server (parsed by the card component). */
+  goalCard?: string | null;
   backend?: string;
   effectiveModel?: string;
   reasoning?: string;

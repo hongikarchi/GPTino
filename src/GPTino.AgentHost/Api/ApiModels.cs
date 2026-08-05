@@ -25,11 +25,39 @@ public sealed record SessionRecord(
     // Opt-in: when true, the session's Codex thread gets a native goal (objective + optional budget)
     // via thread/goal/set. Off by default.
     bool GoalEnabled = false,
+    // The goal card as opaque JSON (GoalCard shape below), or null before the agent has framed
+    // one. The store persists it; the agent proposes it and the user confirms it.
+    string? GoalCard = null,
     // Orthogonal to Role: Role says WHO the session is (modeler|curator|read-only, fixed at
     // creation), Mode says HOW it currently runs (auto|plan, user-toggleable). Before the curator
     // work plan mode was encoded by rewriting Role to 'planner', which made a mode flip erase the
     // session's identity.
     string Mode = "auto");
+
+/// <summary>
+/// What the agent understood the user to be asking for, framed BEFORE the work starts so the
+/// user can correct it cheaply: the objective in one line, the criteria that will decide whether
+/// it worked, the assumptions the agent had to make, and what it is deliberately leaving out.
+/// The options are the user's structured replies (approve / narrow / correct …), each optionally
+/// carrying Rhino object ids so choosing one can also show what it means in the viewport.
+/// Lifecycle: proposing -> confirmed -> scored (or rejected).
+/// </summary>
+public sealed record GoalCard(
+    string Status,
+    string Objective,
+    IReadOnlyList<string> Criteria,
+    IReadOnlyList<string> Assumptions,
+    IReadOnlyList<string> OutOfScope,
+    IReadOnlyList<GoalOption>? Options = null,
+    string? ChosenOption = null,
+    IReadOnlyList<GoalCriterionScore>? Scores = null,
+    DateTimeOffset? ProposedAt = null,
+    DateTimeOffset? ConfirmedAt = null);
+
+public sealed record GoalOption(string Id, string Label, string? Detail = null, IReadOnlyList<Guid>? ObjectIds = null);
+
+/// <summary>One criterion's verdict. Evidence must quote a job/predicate result, never a claim.</summary>
+public sealed record GoalCriterionScore(string Criterion, bool Passed, string Evidence);
 
 public sealed record ChatMessage(
     long Id,
@@ -85,7 +113,16 @@ public sealed record SetModeRequest(string Mode);
 
 public sealed record SetModelRequest(string ModelProfile, string? Model = null);
 
-public sealed record SetGoalRequest(bool Enabled);
+/// <summary>
+/// The user's answer to a proposed goal card. Status is "confirmed" or "rejected"; the optional
+/// edits let the user correct the objective/criteria before approving (approve-what-you-saw:
+/// whatever comes back is what the agent is held to).
+/// </summary>
+public sealed record SetGoalRequest(
+    string Status,
+    string? ChosenOption = null,
+    string? Objective = null,
+    IReadOnlyList<string>? Criteria = null);
 
 public sealed record RuntimeStatus(
     string State,

@@ -75,6 +75,8 @@ public sealed class RuntimeStateProjector
                 modelProfile = ProjectModelProfile(session.ModelProfile),
                 pinnedModel = session.Model,
                 goalEnabled = session.GoalEnabled,
+            // Raw card JSON: the panel parses it (one shape, one owner) and renders the card.
+            goalCard = session.GoalCard,
                 backend = "codex",
                 effectiveModel = hasEffectiveModel ? effectiveModel.Model : null,
                 reasoning = hasEffectiveModel ? effectiveModel.Reasoning : null,

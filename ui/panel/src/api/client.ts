@@ -46,7 +46,11 @@ export interface GptinoApiClient {
   setSessionMode(sessionId: string, mode: SessionMode): Promise<void>;
   setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
   /** Toggle the session's native Codex thread goal (objective + budget) on/off. */
-  setSessionGoal(sessionId: string, enabled: boolean): Promise<void>;
+  /** Answer a proposed goal card: approve (optionally edited) or reject. */
+  answerGoalCard(
+    sessionId: string,
+    answer: { status: "confirmed" | "rejected"; chosenOption?: string; objective?: string; criteria?: string[] },
+  ): Promise<void>;
   sendMessage(sessionId: string, request: MessageRequest): Promise<void>;
   /** Soft-delete: hide from the active list, recoverable from the trash. */
   deleteSession(sessionId: string): Promise<void>;
@@ -273,10 +277,13 @@ class HttpApiClient implements GptinoApiClient {
     });
   }
 
-  setSessionGoal(sessionId: string, enabled: boolean): Promise<void> {
+  answerGoalCard(
+    sessionId: string,
+    answer: { status: "confirmed" | "rejected"; chosenOption?: string; objective?: string; criteria?: string[] },
+  ): Promise<void> {
     return this.request(`/sessions/${encodeURIComponent(sessionId)}/goal`, {
       method: "PUT",
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify(answer),
     });
   }
 

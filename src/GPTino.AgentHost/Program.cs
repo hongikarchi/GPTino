@@ -484,13 +484,42 @@ api.MapPut("/sessions/{id:guid}/model", async (
     return Results.NoContent();
 });
 
+// Goal cards travel as camelCase JSON in one column and one SSE field; the panel and the agent
+// tool both read this exact shape.
+var GoalCardJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+// The user's verdict on a proposed goal card. Confirming (optionally with edits) is what the
+// agent is held to afterwards: the confirmed card rides every following turn's input, and the
+// self-score at the end must answer these criteria. A human pressed this — never an agent step.
 api.MapPut("/sessions/{id:guid}/goal", async (
     Guid id,
     SetGoalRequest request,
     SessionStore sessionStore,
     CancellationToken cancellationToken) =>
 {
-    await sessionStore.SetGoalEnabledAsync(id, request.Enabled, cancellationToken);
+    var session = await sessionStore.FindSessionAsync(id, cancellationToken);
+    if (session?.GoalCard is null)
+    {
+        return Results.NotFound(new ApiError("goal_card_absent", "This session has no goal card to answer."));
+    }
+    var card = JsonSerializer.Deserialize<GoalCard>(session.GoalCard, GoalCardJson);
+    if (card is null)
+    {
+        return Results.NotFound(new ApiError("goal_card_unreadable", "The stored goal card could not be read."));
+    }
+    var status = string.Equals(request.Status, "confirmed", StringComparison.OrdinalIgnoreCase)
+        ? "confirmed"
+        : "rejected";
+    var updated = card with
+    {
+        Status = status,
+        // Edits win: the user is held to what they approved, not to what was proposed.
+        Objective = string.IsNullOrWhiteSpace(request.Objective) ? card.Objective : request.Objective!,
+        Criteria = request.Criteria is { Count: > 0 } ? request.Criteria : card.Criteria,
+        ChosenOption = request.ChosenOption ?? card.ChosenOption,
+        ConfirmedAt = DateTimeOffset.UtcNow,
+    };
+    await sessionStore.SetGoalCardAsync(id, JsonSerializer.Serialize(updated, GoalCardJson), cancellationToken);
     events.Publish();
     return Results.NoContent();
 });

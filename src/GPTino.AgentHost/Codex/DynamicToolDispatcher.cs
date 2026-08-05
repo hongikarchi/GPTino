@@ -169,6 +169,10 @@ public sealed class DynamicToolDispatcher
                     await _backend.ReadJobAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "skill_read" => DynamicToolResult.Ok(RequireSkills().Read(TryString(call.Arguments, "name"))),
                 "memory_append" => AppendMemory(call),
+                "goal_propose" => DynamicToolResult.Ok(
+                    await ProposeGoalAsync(call, cancellationToken).ConfigureAwait(false)),
+                "goal_score" => DynamicToolResult.Ok(
+                    await ScoreGoalAsync(call, cancellationToken).ConfigureAwait(false)),
                 "data_read" => DynamicToolResult.Ok(RequireData().Read(TryString(call.Arguments, "name"))),
                 _ => DynamicToolResult.Fail($"Unsupported GPTino tool: {call.Tool}")
             };
@@ -445,6 +449,108 @@ public sealed class DynamicToolDispatcher
         CancellationToken cancellationToken) =>
         await _store.FindSessionByThreadAsync(threadId, cancellationToken).ConfigureAwait(false)
         ?? throw new InvalidOperationException("The calling Codex thread is not bound to a GPTino session.");
+
+    /// <summary>
+    /// Stores the agent's proposed goal card and hands the turn back to the user. Nothing about
+    /// the document changes here — this is the "frame it before you build it" step, and the tool
+    /// result deliberately tells the agent to stop rather than proceed on an unconfirmed reading.
+    /// </summary>
+    private async Task<object> ProposeGoalAsync(DynamicToolCall call, CancellationToken cancellationToken)
+    {
+        var session = await RequireCallingSessionAsync(call.ThreadId, cancellationToken).ConfigureAwait(false);
+        var card = new GoalCard(
+            Status: "proposing",
+            Objective: TryString(call.Arguments, "objective") ?? string.Empty,
+            Criteria: TryStringList(call.Arguments, "criteria"),
+            Assumptions: TryStringList(call.Arguments, "assumptions"),
+            OutOfScope: TryStringList(call.Arguments, "outOfScope"),
+            Options: TryOptions(call.Arguments),
+            ProposedAt: DateTimeOffset.UtcNow);
+        await _store.SetGoalCardAsync(
+            session.Id,
+            JsonSerializer.Serialize(card, GoalJson),
+            cancellationToken).ConfigureAwait(false);
+        return new
+        {
+            status = "awaiting_user_confirmation",
+            message = "The goal card is on screen. End your turn now — do not start the work. "
+                + "The confirmed card (with any edits the user makes) arrives with the next turn.",
+        };
+    }
+
+    /// <summary>Records the agent's self-score against the confirmed card's own criteria.</summary>
+    private async Task<object> ScoreGoalAsync(DynamicToolCall call, CancellationToken cancellationToken)
+    {
+        var session = await RequireCallingSessionAsync(call.ThreadId, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(session.GoalCard))
+        {
+            throw new InvalidOperationException("This session has no goal card to score.");
+        }
+        var card = JsonSerializer.Deserialize<GoalCard>(session.GoalCard!, GoalJson)
+            ?? throw new InvalidOperationException("The stored goal card could not be read.");
+        var scores = new List<GoalCriterionScore>();
+        if (call.Arguments.ValueKind == JsonValueKind.Object &&
+            call.Arguments.TryGetProperty("scores", out var raw) &&
+            raw.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in raw.EnumerateArray())
+            {
+                scores.Add(new GoalCriterionScore(
+                    TryString(item, "criterion") ?? string.Empty,
+                    item.TryGetProperty("passed", out var passed) && passed.ValueKind == JsonValueKind.True,
+                    TryString(item, "evidence") ?? string.Empty));
+            }
+        }
+        var updated = card with { Status = "scored", Scores = scores };
+        await _store.SetGoalCardAsync(
+            session.Id,
+            JsonSerializer.Serialize(updated, GoalJson),
+            cancellationToken).ConfigureAwait(false);
+        return new { status = "scored", criteria = scores.Count, passed = scores.Count(s => s.Passed) };
+    }
+
+    private static readonly JsonSerializerOptions GoalJson = new(JsonSerializerDefaults.Web);
+
+    private static IReadOnlyList<string> TryStringList(JsonElement arguments, string property) =>
+        arguments.ValueKind == JsonValueKind.Object &&
+        arguments.TryGetProperty(property, out var value) &&
+        value.ValueKind == JsonValueKind.Array
+            ? value.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString()!)
+                .ToArray()
+            : [];
+
+    private static IReadOnlyList<GoalOption>? TryOptions(JsonElement arguments)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object ||
+            !arguments.TryGetProperty("options", out var raw) ||
+            raw.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+        var options = new List<GoalOption>();
+        foreach (var item in raw.EnumerateArray())
+        {
+            var ids = new List<Guid>();
+            if (item.TryGetProperty("objectIds", out var idArray) && idArray.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var id in idArray.EnumerateArray())
+                {
+                    if (id.ValueKind == JsonValueKind.String && Guid.TryParse(id.GetString(), out var parsed))
+                    {
+                        ids.Add(parsed);
+                    }
+                }
+            }
+            options.Add(new GoalOption(
+                TryString(item, "id") ?? string.Empty,
+                TryString(item, "label") ?? string.Empty,
+                TryString(item, "detail"),
+                ids.Count > 0 ? ids : null));
+        }
+        return options.Count > 0 ? options : null;
+    }
 
     private string SessionArtifactRoot(Guid sessionId) =>
         Path.Combine(_artifactRoot, sessionId.ToString("N"));

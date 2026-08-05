@@ -260,11 +260,17 @@ export function useRuntime() {
           (activeClient) => activeClient.setSessionModel(sessionId, modelProfile, model),
         );
       },
-      setGoal(sessionId: string, enabled: boolean) {
+      // The user's verdict on a proposed goal card. No optimistic patch: the server rewrites the
+      // card (status + any edits) and the next SSE push is the truth — showing an approved card
+      // before the server accepted it would be exactly the false-success this project refuses.
+      answerGoal(
+        sessionId: string,
+        answer: { status: "confirmed" | "rejected"; chosenOption?: string; objective?: string; criteria?: string[] },
+      ) {
         return runAction(
           `goal:${sessionId}`,
-          updateSession(sessionId, (session) => ({ ...session, goalEnabled: enabled })),
-          (activeClient) => activeClient.setSessionGoal(sessionId, enabled),
+          undefined,
+          (activeClient) => activeClient.answerGoalCard(sessionId, answer),
         );
       },
       async sendMessage(sessionId: string, content: string, attachments?: MessageAttachment[]) {

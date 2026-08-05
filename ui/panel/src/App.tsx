@@ -563,7 +563,7 @@ export default function App() {
             onMode={(mode) => selected && void actions.setMode(selected.id, mode)}
             onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
             onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
-            onGoal={(enabled) => selected && void actions.setGoal(selected.id, enabled)}
+            onAnswerGoal={(answer) => selected && void actions.answerGoal(selected.id, answer)}
             onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
             onSend={(content, attachments) => {
               if (!selected) return undefined;
@@ -692,7 +692,7 @@ export default function App() {
               curatorSession && void actions.setModel(curatorSession.id, profile, curatorSession.pinnedModel ?? null)}
             onPinModel={(model) =>
               curatorSession && void actions.setModel(curatorSession.id, curatorSession.modelProfile, model)}
-            onGoal={(enabled) => curatorSession && void actions.setGoal(curatorSession.id, enabled)}
+            onAnswerGoal={(answer) => curatorSession && void actions.answerGoal(curatorSession.id, answer)}
             onTarget={() => undefined}
             onSend={(content, attachments) => {
               if (!curatorSession) return undefined;

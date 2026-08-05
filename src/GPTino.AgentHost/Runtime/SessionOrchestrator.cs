@@ -558,12 +558,57 @@ public sealed class SessionOrchestrator : IDisposable
     /// document's context; an unbound session falls back to the sole registered document (the
     /// pre-multi-document behavior) and gets no hint when several documents are open.
     /// </summary>
+    /// <summary>
+    /// Renders the session's CONFIRMED goal card for the turn input. Proposed-but-unanswered and
+    /// rejected cards are deliberately not rendered: an unconfirmed reading must not look like a
+    /// mandate, and a rejected one is history.
+    /// </summary>
+    private static string? ComposeGoalBlock(SessionRecord session)
+    {
+        if (string.IsNullOrWhiteSpace(session.GoalCard)) return null;
+        GoalCard? card;
+        try
+        {
+            card = JsonSerializer.Deserialize<GoalCard>(session.GoalCard!, GoalJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (card is null || !string.Equals(card.Status, "confirmed", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        var builder = new StringBuilder("<gptino_goal>");
+        builder.Append("Confirmed objective: ").Append(card.Objective).Append(' ');
+        if (card.Criteria.Count > 0)
+        {
+            builder.Append("Done when: ").Append(string.Join(" | ", card.Criteria)).Append(' ');
+        }
+        if (card.OutOfScope.Count > 0)
+        {
+            builder.Append("Out of scope: ").Append(string.Join(" | ", card.OutOfScope)).Append(' ');
+        }
+        if (!string.IsNullOrWhiteSpace(card.ChosenOption))
+        {
+            builder.Append("User chose: ").Append(card.ChosenOption).Append(' ');
+        }
+        builder.Append("Call goal_score against these criteria before your closing report.");
+        builder.Append("</gptino_goal>");
+        return builder.ToString();
+    }
+
+    private static readonly JsonSerializerOptions GoalJson = new(JsonSerializerDefaults.Web);
+
     private string ComposeTurnInput(SessionRecord session, string content, string? attachmentsBlock = null)
     {
         if (!string.IsNullOrEmpty(attachmentsBlock))
         {
             content = content.Length > 0 ? $"{content}\n{attachmentsBlock}" : attachmentsBlock;
         }
+        // A confirmed goal rides EVERY later turn, not just the one that framed it — the agent is
+        // held to what the user approved, and the closing goal_score answers these exact criteria.
+        var goalBlock = ComposeGoalBlock(session);
         var selection = _selectionContext?.SelectionFor(session.GrasshopperDoc);
         var digest = _selectionContext?.CanvasDigestFor(session.GrasshopperDoc);
         var grasshopperObjects = selection?.GrasshopperObjects;
@@ -573,9 +618,13 @@ public sealed class SessionOrchestrator : IDisposable
              !string.IsNullOrWhiteSpace(selection.ActiveLayerName));
         if (!hasSelection && digest is null)
         {
-            return content;
+            return goalBlock is null ? content : $"{goalBlock}\n{content}";
         }
         var builder = new StringBuilder();
+        if (goalBlock is not null)
+        {
+            builder.Append(goalBlock).Append('\n');
+        }
         builder.Append("<gptino_context>");
         if (digest is not null)
         {

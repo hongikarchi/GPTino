@@ -1142,6 +1142,123 @@ button.llm-auth:hover strong {
   background: color-mix(in srgb, var(--warn, #d9a441) 18%, transparent);
 }
 
+/* Goal card: the agent's reading of the request, answered before the work starts. Sits in the
+   chat stream (not a modal) because it is part of the conversation, not an interruption. */
+.goal-card {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--accent, #4a9eff);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #4a9eff) 6%, var(--surface-2));
+  font-size: var(--fs-body);
+}
+
+.goal-card.goal-confirmed,
+.goal-card.goal-scored {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.goal-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.goal-card-badge {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--dim);
+  font-size: var(--fs-micro);
+  font-family: var(--mono);
+}
+
+.goal-card-objective {
+  margin: 0 0 8px;
+}
+
+.goal-card-block {
+  margin-bottom: 8px;
+}
+
+.goal-card-label {
+  display: block;
+  color: var(--dim);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.goal-card-block ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.goal-card-block li.pass {
+  color: var(--ok, #7ac74f);
+}
+
+.goal-card-block li.fail {
+  color: var(--danger, #e5534b);
+}
+
+.goal-card-evidence {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+}
+
+.goal-card-edit {
+  width: 100%;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.goal-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.goal-card-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.goal-card-choose {
+  padding: 3px 10px;
+  border: 1px solid var(--accent, #4a9eff);
+  border-radius: 6px;
+  color: var(--accent, #4a9eff);
+  background: color-mix(in srgb, var(--accent, #4a9eff) 10%, transparent);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+.goal-card-choose:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #4a9eff) 22%, transparent);
+}
+
+.goal-card-show {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
 .language-toggle {
   min-width: 34px;
   padding: 2px 7px;
