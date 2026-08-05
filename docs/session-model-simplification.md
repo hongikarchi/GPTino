@@ -50,8 +50,20 @@ provenance default-deny + 승인 grant, fingerprint CAS, managed history/undo, �
      `smoke-agenthost.ps1`의 `role='planner'` 제거, `docs/modes.md` 폐기,
      `docs/curator-plan.md`은 **기록으로 보존**(감사 엔진·typed op·데이터뷰의 설계 근거라서)
   - 검증: 서버 369/369, 패널 34/34 + typecheck + build 통과
-- ⬜ **라이브 게이트**: 감사 → 승인 카드 → grant → 수정이 새 위치(일반 세션)에서 끝까지 통과하는지
-- ⬜ **artifacts 프루닝** (26.4GB, dev-loop 런 1,234개) — dry-run 목록 승인 후 실행 + 자동 프루닝 추가
+- ✅ **라이브 게이트** (`abde571`) — `scripts/gate-approval.ps1`. 일반 세션에서 감사 → goal 카드 →
+  확인 → 승인 카드 → grant → 수정 → 검증까지 실Rhino로 통과. 3건 중 **2건만 승인**해서 거부한 건이
+  살아남는지까지 확인. 전제조건: `-SceneKind hygiene` 픽스처(끝점 갭 0.005/0.003mm + 근접중복
+  0.0005mm를 tolerance 0.001mm에 고정). 게이트는 시작 시 픽스처가 실제로 findings를 내는지 먼저
+  확인하고 아니면 throw — **빈 결과에 매기는 점수는 통과가 아니라 미실행**이기 때문.
+  - 게이트가 잡아낸 결함 2건: ① 사용자가 고른 **선택지가 에이전트에 전달되지 않아** 이미 답한 질문을
+    다시 물음 → `ApprovalCard.Choices` 저장 + 턴 주입 ② `rhino_list`가 **삭제된 객체를 계속 보고**
+    → 감사와 같은 열거자로 통일
+  - `GET /dev/audit` 복원(dev 전용): 제품 표면에서 뺀 건 맞지만, **에이전트에게 묻지 않고 주장을
+    검증할 수단**까지 없애면 라이브 게이트가 채점을 못 한다
+- ✅ **artifacts 프루닝** (`fdc7b4c`) — 26.57GB/318,145파일 → **0.88GB/2,307파일**.
+  `scripts/prune-artifacts.ps1`(기본 dry-run), dev-loop이 매 실행 전 `-KeepRuns 10`으로 자동 정리.
+  부수 발견: dev-loop이 **일회성 증거 디렉터리 안에서** `bench.gh` 템플릿을 찾고 있어 첫 정리에
+  런처가 깨짐 → `scripts/fixtures/empty-definition.gh`로 이전
 
 ## 무엇이 사라지고 무엇이 남았나
 
