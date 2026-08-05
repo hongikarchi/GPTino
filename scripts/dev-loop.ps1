@@ -25,6 +25,10 @@ param(
     # Launch WITHOUT opening Grasshopper, to exercise the Rhino-only target.
     [switch]$NoGrasshopper,
     [int]$ReadyTimeoutSeconds = 120,
+    # Evidence retention. Runs are never cleaned up by themselves (that is deliberate), which is how
+    # artifacts/ reached 26 GB / 318k files; each launch now prunes down to this many past runs
+    # first. 0 disables pruning for this launch.
+    [int]$KeepRuns = 10,
     [string]$RhinoExe = 'C:\Program Files\Rhino 8\System\Rhino.exe'
 )
 
@@ -34,6 +38,13 @@ $repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 if (-not (Test-Path -LiteralPath $RhinoExe)) { throw "Rhino not found: $RhinoExe" }
 if (Get-Process -Name Rhino -ErrorAction SilentlyContinue) {
     throw 'Rhino is running. Close it completely before starting a dev-loop run.'
+}
+
+# --- prune old evidence before adding more ---------------------------------------
+# Runs before the new directory exists, so KeepRuns counts PAST runs and this launch is extra.
+if ($KeepRuns -gt 0) {
+    & (Join-Path $PSScriptRoot 'prune-artifacts.ps1') -KeepRuns $KeepRuns -Execute |
+        Select-Object -Last 1 | ForEach-Object { Write-Host $_ }
 }
 
 # --- marked run directory (must satisfy DevelopmentDataDirectoryPolicy) ---------
@@ -54,11 +65,13 @@ $sceneName = if ($SceneKind -eq 'paneling') { 'scene.3dm' } else { "scene-$Scene
 $scene3dm = Join-Path $runRoot $sceneName
 $sceneGh = Join-Path $runRoot 'scene.gh'
 
-# Empty saved Grasshopper doc (canonical 1631-byte template reused from a prior run).
-$emptyGh = Get-ChildItem (Join-Path $repo 'artifacts\dev-loop') -Recurse -Filter 'bench.gh' -File |
-    Where-Object { $_.Length -eq 1631 } | Select-Object -First 1
-if (-not $emptyGh) { throw 'No empty (1631-byte) bench.gh template found to seed scene.gh.' }
-Copy-Item -LiteralPath $emptyGh.FullName -Destination $sceneGh -Force
+# Empty saved Grasshopper doc. This used to be found by scanning artifacts/dev-loop for a
+# 1631-byte bench.gh -- i.e. the harness depended on a file living inside DISPOSABLE evidence
+# directories, and the first prune of that tree took the launcher down with it. The template is a
+# fixture, so it lives with the scripts (force-added past the *.gh ignore rule).
+$emptyGh = Join-Path $PSScriptRoot 'fixtures\empty-definition.gh'
+if (-not (Test-Path -LiteralPath $emptyGh)) { throw "Missing Grasshopper template fixture: $emptyGh" }
+Copy-Item -LiteralPath $emptyGh -Destination $sceneGh -Force
 
 # Paneling geometry: generate scene.3dm via a synchronous RhinoPython pass.
 if ($RegenerateScene -or -not (Test-Path -LiteralPath $scene3dm)) {
