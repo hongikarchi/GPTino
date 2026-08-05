@@ -564,6 +564,7 @@ export default function App() {
             onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
             onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
             onAnswerGoal={(answer) => selected && void actions.answerGoal(selected.id, answer)}
+            onAnswerApproval={(answer) => selected && void actions.answerApproval(selected.id, answer)}
             onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
             onSend={(content, attachments) => {
               if (!selected) return undefined;
@@ -693,6 +694,7 @@ export default function App() {
             onPinModel={(model) =>
               curatorSession && void actions.setModel(curatorSession.id, curatorSession.modelProfile, model)}
             onAnswerGoal={(answer) => curatorSession && void actions.answerGoal(curatorSession.id, answer)}
+            onAnswerApproval={(answer) => curatorSession && void actions.answerApproval(curatorSession.id, answer)}
             onTarget={() => undefined}
             onSend={(content, attachments) => {
               if (!curatorSession) return undefined;

@@ -28,6 +28,8 @@ public sealed record SessionRecord(
     // The goal card as opaque JSON (GoalCard shape below), or null before the agent has framed
     // one. The store persists it; the agent proposes it and the user confirms it.
     string? GoalCard = null,
+    // A pending/answered approval card as opaque JSON (ApprovalCard shape), or null.
+    string? ApprovalCard = null,
     // Orthogonal to Role: Role says WHO the session is (modeler|curator|read-only, fixed at
     // creation), Mode says HOW it currently runs (auto|plan, user-toggleable). Before the curator
     // work plan mode was encoded by rewriting Role to 'planner', which made a mode flip erase the
@@ -85,6 +87,38 @@ public sealed record CreateSessionRequest(
 public sealed record SetSessionTargetRequest(string? GrasshopperDoc = null);
 
 /// <summary>One (objectId, fingerprint) pair the approval card displayed.</summary>
+/// <summary>
+/// A destructive fix the agent wants to make to geometry the USER owns. The broker refuses those
+/// by default, so the agent lists exactly what it would touch and the user picks. Each item is
+/// pinned to the fingerprint that was audited: if the object moved since, the grant no longer
+/// matches it and the fix fails instead of hitting something else (approve-what-you-saw).
+/// Lifecycle: proposing -> granted (carries grantId) or rejected.
+/// </summary>
+public sealed record ApprovalCard(
+    string Status,
+    string Summary,
+    IReadOnlyList<ApprovalItem> Items,
+    string? GrantId = null,
+    IReadOnlyList<string>? ApprovedItemIds = null,
+    DateTimeOffset? ProposedAt = null);
+
+/// <summary>
+/// One reviewable fix. Choices exist for findings where the machine must not decide — which of two
+/// near-duplicates to keep is the user's call, because design-option stacks are intentional.
+/// </summary>
+public sealed record ApprovalItem(
+    string Id,
+    string Label,
+    string? Measure,
+    IReadOnlyList<ApprovalGrantItem> Targets,
+    IReadOnlyList<string>? Choices = null);
+
+/// <summary>The user's answer: which items to grant, plus any per-item choice they made.</summary>
+public sealed record AnswerApprovalRequest(
+    string Status,
+    IReadOnlyList<string>? ApprovedItemIds = null,
+    IReadOnlyDictionary<string, string>? Choices = null);
+
 public sealed record ApprovalGrantItem(Guid ObjectId, string Fingerprint);
 
 public sealed record MintApprovalGrantRequest(IReadOnlyList<ApprovalGrantItem> Items);

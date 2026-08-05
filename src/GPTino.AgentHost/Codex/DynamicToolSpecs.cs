@@ -371,6 +371,64 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "approval_request",
+                    "Ask the user to approve destructive fixes to geometry THEY made. The broker refuses " +
+                    "delete/modify/transform on objects without GPTino provenance unless the ChangeSet " +
+                    "carries an approvalGrantId, and this is how you get one. List exactly what you would " +
+                    "touch, one item per finding, each with the objectIds AND the fingerprints rhino_audit " +
+                    "returned — the grant binds to those fingerprints, so a stale one fails the fix instead " +
+                    "of hitting a moved object. Add choices when the machine must not decide (which of two " +
+                    "near-duplicates to keep is always the user's call). Never bundle unrelated fixes into " +
+                    "one item. This tool does NOT change anything: after calling it, end your turn. The " +
+                    "granted items and the grantId arrive with the next turn.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            summary = new { type = "string", description = "One line: what you audited and what you propose." },
+                            items = new
+                            {
+                                type = "array",
+                                items = new
+                                {
+                                    type = "object",
+                                    properties = new
+                                    {
+                                        id = new { type = "string", description = "Finding id from the audit result." },
+                                        label = new { type = "string", description = "What this fix does, in the user's language." },
+                                        measure = new { type = "string", description = "The measured value verbatim (gap, distance), with units." },
+                                        targets = new
+                                        {
+                                            type = "array",
+                                            items = new
+                                            {
+                                                type = "object",
+                                                properties = new
+                                                {
+                                                    objectId = new { type = "string", format = "uuid" },
+                                                    fingerprint = new { type = "string", description = "The fingerprint the audit reported for that object." }
+                                                },
+                                                required = new[] { "objectId", "fingerprint" },
+                                                additionalProperties = false
+                                            }
+                                        },
+                                        choices = new
+                                        {
+                                            type = "array",
+                                            items = new { type = "string" },
+                                            description = "Options only a human should pick between, e.g. which copy to keep."
+                                        }
+                                    },
+                                    required = new[] { "id", "label", "targets" },
+                                    additionalProperties = false
+                                }
+                            }
+                        },
+                        required = new[] { "summary", "items" },
+                        additionalProperties = false
+                    }),
+                Function(
                     "goal_score",
                     "Close out a confirmed goal by answering ITS criteria one by one. Every verdict must quote " +
                     "the evidence that decided it — a job id, a predicate outcome, a measured output value. " +

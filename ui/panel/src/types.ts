@@ -147,6 +147,24 @@ export interface GoalOption {
   objectIds?: string[] | null;
 }
 
+/** Destructive fixes to the user's own geometry, listed for item-by-item approval. */
+export interface ApprovalCard {
+  status: "proposing" | "granted" | "rejected";
+  summary: string;
+  items: ApprovalItem[];
+  grantId?: string | null;
+  approvedItemIds?: string[] | null;
+}
+
+export interface ApprovalItem {
+  id: string;
+  label: string;
+  measure?: string | null;
+  /** Each target pins an object to the fingerprint that was audited. */
+  targets: { objectId: string; fingerprint: string }[];
+  choices?: string[] | null;
+}
+
 export type FocusMode = "select" | "isolate" | "lock" | "restore";
 
 export interface FocusResult {
@@ -226,6 +244,8 @@ export interface GptinoSession {
   goalEnabled?: boolean;
   /** Raw goal-card JSON from the server (parsed by the card component). */
   goalCard?: string | null;
+  /** Raw approval-card JSON from the server (parsed by the card component). */
+  approvalCard?: string | null;
   backend?: string;
   effectiveModel?: string;
   reasoning?: string;

@@ -173,6 +173,8 @@ public sealed class DynamicToolDispatcher
                     await ProposeGoalAsync(call, cancellationToken).ConfigureAwait(false)),
                 "goal_score" => DynamicToolResult.Ok(
                     await ScoreGoalAsync(call, cancellationToken).ConfigureAwait(false)),
+                "approval_request" => DynamicToolResult.Ok(
+                    await RequestApprovalAsync(call, cancellationToken).ConfigureAwait(false)),
                 "data_read" => DynamicToolResult.Ok(RequireData().Read(TryString(call.Arguments, "name"))),
                 _ => DynamicToolResult.Fail($"Unsupported GPTino tool: {call.Tool}")
             };
@@ -507,6 +509,64 @@ public sealed class DynamicToolDispatcher
             JsonSerializer.Serialize(updated, GoalJson),
             cancellationToken).ConfigureAwait(false);
         return new { status = "scored", criteria = scores.Count, passed = scores.Count(s => s.Passed) };
+    }
+
+    /// <summary>
+    /// Stores what the agent wants approved on the user's own geometry and hands the turn back.
+    /// Nothing is granted here — the user grants, item by item, from the card.
+    /// </summary>
+    private async Task<object> RequestApprovalAsync(DynamicToolCall call, CancellationToken cancellationToken)
+    {
+        var session = await RequireCallingSessionAsync(call.ThreadId, cancellationToken).ConfigureAwait(false);
+        var items = new List<ApprovalItem>();
+        if (call.Arguments.ValueKind == JsonValueKind.Object &&
+            call.Arguments.TryGetProperty("items", out var rawItems) &&
+            rawItems.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in rawItems.EnumerateArray())
+            {
+                var targets = new List<ApprovalGrantItem>();
+                if (item.TryGetProperty("targets", out var rawTargets) && rawTargets.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var target in rawTargets.EnumerateArray())
+                    {
+                        if (Guid.TryParse(TryString(target, "objectId"), out var objectId))
+                        {
+                            targets.Add(new ApprovalGrantItem(objectId, TryString(target, "fingerprint") ?? string.Empty));
+                        }
+                    }
+                }
+                if (targets.Count == 0) continue; // an item nothing can be pinned to is not reviewable
+                items.Add(new ApprovalItem(
+                    TryString(item, "id") ?? Guid.NewGuid().ToString("N")[..8],
+                    TryString(item, "label") ?? string.Empty,
+                    TryString(item, "measure"),
+                    targets,
+                    TryStringList(item, "choices") is { Count: > 0 } choices ? choices : null));
+            }
+        }
+        if (items.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "approval_request needs at least one item with objectId+fingerprint targets.");
+        }
+        var card = new ApprovalCard(
+            Status: "proposing",
+            Summary: TryString(call.Arguments, "summary") ?? string.Empty,
+            Items: items,
+            ProposedAt: DateTimeOffset.UtcNow);
+        await _store.SetApprovalCardAsync(
+            session.Id,
+            JsonSerializer.Serialize(card, GoalJson),
+            cancellationToken).ConfigureAwait(false);
+        return new
+        {
+            status = "awaiting_user_approval",
+            items = items.Count,
+            message = "The approval card is on screen. End your turn now — nothing is granted yet. "
+                + "Whatever the user approves comes back with a grantId on the next turn; put that id "
+                + "in the ChangeSet's approvalGrantId and touch ONLY the approved items.",
+        };
     }
 
     private static readonly JsonSerializerOptions GoalJson = new(JsonSerializerDefaults.Web);

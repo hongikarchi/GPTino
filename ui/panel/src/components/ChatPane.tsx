@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import type {
+  ApprovalCard as ApprovalCardData,
   ChatMessage,
   CodexLimits,
   FocusMode,
@@ -29,6 +30,7 @@ import { StatusBadge } from "./StatusBadge";
 import { FocusChip } from "./FocusChip";
 import { AltChip } from "./AltChip";
 import { GoalCard } from "./GoalCard";
+import { ApprovalCard } from "./ApprovalCard";
 import { parseMessageSegments } from "../messageMarkers";
 
 interface ChatPaneProps {
@@ -49,6 +51,12 @@ interface ChatPaneProps {
     chosenOption?: string;
     objective?: string;
     criteria?: string[];
+  }): void;
+  /** Grant (or refuse) the destructive fixes the agent listed on an approval card. */
+  onAnswerApproval(answer: {
+    status: "granted" | "rejected";
+    approvedItemIds?: string[];
+    choices?: Record<string, string>;
   }): void;
   /** Bind the session's writes to a GH doc (docKey) or unbind with null. */
   onTarget(grasshopperDoc: string | null): void;
@@ -247,7 +255,7 @@ function UsageStatusLine({ usage, limits }: { usage?: SessionUsage; limits?: Cod
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt, onAnswerGoal }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   // Which proposed alternative the user last asked to see, so the chips show what is on
   // screen right now (the preview itself lives wherever the owner renders it).
@@ -296,6 +304,15 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
       return null;
     }
   }, [session?.goalCard]);
+
+  const approvalCard = useMemo(() => {
+    if (!session?.approvalCard) return null;
+    try {
+      return JSON.parse(session.approvalCard) as ApprovalCardData;
+    } catch {
+      return null;
+    }
+  }, [session?.approvalCard]);
 
   const sessionConflicts = useMemo(
     () => (session ? conflicts.filter((conflict) => conflict.sessionIds.includes(session.id)) : []),
@@ -619,6 +636,14 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             card={goalCard}
             busy={busyActions.has(`goal:${session.id}`)}
             onAnswer={onAnswerGoal}
+            onFocus={onFocus}
+          />
+        ) : null}
+        {approvalCard ? (
+          <ApprovalCard
+            card={approvalCard}
+            busy={busyActions.has(`approval:${session.id}`)}
+            onAnswer={onAnswerApproval}
             onFocus={onFocus}
           />
         ) : null}

@@ -350,6 +350,60 @@ api.MapPost("/language", (LanguageSetting request, ProjectContextStore context) 
     return Results.Ok(new LanguageSetting(context.ReadLanguage()));
 });
 
+// Goal cards travel as camelCase JSON in one column and one SSE field; the panel and the agent
+// tool both read this exact shape.
+var GoalCardJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+// The user's answer to a proposed approval card. Approving mints ONE grant bound to exactly the
+// (objectId, fingerprint) pairs of the items they ticked — not the whole proposal — and stores it
+// on the card so the agent's next turn can carry it in a ChangeSet. A human pressed this.
+api.MapPut("/sessions/{id:guid}/approval", async (
+    Guid id,
+    AnswerApprovalRequest request,
+    SessionStore sessionStore,
+    LiveDocumentBackend liveBackend,
+    CancellationToken cancellationToken) =>
+{
+    var session = await sessionStore.FindSessionAsync(id, cancellationToken);
+    if (session?.ApprovalCard is null)
+    {
+        return Results.NotFound(new ApiError("approval_card_absent", "This session has no approval card to answer."));
+    }
+    var card = JsonSerializer.Deserialize<ApprovalCard>(session.ApprovalCard, GoalCardJson);
+    if (card is null)
+    {
+        return Results.NotFound(new ApiError("approval_card_unreadable", "The stored approval card could not be read."));
+    }
+    if (!string.Equals(request.Status, "granted", StringComparison.OrdinalIgnoreCase))
+    {
+        await sessionStore.SetApprovalCardAsync(
+            id,
+            JsonSerializer.Serialize(card with { Status = "rejected" }, GoalCardJson),
+            cancellationToken);
+        events.Publish();
+        return Results.NoContent();
+    }
+    var approvedIds = request.ApprovedItemIds ?? [];
+    var targets = card.Items
+        .Where(item => approvedIds.Contains(item.Id))
+        .SelectMany(item => item.Targets)
+        .Select(target => (target.ObjectId, target.Fingerprint))
+        .ToArray();
+    if (targets.Length == 0)
+    {
+        return Results.BadRequest(new ApiError("nothing_approved", "Approving requires at least one item."));
+    }
+    var grantJson = JsonSerializer.SerializeToElement(liveBackend.MintApprovalGrant(targets), GoalCardJson);
+    var updated = card with
+    {
+        Status = "granted",
+        GrantId = grantJson.GetProperty("grantId").GetString(),
+        ApprovedItemIds = approvedIds.ToArray(),
+    };
+    await sessionStore.SetApprovalCardAsync(id, JsonSerializer.Serialize(updated, GoalCardJson), cancellationToken);
+    events.Publish();
+    return Results.NoContent();
+});
+
 // Mints a user-approval grant for the audit card's Approve action: bound to exactly the
 // (objectId, fingerprint) pairs the user saw, expiring, and required before destructive ops can
 // touch objects without GPTino provenance stamps.
@@ -484,9 +538,6 @@ api.MapPut("/sessions/{id:guid}/model", async (
     return Results.NoContent();
 });
 
-// Goal cards travel as camelCase JSON in one column and one SSE field; the panel and the agent
-// tool both read this exact shape.
-var GoalCardJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 
 // The user's verdict on a proposed goal card. Confirming (optionally with edits) is what the
 // agent is held to afterwards: the confirmed card rides every following turn's input, and the

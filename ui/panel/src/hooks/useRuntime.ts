@@ -260,6 +260,18 @@ export function useRuntime() {
           (activeClient) => activeClient.setSessionModel(sessionId, modelProfile, model),
         );
       },
+      // Granting mints a server-side grant bound to the ticked items; no optimistic patch, for the
+      // same reason as goals — the server's answer is the only truthful one.
+      answerApproval(
+        sessionId: string,
+        answer: { status: "granted" | "rejected"; approvedItemIds?: string[]; choices?: Record<string, string> },
+      ) {
+        return runAction(
+          `approval:${sessionId}`,
+          undefined,
+          (activeClient) => activeClient.answerApprovalCard(sessionId, answer),
+        );
+      },
       // The user's verdict on a proposed goal card. No optimistic patch: the server rewrites the
       // card (status + any edits) and the next SSE push is the truth — showing an approved card
       // before the server accepted it would be exactly the false-success this project refuses.

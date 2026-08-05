@@ -46,6 +46,11 @@ export interface GptinoApiClient {
   setSessionMode(sessionId: string, mode: SessionMode): Promise<void>;
   setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
   /** Toggle the session's native Codex thread goal (objective + budget) on/off. */
+  /** Answer a proposed approval card: grant the ticked items (mints one bound grant) or reject. */
+  answerApprovalCard(
+    sessionId: string,
+    answer: { status: "granted" | "rejected"; approvedItemIds?: string[]; choices?: Record<string, string> },
+  ): Promise<void>;
   /** Answer a proposed goal card: approve (optionally edited) or reject. */
   answerGoalCard(
     sessionId: string,
@@ -195,6 +200,16 @@ class HttpApiClient implements GptinoApiClient {
         model: "gpt-5.6-sol",
         ...(grasshopperDoc ? { grasshopperDoc } : {}),
       }),
+    });
+  }
+
+  answerApprovalCard(
+    sessionId: string,
+    answer: { status: "granted" | "rejected"; approvedItemIds?: string[]; choices?: Record<string, string> },
+  ): Promise<void> {
+    return this.request(`/sessions/${encodeURIComponent(sessionId)}/approval`, {
+      method: "PUT",
+      body: JSON.stringify(answer),
     });
   }
 

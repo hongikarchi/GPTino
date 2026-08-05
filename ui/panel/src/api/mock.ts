@@ -40,6 +40,30 @@ const demoGoalCard = JSON.stringify({
     { id: "narrow", label: "한 베이만 시범", detail: "먼저 한 베이에만 적용해 결과를 봅니다" },
   ],
 });
+/** An approval card so the demo shows the approve-what-you-saw flow for user-owned geometry. */
+const demoApprovalCard = JSON.stringify({
+  status: "proposing",
+  summary: "근사 중복 2쌍과 끝점 갭 1곳을 고치려 합니다 — 사용자가 그린 기하라 승인이 필요합니다.",
+  items: [
+    {
+      id: "dup-1",
+      label: "Facade::Boundary 커브 2개가 겹칩니다",
+      measure: "간격 0.08 mm (허용오차 0.001 mm)",
+      targets: [
+        { objectId: "a0b1c2d3-0001-4e4e-9f9f-000000000001", fingerprint: "fp-a1" },
+        { objectId: "a0b1c2d3-0002-4e4e-9f9f-000000000002", fingerprint: "fp-a2" },
+      ],
+      choices: ["첫 번째를 남김", "두 번째를 남김"],
+    },
+    {
+      id: "gap-1",
+      label: "Atrium::Edge 끝점이 만나지 않습니다",
+      measure: "간격 0.42 mm",
+      targets: [{ objectId: "a0b1c2d3-0003-4e4e-9f9f-000000000003", fingerprint: "fp-b1" }],
+    },
+  ],
+});
+
 const demoModels: ModelInfo[] = [
   {
     id: "gpt-5.6-sol",
@@ -268,6 +292,7 @@ const demoState: RuntimeState = {
       // Resident curator: lives on its own tab, never draggable, never deletable.
       id: "curator",
       title: "Document care",
+      approvalCard: demoApprovalCard,
       summary: "Rhino document hygiene",
       status: "idle",
       mode: "auto",
@@ -952,6 +977,23 @@ export function createMockApiClient(): GptinoApiClient {
         state.sessions[index].modelProfile = modelProfile;
         state.sessions[index].pinnedModel = model ?? null;
         if (model) state.sessions[index].effectiveModel = model;
+      });
+    },
+    async answerApprovalCard(
+      sessionId: string,
+      answer: { status: "granted" | "rejected"; approvedItemIds?: string[]; choices?: Record<string, string> },
+    ) {
+      await delay();
+      mutateSession(sessionId, (index) => {
+        const raw = state.sessions[index].approvalCard;
+        if (!raw) return;
+        const card = JSON.parse(raw);
+        state.sessions[index].approvalCard = JSON.stringify({
+          ...card,
+          status: answer.status,
+          approvedItemIds: answer.approvedItemIds ?? [],
+          grantId: answer.status === "granted" ? "demo-grant-0001" : null,
+        });
       });
     },
     async answerGoalCard(

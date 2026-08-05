@@ -1259,6 +1259,61 @@ button.llm-auth:hover strong {
   cursor: pointer;
 }
 
+/* Approval card: same card language as the goal card, warmer border because this one is about
+   changing geometry the user owns. */
+.approval-card {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn, #d9a441);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn, #d9a441) 6%, var(--surface-2));
+  font-size: var(--fs-body);
+}
+
+.approval-card.approval-granted,
+.approval-card.approval-rejected {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.approval-card-list {
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+}
+
+.approval-card-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+
+.approval-card-list li label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.approval-card-measure {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+}
+
+.approval-card-choices {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: 20px;
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+.approval-card-choices label {
+  gap: 4px;
+}
+
 .language-toggle {
   min-width: 34px;
   padding: 2px 7px;

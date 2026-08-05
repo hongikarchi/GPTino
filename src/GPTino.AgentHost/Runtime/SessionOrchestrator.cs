@@ -598,6 +598,40 @@ public sealed class SessionOrchestrator : IDisposable
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Renders a GRANTED approval for the turn input. Proposed cards are not rendered (an unanswered
+    /// request must not read as permission) and rejected ones are history.
+    /// </summary>
+    private static string? ComposeApprovalBlock(SessionRecord session)
+    {
+        if (string.IsNullOrWhiteSpace(session.ApprovalCard)) return null;
+        ApprovalCard? card;
+        try
+        {
+            card = JsonSerializer.Deserialize<ApprovalCard>(session.ApprovalCard!, GoalJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (card is null ||
+            !string.Equals(card.Status, "granted", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(card.GrantId))
+        {
+            return null;
+        }
+        var approved = card.ApprovedItemIds ?? [];
+        var labels = card.Items
+            .Where(item => approved.Contains(item.Id))
+            .Select(item => $"{item.Id} ({item.Label})");
+        var builder = new StringBuilder("<gptino_approval>");
+        builder.Append("approvalGrantId: ").Append(card.GrantId).Append(". ");
+        builder.Append("Approved items ONLY: ").Append(string.Join(" | ", labels)).Append(". ");
+        builder.Append("Anything not listed here was refused — do not touch it.");
+        builder.Append("</gptino_approval>");
+        return builder.ToString();
+    }
+
     private static readonly JsonSerializerOptions GoalJson = new(JsonSerializerDefaults.Web);
 
     private string ComposeTurnInput(SessionRecord session, string content, string? attachmentsBlock = null)
@@ -609,6 +643,13 @@ public sealed class SessionOrchestrator : IDisposable
         // A confirmed goal rides EVERY later turn, not just the one that framed it — the agent is
         // held to what the user approved, and the closing goal_score answers these exact criteria.
         var goalBlock = ComposeGoalBlock(session);
+        // A granted approval carries the key the broker demands for the user's own geometry, and it
+        // names exactly which items the key covers.
+        var approvalBlock = ComposeApprovalBlock(session);
+        if (approvalBlock is not null)
+        {
+            goalBlock = goalBlock is null ? approvalBlock : $"{goalBlock}\n{approvalBlock}";
+        }
         var selection = _selectionContext?.SelectionFor(session.GrasshopperDoc);
         var digest = _selectionContext?.CanvasDigestFor(session.GrasshopperDoc);
         var grasshopperObjects = selection?.GrasshopperObjects;
