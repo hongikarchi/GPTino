@@ -11,14 +11,12 @@ public interface ICodexSessionClient
     Task<string> StartThreadAsync(
         string cwd,
         string? model,
-        string? roleInstructions = null,
         CancellationToken cancellationToken = default);
 
     Task ResumeThreadAsync(
         string threadId,
         string cwd,
         string? model,
-        string? roleInstructions = null,
         CancellationToken cancellationToken = default);
 
     Task<string> StartTurnAsync(

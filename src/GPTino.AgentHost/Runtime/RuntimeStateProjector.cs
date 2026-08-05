@@ -70,8 +70,6 @@ public sealed class RuntimeStateProjector
                 title = session.Name,
                 summary = session.CurrentTask,
                 status = ProjectStatus(session.State),
-                mode = ProjectMode(session),
-                role = ProjectRole(session.Role),
                 modelProfile = ProjectModelProfile(session.ModelProfile),
                 pinnedModel = session.Model,
                 goalEnabled = session.GoalEnabled,
@@ -191,8 +189,8 @@ public sealed class RuntimeStateProjector
             projectName = rhinoName,
             rhinoFile = rhinoPath ?? "Untitled.3dm",
             // NULL, not a placeholder string: "no Grasshopper document is open" is a real state the
-            // panel acts on (the curator runs without one), and a sentinel string would make the
-            // panel pattern-match prose to discover it.
+            // panel acts on (Rhino-only document work runs without one), and a sentinel string would
+            // make the panel pattern-match prose to discover it.
             grasshopperFile = grasshopperPath,
             grasshopperDocs = registeredDocs.Count > 0
                 ? registeredDocs.Select(doc => new { id = doc.Id, file = doc.File }).ToArray()
@@ -324,20 +322,6 @@ public sealed class RuntimeStateProjector
         Api.SessionStates.Failed => "blocked",
         _ => "idle"
     };
-
-    private static string ProjectMode(SessionRecord session) =>
-        string.Equals(session.Mode, "plan", StringComparison.OrdinalIgnoreCase) ||
-        // Defensive: migration rewrites 'planner' rows on startup, but a snapshot taken between an
-        // old writer and the migrated read must still render as plan mode, never as a role.
-        string.Equals(session.Role, "planner", StringComparison.OrdinalIgnoreCase)
-            ? "plan"
-            : "auto";
-
-    private static string ProjectRole(string role)
-    {
-        var normalized = role.Trim().ToLowerInvariant();
-        return normalized == "planner" ? "modeler" : normalized;
-    }
 
     // The stored value is a reasoning-effort level (low..ultra); pass it through. Legacy profile
     // values from pre-migration sessions map to the nearest effort so the slider still reads sanely.

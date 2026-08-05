@@ -72,7 +72,7 @@ public interface ICordycepsCanvasAdapter
     /// Enumerates every Rhino object GUID persistently referenced by the document's parameters
     /// (the ReferenceID mechanism referenceRhinoObjects writes), with per-object existence and
     /// layer resolved against the paired Rhino document in the same round trip. Read-only; the
-    /// data-flow view and the curator's purge guard ("never delete what GH references") both
+    /// data-flow view and the purge guard ("never delete what GH references") both
     /// consume this.
     /// </summary>
     Task<ReferencedRhinoIdsResult> ListReferencedRhinoIdsAsync(

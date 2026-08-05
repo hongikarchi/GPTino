@@ -9,7 +9,7 @@ namespace GPTino.BridgeContract;
 /// Registration used to be fire-and-forget: the plugin sent a frame and never learned whether it
 /// arrived. That was survivable only because every target existed before the AgentHost was even
 /// spawned, so the replay at connect covered them all. The moment a target can appear LATER — a
-/// Grasshopper file opened mid-session, a Save As rebind, a curator-only runtime that a definition
+/// Grasshopper file opened mid-session, a Save As rebind, a Rhino-only runtime that a definition
 /// joins afterwards — a single silent drop stranded it forever, and a live gate spent hours on a
 /// bridge that reported "connected" while one target had simply never registered.
 ///

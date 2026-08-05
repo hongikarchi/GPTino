@@ -1,5 +1,12 @@
 # Rhino Curator 비서 + 데이터 플로우 뷰 — 개발 계획 (2026-07-30)
 
+> **폐기됨 (2026-08-05).** curator role·탭·버튼 줄은 삭제되었다 — 근거와 대체 설계는
+> [session-model-simplification.md](session-model-simplification.md) 참조. 이 문서는 기록으로
+> 남긴다: **감사 엔진·typed Rhino op·provenance 기본거부·데이터 플로우 뷰는 전부 살아 있고**,
+> 여기 적힌 근거가 그것들의 설계 근거이기 때문이다. Rhino-only 타깃 전환 문제(부트스트랩
+> 생애주기)는 여전히 미해결이며 `GptinoRuntimeHost.TryRegisterUnambiguousTargets`가 이 문서를
+> 가리킨다.
+
 2026-07-29~30 사용자 논의로 확정된 방향. 근거: 코드베이스 검증(UI/백엔드/문서 리더 3),
 설계 패널(탭 옹호/세션-role 옹호/데이터뷰 설계/기술 회의론 4-agent), 기존 Rhino MCP 소스
 조사(mcneel/RhinoMCP, jingcheng-chen/rhinomcp, 4kk11/RhinoMCPServer, reer-ide/rhino_mcp).

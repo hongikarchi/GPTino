@@ -1794,7 +1794,7 @@ public sealed class GptinoRuntimeHost : IDisposable
     /// same AgentHost; with zero GH docs nothing registers (the waiting page stays up).
     ///
     /// PARKED (2026-08-04): registering a Rhino-only target here is what makes the panel usable
-    /// with no .gh open (the curator needs no canvas), and every layer below — the nullable target
+    /// with no .gh open (document work needs no canvas), and every layer below — the nullable target
     /// contract, the canvasless snapshot, the Rhino-scoped rhinoLayerTable address — is in place and
     /// live-gated. What is NOT solved is the transition: an AgentHost bootstrapped from a Rhino-only
     /// target stops answering the bridge once a pair registers into it (health still reports
@@ -1803,7 +1803,7 @@ public sealed class GptinoRuntimeHost : IDisposable
     /// Grasshopper-preferring default target — and both hang, so the cause is in the host's
     /// per-target bootstrap/connection lifecycle, not in which targets exist. Until that is
     /// understood, the pair requirement stays: a broken paired path is far worse than a missing
-    /// curator-only mode. See docs/curator-plan.md.
+    /// Rhino-only mode. See docs/curator-plan.md (the doc that traced this, kept as history).
     /// </summary>
     private void TryRegisterUnambiguousTargets()
     {

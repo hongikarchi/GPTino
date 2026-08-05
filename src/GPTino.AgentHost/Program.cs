@@ -131,25 +131,6 @@ var dispatcher = app.Services.GetRequiredService<DynamicToolDispatcher>();
 var queueControl = app.Services.GetRequiredService<ILiveDocumentQueueControl>();
 _ = app.Services.GetRequiredService<SessionOrchestrator>();
 codex.DynamicToolHandler = dispatcher.DispatchAsync;
-// Resident curator: every project gets exactly one document-hygiene session, provisioned before
-// the first schedule snapshot so the panel always sees it. Idempotent across restarts; the codex
-// thread itself stays lazy until the first message.
-var (liveSessions, _) = await store.ReadStateAsync();
-if (!liveSessions.Any(session => string.Equals(session.Role, "curator", StringComparison.OrdinalIgnoreCase)))
-{
-    // A legacy soft-deleted curator (from before the delete guard) is restored rather than
-    // duplicated — the guard would leave a second, unpurgeable copy in the trash forever.
-    var deletedCurator = (await store.ReadDeletedSessionsAsync())
-        .FirstOrDefault(session => string.Equals(session.Role, "curator", StringComparison.OrdinalIgnoreCase));
-    if (deletedCurator is not null)
-    {
-        await store.SetSessionDeletedAsync(deletedCurator.Id, deleted: false);
-    }
-    else
-    {
-        await store.CreateSessionAsync(new CreateSessionRequest("Document care", "curator", ModelProfile: "xhigh"));
-    }
-}
 await queueControl.RefreshScheduleAsync();
 
 app.Use(async (context, next) =>
@@ -316,7 +297,7 @@ api.MapGet("/data-flow", async (
     CancellationToken cancellationToken) =>
     Results.Ok(await liveBackend.ReadDataFlowDetailAsync(doc, cancellationToken)));
 
-// Layer table + named layer states for the curator tab's layer view.
+// Layer table + named layer states.
 api.MapGet("/layers", async (
     LiveDocumentBackend liveBackend,
     CancellationToken cancellationToken) =>
@@ -404,50 +385,12 @@ api.MapPut("/sessions/{id:guid}/approval", async (
     return Results.NoContent();
 });
 
-// Mints a user-approval grant for the audit card's Approve action: bound to exactly the
-// (objectId, fingerprint) pairs the user saw, expiring, and required before destructive ops can
-// touch objects without GPTino provenance stamps.
-api.MapPost("/approval-grants", (
-    MintApprovalGrantRequest request,
-    LiveDocumentBackend liveBackend) =>
-    Results.Ok(liveBackend.MintApprovalGrant(
-        (request.Items ?? throw new ArgumentException("items is required."))
-            .Select(item => (item.ObjectId, item.Fingerprint))
-            .ToArray())));
-
-// Document-hygiene audit for the curator tab's preset buttons. Read-only; detection is server
-// code in the Rhino adapter, so the same findings render in the panel card and reach the agent.
-api.MapGet("/audit", async (
-    string kind,
-    double? tolerance,
-    double? bandFactor,
-    int? limit,
-    LiveDocumentBackend liveBackend,
-    CancellationToken cancellationToken) =>
-{
-    var arguments = JsonSerializer.SerializeToElement(new
-    {
-        kind,
-        tolerance,
-        bandFactor,
-        limit = limit ?? 50,
-    });
-    return Results.Ok(await liveBackend.ReadRhinoAuditAsync(arguments, cancellationToken));
-});
-
 api.MapPost("/sessions", async (
     CreateSessionRequest request,
     SessionStore sessionStore,
     ILiveDocumentQueueControl queue,
     CancellationToken cancellationToken) =>
 {
-    if (string.Equals(request.Role?.Trim(), "curator", StringComparison.OrdinalIgnoreCase))
-    {
-        // Singleton by construction: extra curators would be invisible on the panel yet
-        // permanently undeletable (the delete guard fires for any curator-role row).
-        throw new ArgumentException(
-            "The resident curator session is provisioned by the runtime; sessions created here are modelers.");
-    }
     // ModelProfile now carries the reasoning-effort level directly (low..ultra) — manual effort, no
     // adaptive routing. NormalizeEffort validates and maps any legacy profile value for back-compat.
     var session = await sessionStore.CreateSessionAsync(
@@ -499,25 +442,6 @@ api.MapPut("/sessions/{id:guid}/target", async (
     CancellationToken cancellationToken) =>
 {
     await sessionStore.SetGrasshopperDocAsync(id, request.GrasshopperDoc, cancellationToken);
-    events.Publish();
-    return Results.NoContent();
-});
-
-api.MapPut("/sessions/{id:guid}/mode", async (
-    Guid id,
-    SetModeRequest request,
-    SessionStore sessionStore,
-    CancellationToken cancellationToken) =>
-{
-    // Mode is orthogonal to role: flipping plan/auto must never rewrite WHO the session is
-    // (the pre-split encoding turned every plan toggle into a role rewrite).
-    var mode = request.Mode.Trim().ToLowerInvariant() switch
-    {
-        "plan" => "plan",
-        "auto" => "auto",
-        _ => throw new ArgumentException("Mode must be 'plan' or 'auto'.")
-    };
-    await sessionStore.SetModeAsync(id, mode, cancellationToken);
     events.Publish();
     return Results.NoContent();
 });
@@ -576,8 +500,6 @@ api.MapPut("/sessions/{id:guid}/goal", async (
 });
 
 // Soft-delete: hide from the active list but keep everything, so it can be restored.
-// The resident curator is not deletable — the store guard throws and the middleware maps it
-// to a 409 invalid_state.
 api.MapDelete("/sessions/{id:guid}", async (
     Guid id,
     SessionStore sessionStore,

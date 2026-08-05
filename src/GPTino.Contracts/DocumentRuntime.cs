@@ -2,7 +2,7 @@ namespace GPTino.Contracts;
 
 /// <summary>
 /// Identifies one explicit Rhino document, optionally paired with a Grasshopper document.
-/// The Grasshopper half is nullable because the curator works on the Rhino document alone: a
+/// The Grasshopper half is nullable because document work can target Rhino alone: a
 /// saved Rhino file with no .gh open is a complete, usable runtime, not a half-formed one. Canvas
 /// operations resolve the Grasshopper document per call and fail honestly when there is none.
 /// </summary>

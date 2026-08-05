@@ -116,34 +116,7 @@ public sealed class SessionStore
                     "ALTER TABLE sessions ADD COLUMN approval_card TEXT NULL;",
                     cancellationToken).ConfigureAwait(false);
             }
-            // Mode (auto|plan) is orthogonal to role as of the curator work: role says WHO the
-            // session is (modeler|curator|read-only), mode says HOW it currently runs. Legacy
-            // databases encoded plan mode by rewriting role to 'planner'; the idempotent UPDATE
-            // below migrates those rows once (afterwards no 'planner' rows exist).
-            if (!await HasColumnAsync(connection, "sessions", "mode", cancellationToken)
-                    .ConfigureAwait(false))
-            {
-                await ExecuteAsync(
-                    connection,
-                    "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'auto';",
-                    cancellationToken).ConfigureAwait(false);
-            }
-            await ExecuteAsync(
-                connection,
-                "UPDATE sessions SET mode='plan', role='modeler' WHERE lower(role)='planner';",
-                cancellationToken).ConfigureAwait(false);
-            // Curators created before the sort_order parking band existed sit inside the panel's
-            // draggable 0..N-1 range and break every reorder with a UNIQUE collision. Rebase them
-            // into the band once (idempotent: the predicate excludes already-parked rows; deleted
-            // rows keep their negative parking).
-            await ExecuteAsync(
-                connection,
-                """
-                UPDATE sessions SET sort_order = sort_order + 1000000
-                WHERE lower(role)='curator' AND deleted_at IS NULL
-                  AND sort_order >= 0 AND sort_order < 1000000;
-                """,
-                cancellationToken).ConfigureAwait(false);
+            await AbsorbRolesAndModesAsync(connection, cancellationToken).ConfigureAwait(false);
             // model_profile now stores a reasoning-effort level (low..ultra). Rewrite any legacy
             // profile values from pre-refactor sessions to the nearest effort. Idempotent: effort
             // values fall through the ELSE untouched.
@@ -185,7 +158,7 @@ public sealed class SessionStore
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,goal_card,approval_card,mode FROM sessions WHERE id=$id;";
+        command.CommandText = "SELECT id,name,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,goal_card,approval_card FROM sessions WHERE id=$id;";
         command.Parameters.AddWithValue("$id", id.ToString("D"));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? MapSession(reader) : null;
@@ -195,7 +168,7 @@ public sealed class SessionStore
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,goal_card,approval_card,mode FROM sessions WHERE codex_thread_id=$thread;";
+        command.CommandText = "SELECT id,name,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,goal_card,approval_card FROM sessions WHERE codex_thread_id=$thread;";
         command.Parameters.AddWithValue("$thread", threadId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? MapSession(reader) : null;
@@ -221,24 +194,16 @@ public sealed class SessionStore
             var id = Guid.NewGuid();
             var now = DateTimeOffset.UtcNow;
             var grasshopperDoc = NormalizeGrasshopperDoc(request.GrasshopperDoc);
-            var (role, mode) = NormalizeRoleAndMode(request.Role);
-            if (string.Equals(role, "curator", StringComparison.Ordinal))
-            {
-                // Curators park in a high sort_order band, far above the panel's draggable 0..N-1
-                // range: reorder rewrites those low indexes and the exact-membership check excludes
-                // curators, so a curator sitting inside the band would collide with the UNIQUE
-                // sort_order constraint on the very first drag.
-                order += 1_000_000;
-            }
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
+            // role is a retired concept kept as a NOT NULL column (see AbsorbRolesAndModesAsync);
+            // every row now carries the same constant.
             command.CommandText = """
-                INSERT INTO sessions(id,name,role,model_profile,model,state,sort_order,created_at,updated_at,gh_doc,goal_enabled,mode)
-                VALUES($id,$name,$role,$profile,$model,$state,$order,$created,$updated,$ghDoc,$goal,$mode);
+                INSERT INTO sessions(id,name,role,model_profile,model,state,sort_order,created_at,updated_at,gh_doc,goal_enabled)
+                VALUES($id,$name,'modeler',$profile,$model,$state,$order,$created,$updated,$ghDoc,$goal);
                 """;
             command.Parameters.AddWithValue("$id", id.ToString("D"));
             command.Parameters.AddWithValue("$name", request.Name.Trim());
-            command.Parameters.AddWithValue("$role", role);
             command.Parameters.AddWithValue("$profile", Normalize(request.ModelProfile, "xhigh"));
             command.Parameters.AddWithValue("$model", (object?)request.Model ?? DBNull.Value);
             command.Parameters.AddWithValue("$state", SessionStates.Idle);
@@ -247,13 +212,11 @@ public sealed class SessionStore
             command.Parameters.AddWithValue("$updated", now.ToString("O"));
             command.Parameters.AddWithValue("$ghDoc", (object?)grasshopperDoc ?? DBNull.Value);
             command.Parameters.AddWithValue("$goal", request.GoalEnabled ? 1 : 0);
-            command.Parameters.AddWithValue("$mode", mode);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             transaction.Commit();
             return new SessionRecord(
                 id,
                 request.Name.Trim(),
-                role,
                 Normalize(request.ModelProfile, "xhigh"),
                 request.Model,
                 SessionStates.Idle,
@@ -265,8 +228,7 @@ public sealed class SessionStore
                 grasshopperDoc,
                 request.GoalEnabled,
                 null,
-                null,
-                mode);
+                null);
         }
         finally
         {
@@ -276,7 +238,7 @@ public sealed class SessionStore
 
     /// <summary>
     /// Imports one archived session as a brand-new live session in a single transaction: the session
-    /// row (fresh id, "(imported)" name, modeler/auto, Idle, sort_order MAX+1, codex_thread_id NULL —
+    /// row (fresh id, "(imported)" name, Idle, sort_order MAX+1, codex_thread_id NULL —
     /// never copy the archived thread id, it is UNIQUE and still owned by the source root — and
     /// gh_doc NULL for default-document resolution), then, in rowid/display order, the stale-reference
     /// banner, the copied transcript rows (verbatim role/content/phase/createdAt, client_message_id
@@ -305,7 +267,6 @@ public sealed class SessionStore
                 cancellationToken).ConfigureAwait(false);
             var id = Guid.NewGuid();
             var now = DateTimeOffset.UtcNow;
-            const string role = "modeler";
             const string profile = "auto";
 
             await using (var command = connection.CreateCommand())
@@ -313,11 +274,10 @@ public sealed class SessionStore
                 command.Transaction = transaction;
                 command.CommandText = """
                     INSERT INTO sessions(id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc)
-                    VALUES($id,$name,$role,$profile,NULL,$state,$order,NULL,NULL,$created,$updated,NULL);
+                    VALUES($id,$name,'modeler',$profile,NULL,$state,$order,NULL,NULL,$created,$updated,NULL);
                     """;
                 command.Parameters.AddWithValue("$id", id.ToString("D"));
                 command.Parameters.AddWithValue("$name", seed.Name);
-                command.Parameters.AddWithValue("$role", role);
                 command.Parameters.AddWithValue("$profile", profile);
                 command.Parameters.AddWithValue("$state", SessionStates.Idle);
                 command.Parameters.AddWithValue("$order", order);
@@ -346,7 +306,6 @@ public sealed class SessionStore
             return new SessionRecord(
                 id,
                 seed.Name,
-                role,
                 profile,
                 null,
                 SessionStates.Idle,
@@ -487,10 +446,6 @@ public sealed class SessionStore
     /// </summary>
     public async Task SetSessionDeletedAsync(Guid id, bool deleted, CancellationToken cancellationToken = default)
     {
-        if (deleted)
-        {
-            await RequireNotCuratorAsync(id, "deleted", cancellationToken).ConfigureAwait(false);
-        }
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -507,7 +462,6 @@ public sealed class SessionStore
                   UPDATE sessions
                   SET deleted_at=NULL, updated_at=$now,
                       sort_order = COALESCE((SELECT MAX(sort_order) FROM sessions WHERE deleted_at IS NULL), -1) + 1
-                          + (CASE WHEN lower(role)='curator' THEN 1000000 ELSE 0 END)
                   WHERE id=$id AND deleted_at IS NOT NULL;
                   """;
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
@@ -520,26 +474,12 @@ public sealed class SessionStore
         }
     }
 
-    /// <summary>
-    /// The resident curator session is the product's always-there document-hygiene surface;
-    /// deleting or purging it would silently remove a default the panel's curator tab depends on.
-    /// </summary>
-    private async Task RequireNotCuratorAsync(Guid id, string verb, CancellationToken cancellationToken)
-    {
-        var session = await FindSessionAsync(id, cancellationToken).ConfigureAwait(false);
-        if (session is not null && string.Equals(session.Role, "curator", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                $"The resident curator session cannot be {verb}; it is the document-care surface.");
-        }
-    }
-
     /// <summary>Lists soft-deleted sessions (most-recently-deleted first) for a restore/purge view.</summary>
     public async Task<IReadOnlyList<SessionRecord>> ReadDeletedSessionsAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,goal_card,approval_card,mode FROM sessions WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC;";
+        command.CommandText = "SELECT id,name,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,goal_card,approval_card FROM sessions WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC;";
         var sessions = new List<SessionRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -557,7 +497,6 @@ public sealed class SessionStore
     /// </summary>
     public async Task PurgeSessionAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        await RequireNotCuratorAsync(id, "purged", cancellationToken).ConfigureAwait(false);
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -786,34 +725,6 @@ public sealed class SessionStore
     public Task SetThreadIdAsync(Guid id, string threadId, CancellationToken cancellationToken = default) =>
         UpdateSessionAsync(id, null, null, threadId, cancellationToken);
 
-    /// <summary>
-    /// Flips the session between auto and plan without touching anything else. Deliberately not
-    /// part of UpdatePreferencesAsync: before the role/mode split, the mode endpoint rewrote the
-    /// role column and silently erased what the session WAS (a curator toggled to plan would have
-    /// come back a modeler).
-    /// </summary>
-    public async Task SetModeAsync(Guid id, string mode, CancellationToken cancellationToken = default)
-    {
-        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using var command = connection.CreateCommand();
-            command.CommandText = "UPDATE sessions SET mode=$mode, updated_at=$updated WHERE id=$id;";
-            command.Parameters.AddWithValue("$mode", mode);
-            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
-            command.Parameters.AddWithValue("$id", id.ToString("D"));
-            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-            {
-                throw new KeyNotFoundException($"Session {id:D} was not found.");
-            }
-        }
-        finally
-        {
-            _writeGate.Release();
-        }
-    }
-
     public async Task UpdatePreferencesAsync(
         Guid id,
         string? modelProfile,
@@ -983,6 +894,80 @@ public sealed class SessionStore
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// One-time absorption of the retired session-role/mode model: every session becomes the one
+    /// thing GPTino is now, keeping its name and transcript. Three effects, in this order because
+    /// the first two read the values the third erases:
+    /// <list type="number">
+    /// <item>Sessions that could NOT write before (plan mode, the read-only role) get a system
+    /// message saying so — a capability that silently widens is exactly the kind of change a user
+    /// must be told about rather than discover by watching geometry change.</item>
+    /// <item>The parked resident curator (sort_order in the 1,000,000+ band, out of the panel's
+    /// draggable range) re-enters the ordinary order at the end.</item>
+    /// <item>role collapses to the constant 'modeler'. The column itself stays: it is NOT NULL with
+    /// no default, so dropping it would rewrite the table for no gain.</item>
+    /// </list>
+    /// Idempotent: after the first run nothing matches any of the three predicates.
+    /// </summary>
+    private static async Task AbsorbRolesAndModesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        // 'mode' arrived after 'role' and is gone again; a database old enough to predate it
+        // encoded plan mode as role='planner', which the role predicate already catches.
+        var hasMode = await HasColumnAsync(connection, "sessions", "mode", cancellationToken)
+            .ConfigureAwait(false);
+        var couldNotWrite = hasMode
+            ? "lower(role) IN ('planner','read-only') OR lower(mode)='plan'"
+            : "lower(role) IN ('planner','read-only')";
+
+        await using (var notify = connection.CreateCommand())
+        {
+            notify.CommandText = $"""
+                INSERT INTO messages(session_id,role,content,phase,created_at)
+                SELECT id,
+                       'system',
+                       'Session roles and plan/auto mode are gone: this session could not apply changes before and now can. What still gates a destructive edit is the approval card, not the session.',
+                       'recovery',
+                       $now
+                FROM sessions
+                WHERE {couldNotWrite};
+                """;
+            notify.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            await notify.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Un-park one row at a time: MAX(sort_order) has to be recomputed after each move, and the
+        // curator was a singleton, so this loop runs at most once on a real database.
+        var parked = new List<string>();
+        await using (var read = connection.CreateCommand())
+        {
+            read.CommandText =
+                "SELECT id FROM sessions WHERE deleted_at IS NULL AND sort_order >= 1000000 ORDER BY sort_order;";
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                parked.Add(reader.GetString(0));
+            }
+        }
+        foreach (var id in parked)
+        {
+            await using var move = connection.CreateCommand();
+            move.CommandText = """
+                UPDATE sessions
+                SET sort_order = (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM sessions WHERE sort_order < 1000000)
+                WHERE id=$id;
+                """;
+            move.Parameters.AddWithValue("$id", id);
+            await move.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await ExecuteAsync(
+            connection,
+            "UPDATE sessions SET role='modeler' WHERE role <> 'modeler';",
+            cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task NormalizeInterruptedSessionsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
@@ -1033,7 +1018,7 @@ public sealed class SessionStore
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,name,role,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,goal_card,approval_card,mode FROM sessions WHERE deleted_at IS NULL ORDER BY sort_order;";
+        command.CommandText = "SELECT id,name,model_profile,model,state,sort_order,codex_thread_id,current_task,created_at,updated_at,gh_doc,goal_enabled,goal_card,approval_card FROM sessions WHERE deleted_at IS NULL ORDER BY sort_order;";
         var sessions = new List<SessionRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1110,19 +1095,17 @@ public sealed class SessionStore
             Guid.Parse(reader.GetString(0)),
             reader.GetString(1),
             reader.GetString(2),
-            reader.GetString(3),
-            reader.IsDBNull(4) ? null : reader.GetString(4),
-            reader.GetString(5),
-            reader.GetInt32(6),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.GetString(4),
+            reader.GetInt32(5),
+            reader.IsDBNull(6) ? null : reader.GetString(6),
             reader.IsDBNull(7) ? null : reader.GetString(7),
-            reader.IsDBNull(8) ? null : reader.GetString(8),
+            DateTimeOffset.Parse(reader.GetString(8), System.Globalization.CultureInfo.InvariantCulture),
             DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture),
-            DateTimeOffset.Parse(reader.GetString(10), System.Globalization.CultureInfo.InvariantCulture),
-            reader.IsDBNull(11) ? null : reader.GetString(11),
-            !reader.IsDBNull(12) && reader.GetInt32(12) != 0,
-            reader.IsDBNull(13) ? null : reader.GetString(13),
-            reader.IsDBNull(14) ? null : reader.GetString(14),
-            reader.IsDBNull(15) ? "auto" : reader.GetString(15));
+            reader.IsDBNull(10) ? null : reader.GetString(10),
+            !reader.IsDBNull(11) && reader.GetInt32(11) != 0,
+            reader.IsDBNull(12) ? null : reader.GetString(12),
+            reader.IsDBNull(13) ? null : reader.GetString(13));
 
     private static async Task<HashSet<Guid>> ReadSessionIdsAsync(
         SqliteConnection connection,
@@ -1132,10 +1115,8 @@ public sealed class SessionStore
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         // Reorder operates on the live set only; deleted rows are parked out of band and the panel
-        // never includes them in an order request. The resident curator is likewise outside the
-        // draggable order — it is pinned lowest-priority by the scheduler, and the panel's Model
-        // tab never sends it, so including it in the exact-membership check would 409 every reorder.
-        command.CommandText = "SELECT id FROM sessions WHERE deleted_at IS NULL AND lower(role) <> 'curator';";
+        // never includes them in an order request.
+        command.CommandText = "SELECT id FROM sessions WHERE deleted_at IS NULL;";
         var ids = new HashSet<Guid>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1170,25 +1151,6 @@ public sealed class SessionStore
 
     private static string Normalize(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim().ToLowerInvariant();
-
-    /// <summary>
-    /// Role says WHO the session is and is fixed at creation; mode says HOW it starts. 'planner'
-    /// is accepted as a legacy alias for a modeler created in plan mode (the pre-curator encoding
-    /// where plan/auto rewrote the role), so older callers keep their meaning. Unknown roles fail
-    /// loudly instead of being coerced — a typo'd 'curator' must not silently create a modeler
-    /// with modeler-level write access.
-    /// </summary>
-    private static (string Role, string Mode) NormalizeRoleAndMode(string? role)
-    {
-        var normalized = string.IsNullOrWhiteSpace(role) ? "modeler" : role.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "modeler" or "curator" or "read-only" => (normalized, "auto"),
-            "planner" => ("modeler", "plan"),
-            _ => throw new ArgumentException(
-                $"Unknown session role '{role}'. Expected 'modeler', 'curator', or 'read-only'.")
-        };
-    }
 
     // Lowercased to match ComputeDocumentKey's canonical lowercase-hex form: the backend resolves
     // docKeys case-insensitively, but the panel compares boundGrasshopperDocId strictly, so a

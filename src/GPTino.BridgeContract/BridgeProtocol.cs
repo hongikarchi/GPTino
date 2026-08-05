@@ -17,7 +17,7 @@ public static class BridgeProtocol
     //     auto-placement. It is EXCLUDED from every fingerprint, so it never churns the revision;
     //     the bump only guards the wire shape against a stale AgentHost, as SampleValues did in v4.
     // v11: DocumentRuntime's Grasshopper half is nullable — a saved Rhino document with no .gh open
-    //      is a complete target (the curator needs no canvas). rhinoLayerTable resources are now
+    //      is a complete target (document work needs no canvas). rhinoLayerTable resources are now
     //      addressed by the Rhino-scoped ProjectId instead of the bound Grasshopper document id.
     public const int Version = 11;
 

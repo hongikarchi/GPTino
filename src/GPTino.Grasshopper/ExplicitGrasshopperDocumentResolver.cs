@@ -20,7 +20,7 @@ public sealed class ExplicitGrasshopperDocumentResolver :
         target.Validate();
         VerifyCurrentProcess(target);
 
-        // A Rhino-only target is a legitimate runtime (curator work needs no canvas), so this is a
+        // A Rhino-only target is a legitimate runtime (document work needs no canvas), so this is a
         // plain unavailability, not a corrupt target: canvas ops refuse, Rhino ops carry on.
         if (target.GrasshopperDocumentId is not { } documentId)
         {

@@ -9,12 +9,8 @@ import type {
   MessageRole,
   ModelInfo,
   ModelProfile,
-  RhinoAuditKind,
-  RhinoAuditResult,
   RuntimeState,
-  SessionMode,
   SessionOrderRequest,
-  SessionRole,
   FocusMode,
 } from "../types";
 
@@ -136,8 +132,6 @@ const demoState: RuntimeState = {
       summary: "Panel grid and boundary cleanup",
       status: "verifying",
       goalCard: demoGoalCard,
-      mode: "auto",
-      role: "modeler",
       modelProfile: "xhigh",
       pinnedModel: "gpt-5.6-sol",
       backend: "codex",
@@ -197,8 +191,6 @@ const demoState: RuntimeState = {
       title: "Wire cleanup",
       summary: "Reconnect three staged sockets",
       status: "queued",
-      mode: "auto",
-      role: "modeler",
       modelProfile: "low",
       effectiveModel: "gpt-5.6-terra",
       reasoning: "low",
@@ -239,8 +231,6 @@ const demoState: RuntimeState = {
       title: "Rhino layers",
       summary: "Normalize generated layer names",
       status: "paused",
-      mode: "plan",
-      role: "modeler",
       modelProfile: "medium",
       effectiveModel: "gpt-5.6-sol",
       reasoning: "medium",
@@ -266,8 +256,6 @@ const demoState: RuntimeState = {
       title: "Option B",
       summary: "Alternative atrium geometry",
       status: "blocked",
-      mode: "auto",
-      role: "modeler",
       modelProfile: "xhigh",
       effectiveModel: "gpt-5.6-sol",
       reasoning: "xhigh",
@@ -289,14 +277,12 @@ const demoState: RuntimeState = {
       ],
     },
     {
-      // Resident curator: lives on its own tab, never draggable, never deletable.
-      id: "curator",
+      // An ordinary session doing document care — the same session model as every other row.
+      id: "document-care",
       title: "Document care",
       approvalCard: demoApprovalCard,
       summary: "Rhino document hygiene",
       status: "idle",
-      mode: "auto",
-      role: "curator",
       modelProfile: "xhigh",
       paused: false,
       boundGrasshopperDocId: null,
@@ -418,186 +404,6 @@ const demoState: RuntimeState = {
 let demoLanguage = "en";
 
 
-const demoAudits: Record<RhinoAuditKind, RhinoAuditResult> = {
-  nearMissEndpoints: {
-    kind: "nearMissEndpoints",
-    docTolerance: 0.001,
-    docUnits: "Millimeters",
-    toleranceUsed: 0.001,
-    bandUsed: 0.01,
-    scannedObjects: 24,
-    truncated: false,
-    fingerprint: "audit-fixture-gaps",
-    findings: [
-      {
-        findingId: "gap-42a1",
-        kind: "nearMissEndpoints",
-        objectIds: ["a0b1c2d3-0001-4e4e-9f9f-000000000001", "a0b1c2d3-0002-4e4e-9f9f-000000000002"],
-        fingerprints: ["fp-a1", "fp-a2"],
-        measure: 0.42,
-        endIndices: [1, 0],
-        detail: "Curve endpoints 0.42 apart (doc tolerance 0.001): end 1 of a0b1c2d3… vs end 0 of a0b1c2d3….",
-        proposedFixes: ["setEndPoint"],
-      },
-      {
-        findingId: "gap-07c3",
-        kind: "nearMissEndpoints",
-        objectIds: ["a0b1c2d3-0003-4e4e-9f9f-000000000003", "a0b1c2d3-0004-4e4e-9f9f-000000000004"],
-        fingerprints: ["fp-a3", "fp-a4"],
-        measure: 0.07,
-        endIndices: [0, 1],
-        detail: "Curve endpoints 0.07 apart (doc tolerance 0.001): end 0 of a0b1c2d3… vs end 1 of a0b1c2d3….",
-        proposedFixes: ["setEndPoint"],
-      },
-    ],
-  },
-  // Deliberately scannedObjects 0: the demo must exercise the "nothing was in scope" branch,
-  // which is the one state a clean-looking "no findings" would misreport.
-  openBrepEdges: {
-    kind: "openBrepEdges",
-    docTolerance: 0.001,
-    docUnits: "Millimeters",
-    toleranceUsed: 0.001,
-    bandUsed: 0.01,
-    scannedObjects: 0,
-    truncated: false,
-    fingerprint: "audit-fixture-open-brep",
-    findings: [],
-  },
-  geometryIntegrity: {
-    kind: "geometryIntegrity",
-    docTolerance: 0.001,
-    docUnits: "Millimeters",
-    toleranceUsed: 0.001,
-    bandUsed: 0.01,
-    scannedObjects: 2484,
-    truncated: false,
-    fingerprint: "audit-fixture-geometry-qc",
-    findings: [
-      {
-        findingId: "sliver-31af",
-        kind: "sliverObject",
-        objectIds: ["c1d2e3f4-0001-4a4a-9b9b-000000000011"],
-        fingerprints: ["fp-g1"],
-        measure: 0.004,
-        detail: "Solid is 0.004 thin across 3200 — a ratio of 1:800000. A failed offset, trim, or boolean looks like this.",
-        proposedFixes: [],
-      },
-      {
-        findingId: "stray-77c0",
-        kind: "strayObject",
-        objectIds: ["c1d2e3f4-0002-4a4a-9b9b-000000000012"],
-        fingerprints: ["fp-g2"],
-        measure: 184000,
-        detail: "Object sits 184000 from the model centre, more than 10x the median 5400. Check whether it was dragged or imported by accident.",
-        proposedFixes: [],
-      },
-    ],
-  },
-  layerIntegrity: {
-    kind: "layerIntegrity",
-    docTolerance: 0.001,
-    docUnits: "Millimeters",
-    toleranceUsed: 0.001,
-    bandUsed: null,
-    scannedObjects: 70,
-    truncated: false,
-    fingerprint: "audit-fixture-layer-qc",
-    findings: [
-      {
-        findingId: "lname-4d21",
-        kind: "layerNameHazard",
-        objectIds: ["d1e2f3a4-0003-4b4b-8c8c-000000000021"],
-        fingerprints: ["fp-l1"],
-        measure: null,
-        detail: "Layer '3D::F-Panel ': the name has leading or trailing whitespace, which name-based selection will not match.",
-        proposedFixes: [],
-      },
-    ],
-  },
-  blockIntegrity: {
-    kind: "blockIntegrity",
-    docTolerance: 0.001,
-    docUnits: "Millimeters",
-    toleranceUsed: 0.001,
-    bandUsed: null,
-    scannedObjects: 18,
-    truncated: false,
-    fingerprint: "audit-fixture-block-qc",
-    findings: [
-      {
-        findingId: "bsplit-9e40",
-        kind: "blockInstancesSplitAcrossLayers",
-        objectIds: ["e1f2a3b4-0004-4c4c-9d9d-000000000031"],
-        fingerprints: ["fp-b1"],
-        measure: 3,
-        detail: "Block 'MULLION-A' is placed on 3 different layers (3D::A-Wall, 3D::F-Panel, Default). Usually one of them is a slip.",
-        proposedFixes: [],
-      },
-    ],
-  },
-  nearDuplicates: {
-    kind: "nearDuplicates",
-    docTolerance: 0.001,
-    docUnits: "Millimeters",
-    toleranceUsed: 0.001,
-    bandUsed: null,
-    scannedObjects: 24,
-    truncated: false,
-    fingerprint: "audit-fixture-dups",
-    findings: [
-      {
-        findingId: "dup-9b2e",
-        kind: "nearDuplicates",
-        objectIds: ["7f2a4c31-9a41-4c8e-b6a1-2f6d3a5e9c01", "b2416cd8-55f7-4f39-a9d3-08a1c4e7d992"],
-        fingerprints: ["fp-d1", "fp-d2"],
-        measure: 0,
-        detail: "Position-coincident duplicates (max deviation 0 ≤ tolerance 0.001): 7f2a4c31… and b2416cd8…. Which copy to keep is a human decision.",
-        proposedFixes: ["deleteOneDuplicate"],
-      },
-    ],
-  },
-  purgeCandidates: {
-    kind: "purgeCandidates",
-    docTolerance: 0.001,
-    docUnits: "Millimeters",
-    toleranceUsed: 0.001,
-    bandUsed: null,
-    scannedObjects: 31,
-    truncated: false,
-    fingerprint: "audit-fixture-purge",
-    findings: [
-      {
-        findingId: "blk-11aa",
-        kind: "unusedBlockDefinition",
-        objectIds: ["c9d8e7f6-0001-4a4a-8b8b-000000000001"],
-        fingerprints: [],
-        measure: null,
-        detail: "Block definition 'OldHardware' has no references anywhere (not placed, not nested in another definition); 12 member object(s).",
-        proposedFixes: ["purgeBlockDefinition"],
-      },
-      {
-        // Exercises the quarantine path (the only purge fix that needs an object grant).
-        findingId: "bad-33cc",
-        kind: "badObject",
-        objectIds: ["c9d8e7f6-0003-4a4a-8b8b-000000000003"],
-        fingerprints: ["fp-b1"],
-        measure: null,
-        detail: "Invalid geometry (Brep): edge has no valid trim — quarantine, do not delete (often repairable).",
-        proposedFixes: ["quarantineToLayer"],
-      },
-      {
-        findingId: "lay-22bb",
-        kind: "emptyLayer",
-        objectIds: ["c9d8e7f6-0002-4a4a-8b8b-000000000002"],
-        fingerprints: ["fp-l1"],
-        measure: null,
-        detail: "Layer 'Scratch::Temp' is an empty leaf (no objects — including hidden and block members — and no children).",
-        proposedFixes: ["deleteLayer"],
-      },
-    ],
-  },
-};
 
 const demoDataFlowDetails: Record<string, DataFlowDetail> = {
   [DOC_FACADE]: {
@@ -816,18 +622,6 @@ export function createMockApiClient(): GptinoApiClient {
       listeners.add(onState);
       return () => listeners.delete(onState);
     },
-    async getAudit(kind: RhinoAuditKind) {
-      await delay(200);
-      const detail = demoAudits[kind];
-      return clone(detail);
-    },
-    async mintApprovalGrant(items: { objectId: string; fingerprint: string }[]) {
-      await delay(80);
-      return {
-        grantId: `grant-${items.length}-${Math.abs(items.length * 7919).toString(16)}`,
-        expiresAt: minutesAgo(-10),
-      };
-    },
     async focusObjects(objectIds: string[], mode: FocusMode, zoom = true) {
       await delay(60);
       return {
@@ -856,7 +650,7 @@ export function createMockApiClient(): GptinoApiClient {
       }
       return clone(detail);
     },
-    async createSession(name: string, grasshopperDoc?: string, role?: SessionRole) {
+    async createSession(name: string, grasshopperDoc?: string) {
       await delay();
       const ordinal = state.sessions.length + 1;
       state.sessions.push({
@@ -864,8 +658,6 @@ export function createMockApiClient(): GptinoApiClient {
         title: name || `New session ${ordinal}`,
         summary: "Ready for a modeling request",
         status: "idle",
-        mode: "auto",
-        role: role ?? "modeler",
         modelProfile: "xhigh",
         pinnedModel: "gpt-5.6-sol",
         paused: false,
@@ -883,11 +675,6 @@ export function createMockApiClient(): GptinoApiClient {
     },
     async deleteSession(sessionId) {
       await delay();
-      const target = state.sessions.find((session) => session.id === sessionId);
-      if (target?.role === "curator") {
-        // Demo parity with the server's 409: the resident curator is not deletable.
-        throw new Error("The resident curator session cannot be deleted; it is the document-care surface.");
-      }
       const index = state.sessions.findIndex((session) => session.id === sessionId);
       if (index >= 0) {
         const [removed] = state.sessions.splice(index, 1);
@@ -911,8 +698,6 @@ export function createMockApiClient(): GptinoApiClient {
           title: restored.name,
           summary: "Restored session",
           status: "idle",
-          mode: "auto",
-          role: "modeler",
           modelProfile: "xhigh",
           paused: false,
           messages: [],
@@ -964,12 +749,6 @@ export function createMockApiClient(): GptinoApiClient {
       session.status = "idle";
       emit();
       return content;
-    },
-    async setSessionMode(sessionId, mode: SessionMode) {
-      await delay();
-      mutateSession(sessionId, (index) => {
-        state.sessions[index].mode = mode;
-      });
     },
     async setSessionModel(sessionId, modelProfile: ModelProfile, model?: string | null) {
       await delay();
@@ -1102,8 +881,6 @@ export function createMockApiClient(): GptinoApiClient {
         title: `${archived?.name ?? "Imported session"} (imported)`,
         summary: "Imported from a past project",
         status: "idle",
-        mode: "auto",
-        role: "modeler",
         modelProfile: "xhigh",
         paused: false,
         boundGrasshopperDocId: null,

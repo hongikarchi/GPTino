@@ -22,7 +22,6 @@ import type {
   ModelProfile,
   RuntimeConflict,
   SessionActivity,
-  SessionMode,
   SessionUsage,
 } from "../types";
 import { Icon } from "./Icons";
@@ -42,7 +41,6 @@ interface ChatPaneProps {
   /** Registered GH docs; the target selector renders when more than one exists OR the session carries a (possibly stale) binding. */
   grasshopperDocs?: GrasshopperDocInfo[] | null;
   busyActions: Set<string>;
-  onMode(mode: SessionMode): void;
   onModel(profile: ModelProfile): void;
   onPinModel(model: string | null): void;
   /** Answer the agent's proposed goal card (approve, optionally edited, or reject). */
@@ -255,7 +253,7 @@ function UsageStatusLine({ usage, limits }: { usage?: SessionUsage; limits?: Cod
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onMode, onModel, onPinModel, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onModel, onPinModel, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   // Which proposed alternative the user last asked to see, so the chips show what is on
   // screen right now (the preview itself lives wherever the owner renders it).
@@ -491,11 +489,6 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       void submit();
-      return;
-    }
-    if (event.key === "Tab" && event.shiftKey) {
-      event.preventDefault();
-      onMode(session.mode === "auto" ? "plan" : "auto");
     }
   };
 
@@ -532,23 +525,19 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             Restore view
           </button>
         ) : null}
-        {session.role !== "curator" ? (
-          // The resident curator is not deletable (the server 409s); a Delete button whose
-          // confirm dialog promises restoration would be a lie here, so it does not render.
-          <button
-            type="button"
-            className="chat-delete"
-            title="Delete session (recoverable from Deleted)"
-            disabled={busyActions.has(`delete:${session.id}`)}
-            onClick={() => {
-              if (window.confirm(`Delete session "${session.title}"? You can restore it from Deleted.`)) {
-                onDelete();
-              }
-            }}
-          >
-            Delete
-          </button>
-        ) : null}
+        <button
+          type="button"
+          className="chat-delete"
+          title="Delete session (recoverable from Deleted)"
+          disabled={busyActions.has(`delete:${session.id}`)}
+          onClick={() => {
+            if (window.confirm(`Delete session "${session.title}"? You can restore it from Deleted.`)) {
+              onDelete();
+            }
+          }}
+        >
+          Delete
+        </button>
       </header>
 
       <div className="chat-stream" ref={streamRef} aria-live="polite">
@@ -672,19 +661,6 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
 
       <div className="composer-wrap">
         <div className="control-strip">
-          <div className="segmented" aria-label="Session execution mode">
-            {(["plan", "auto"] as SessionMode[]).map((mode) => (
-              <button
-                type="button"
-                className={session.mode === mode ? "active" : ""}
-                key={mode}
-                onClick={() => onMode(mode)}
-                disabled={busyActions.has(`mode:${session.id}`)}
-              >
-                {mode === "plan" ? "Plan" : "Auto"}
-              </button>
-            ))}
-          </div>
           <div className="quality-control effort-control" ref={effortRef}>
             <button
               type="button"
@@ -816,9 +792,7 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             placeholder={
               session.paused
                 ? "Session is paused — resume it to continue"
-                : session.role === "curator"
-                  ? "Describe a document-care task — audit, cleanup, one-shot batch…"
-                  : "Describe the next modeling change…"
+                : "Describe what you want — a modeling change, a document check-up, a cleanup…"
             }
             aria-label="Message GPTino"
             rows={3}

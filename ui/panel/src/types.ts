@@ -7,9 +7,6 @@ export type SessionStatus =
   | "paused"
   | "blocked"
   | "idle";
-export type SessionMode = "plan" | "auto";
-/** WHO the session is, fixed at creation — orthogonal to mode, which says HOW it currently runs. */
-export type SessionRole = "modeler" | "curator" | "read-only";
 // Reasoning-effort level (ascending). The session field is still named modelProfile on the wire for
 // back-compat, but it carries the effort — set directly (no adaptive routing), clamped to the model.
 export type ModelProfile = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -114,16 +111,6 @@ export interface DataFlowBakeGroup {
   objectIds: string[];
 }
 
-export type RhinoAuditKind =
-  | "nearMissEndpoints"
-  | "nearDuplicates"
-  | "openBrepEdges"
-  | "geometryIntegrity"
-  | "layerIntegrity"
-  | "blockIntegrity"
-  | "purgeCandidates";
-
-/** Viewport focus modes: select+zoom, or additionally hide/lock everything else, or put it back. */
 /**
  * What the agent understood the request to be, framed before the work starts. The user answers
  * it (approve / narrow / correct), and the same criteria come back as the self-score at the end.
@@ -165,6 +152,7 @@ export interface ApprovalItem {
   choices?: string[] | null;
 }
 
+/** Viewport focus modes: select+zoom, or additionally hide/lock everything else, or put it back. */
 export type FocusMode = "select" | "isolate" | "lock" | "restore";
 
 export interface FocusResult {
@@ -175,42 +163,6 @@ export interface FocusResult {
   lockedCount: number;
   restored: boolean;
   fingerprint: string;
-}
-
-export interface RhinoAuditFinding {
-  findingId: string;
-  /** Request kind, or a purge subkind (unusedBlockDefinition | emptyLayer | badObject). */
-  kind: string;
-  objectIds: string[];
-  fingerprints: string[];
-  measure?: number | null;
-  detail: string;
-  proposedFixes: string[];
-  /** nearMissEndpoints: which end of each object (0=start, 1=end), parallel to objectIds. */
-  endIndices?: number[] | null;
-}
-
-/** Server-computed audit (GET /audit): detection is deterministic server code, never the model. */
-export interface RhinoAuditResult {
-  kind: RhinoAuditKind;
-  docTolerance: number;
-  docUnits: string;
-  toleranceUsed: number;
-  bandUsed?: number | null;
-  scannedObjects: number;
-  findings: RhinoAuditFinding[];
-  truncated: boolean;
-  fingerprint: string;
-}
-
-/**
- * A user approval minted by the panel's audit card: bound to the exact (objectId, fingerprint)
- * pairs the user saw (approve-what-you-saw). The agent passes grantId in change_submit so the
- * executor can authorize destructive ops on the user's own geometry.
- */
-export interface ApprovalGrant {
-  grantId: string;
-  expiresAt: string;
 }
 
 /** On-demand GET /data-flow payload; writerActive=true means retry after the queue drains. */
@@ -237,8 +189,6 @@ export interface GptinoSession {
   title: string;
   summary?: string;
   status: SessionStatus;
-  mode: SessionMode;
-  role: SessionRole;
   modelProfile: ModelProfile;
   pinnedModel?: string | null;
   goalEnabled?: boolean;
@@ -323,8 +273,8 @@ export interface RuntimeState {
   rhinoFile: string;
   /**
    * The bound Grasshopper file, or null when no definition is open. Null is a normal state, not a
-   * failure: the curator works on the Rhino document alone. Model and Data are the only tabs that
-   * need a definition.
+   * failure: Rhino-only document work needs no definition. Model and Data are the only tabs that
+   * need one.
    */
   grasshopperFile: string | null;
   /** All registered GH docs; null/absent = legacy single-doc server (fall back to grasshopperFile). */

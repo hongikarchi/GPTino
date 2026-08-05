@@ -6,9 +6,7 @@ import type {
   MessageAttachment,
   ModelInfo,
   ModelProfile,
-  RhinoAuditKind,
   RuntimeState,
-  SessionMode,
 } from "../types";
 
 type OptimisticUpdate = (current: RuntimeState) => RuntimeState;
@@ -122,9 +120,7 @@ export function useRuntime() {
       if (!runtime || sourceId === targetId) return;
       const sessions = moveById(runtime.sessions, sourceId, targetId);
       const request = {
-        // The resident curator is outside the draggable order: the server's exact-membership
-        // check excludes it, so including its id here would 409 every drag.
-        orderedSessionIds: sessions.filter(({ role }) => role !== "curator").map(({ id }) => id),
+        orderedSessionIds: sessions.map(({ id }) => id),
         orderVersion: runtime.orderVersion,
       };
       void runAction(
@@ -189,16 +185,6 @@ export function useRuntime() {
       // Leave the optimistic value; the next reload re-reads the server's answer.
     }
   }, []);
-  // The audit card keys its fetch effect on this — stable identity required.
-  const getAudit = useCallback(
-    (kind: RhinoAuditKind, options?: { tolerance?: number; bandFactor?: number; limit?: number }) =>
-      clientRef.current!.getAudit(kind, options),
-    [],
-  );
-  const mintApprovalGrant = useCallback(
-    (items: { objectId: string; fingerprint: string }[]) => clientRef.current!.mintApprovalGrant(items),
-    [],
-  );
   const readArchiveMessages = useCallback(
     (fingerprint: string, sessionId: string, limit?: number) =>
       clientRef.current!.readArchiveMessages(fingerprint, sessionId, limit),
@@ -245,13 +231,6 @@ export function useRuntime() {
         setRuntime(next);
         setServerRuntime(next);
         return content;
-      },
-      setMode(sessionId: string, mode: SessionMode) {
-        return runAction(
-          `mode:${sessionId}`,
-          updateSession(sessionId, (session) => ({ ...session, mode })),
-          (activeClient) => activeClient.setSessionMode(sessionId, mode),
-        );
       },
       setModel(sessionId: string, modelProfile: ModelProfile, model?: string | null) {
         return runAction(
@@ -358,8 +337,6 @@ export function useRuntime() {
       focusObjects,
       setLanguage,
       getDataFlowDetail,
-      getAudit,
-      mintApprovalGrant,
       // Import mutates runtime state (a new session appears), so — unlike the read-only archive
       // callbacks — it goes through runAction whose post-action getRuntime() pulls the new session in.
       importArchiveSession(fingerprint: string, sessionId: string) {
@@ -370,7 +347,7 @@ export function useRuntime() {
         );
       },
     }),
-    [focusObjects, getAudit, getDataFlowDetail, listArchive, listDeleted, mintApprovalGrant, readArchiveMessages, reorder, runAction, setLanguage, shift, updateSession],
+    [focusObjects, getDataFlowDetail, listArchive, listDeleted, readArchiveMessages, reorder, runAction, setLanguage, shift, updateSession],
   );
 
   return {

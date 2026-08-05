@@ -42,70 +42,58 @@ public sealed class SessionStoreTests
         Assert.Equal(2, reloaded.Count);
     }
 
+    /// <summary>
+    /// Session roles and plan/auto mode are retired. Absorbing them must not cost a user anything:
+    /// the rows survive with their names, the parked curator re-enters the draggable order, and the
+    /// sessions whose write access silently WIDENED are told so in their own transcript.
+    /// </summary>
     [Fact]
-    public async Task InitializeMigratesPlannerRowsToModelerInPlanMode()
+    public async Task InitializeAbsorbsRetiredRolesAndModes()
     {
         using var directory = new TestDirectory();
         var databasePath = directory.GetPath("legacy/sessions.db");
         var legacyId = Guid.NewGuid();
         await CreateLegacySchemaDatabaseAsync(databasePath, legacyId);
-        // A pre-split row where plan mode was encoded by rewriting the role to 'planner'.
         var plannerId = Guid.NewGuid();
+        var readOnlyId = Guid.NewGuid();
+        var curatorId = Guid.NewGuid();
+        var stamp = DateTimeOffset.UtcNow.ToString("O");
         await ExecuteRawAsync(
             databasePath,
             $"""
-            INSERT INTO sessions(id,name,role,model_profile,state,sort_order,created_at,updated_at)
-            VALUES ('{plannerId:D}','Planning','planner','xhigh','idle',1,'{DateTimeOffset.UtcNow:O}','{DateTimeOffset.UtcNow:O}');
+            INSERT INTO sessions(id,name,role,model_profile,state,sort_order,created_at,updated_at) VALUES
+              ('{plannerId:D}','Planning','planner','xhigh','idle',1,'{stamp}','{stamp}'),
+              ('{readOnlyId:D}','Review','read-only','xhigh','idle',2,'{stamp}','{stamp}'),
+              ('{curatorId:D}','Document care','curator','xhigh','idle',1000002,'{stamp}','{stamp}');
             """);
 
         var store = new SessionStore(databasePath);
         await store.InitializeAsync();
 
-        var migrated = await store.FindSessionAsync(plannerId);
-        Assert.NotNull(migrated);
-        Assert.Equal("modeler", migrated!.Role);
-        Assert.Equal("plan", migrated.Mode);
-        // Untouched legacy rows land in auto mode with their role preserved.
-        var legacy = await store.FindSessionAsync(legacyId);
-        Assert.Equal("modeler", legacy!.Role);
-        Assert.Equal("auto", legacy.Mode);
+        // Every session is the same thing now, and the parked curator is back in the ordinary order.
+        var (sessions, _) = await store.ReadStateAsync();
+        Assert.Equal(
+            new[] { legacyId, plannerId, readOnlyId, curatorId },
+            sessions.Select(session => session.Id).ToArray());
+        Assert.Equal("Document care", sessions[^1].Name);
+        Assert.True(sessions[^1].Order < 1_000_000);
 
-        // Idempotent across restarts.
+        // The three that could not write before are told they can now; the plain modeler is not
+        // told anything, because nothing about it changed.
+        foreach (var widened in new[] { plannerId, readOnlyId })
+        {
+            var notice = Assert.Single(await store.ReadMessagesAsync(widened));
+            Assert.Equal("system", notice.Role);
+            Assert.Contains("could not apply changes before and now can", notice.Content, StringComparison.Ordinal);
+        }
+        Assert.Empty(await store.ReadMessagesAsync(legacyId));
+
+        // Idempotent across restarts: no second notice, no second un-parking.
         var reopened = new SessionStore(databasePath);
         await reopened.InitializeAsync();
-        Assert.Equal("plan", (await reopened.FindSessionAsync(plannerId))!.Mode);
-    }
-
-    [Fact]
-    public async Task SetModeFlipsModeWithoutTouchingRole()
-    {
-        using var directory = new TestDirectory();
-        var store = new SessionStore(directory.GetPath("sessions.db"));
-        await store.InitializeAsync();
-        var curator = await store.CreateSessionAsync(new CreateSessionRequest("Doc care", "curator"));
-        Assert.Equal("curator", curator.Role);
-        Assert.Equal("auto", curator.Mode);
-
-        // The pre-split bug class this guards: a mode flip must never rewrite WHO the session is.
-        await store.SetModeAsync(curator.Id, "plan");
-        var flipped = await store.FindSessionAsync(curator.Id);
-        Assert.Equal("curator", flipped!.Role);
-        Assert.Equal("plan", flipped.Mode);
-
-        await store.SetModeAsync(curator.Id, "auto");
-        Assert.Equal("auto", (await store.FindSessionAsync(curator.Id))!.Mode);
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => store.SetModeAsync(Guid.NewGuid(), "plan"));
-    }
-
-    [Fact]
-    public async Task CreateRejectsUnknownRolesInsteadOfCoercing()
-    {
-        using var directory = new TestDirectory();
-        var store = new SessionStore(directory.GetPath("sessions.db"));
-        await store.InitializeAsync();
-        // A typo'd role must not silently create a modeler with modeler-level write access.
-        await Assert.ThrowsAsync<ArgumentException>(
-            () => store.CreateSessionAsync(new CreateSessionRequest("Oops", "kurator")));
+        Assert.Single(await reopened.ReadMessagesAsync(plannerId));
+        var (reloaded, _) = await reopened.ReadStateAsync();
+        Assert.Equal(sessions.Select(s => s.Order), reloaded.Select(s => s.Order));
     }
 
     private static async Task ExecuteRawAsync(string databasePath, string sql)
@@ -239,9 +227,7 @@ public sealed class SessionStoreTests
         var store = new SessionStore(databasePath);
 
         await store.InitializeAsync();
-        // 'planner' is a legacy alias from the pre-split encoding: it creates a modeler in plan
-        // mode instead of a distinct role, so old callers keep their meaning.
-        var first = await store.CreateSessionAsync(new CreateSessionRequest("  Facade Study  ", " PLANNER ", " HIGH "));
+        var first = await store.CreateSessionAsync(new CreateSessionRequest("  Facade Study  ", " HIGH "));
         var second = await store.CreateSessionAsync(new CreateSessionRequest("Detailing"));
 
         var (sessions, orderVersion) = await store.ReadStateAsync();
@@ -252,8 +238,6 @@ public sealed class SessionStoreTests
             {
                 Assert.Equal(first.Id, session.Id);
                 Assert.Equal("Facade Study", session.Name);
-                Assert.Equal("modeler", session.Role);
-                Assert.Equal("plan", session.Mode);
                 Assert.Equal("high", session.ModelProfile);
                 Assert.Equal(0, session.Order);
                 Assert.Equal(SessionStates.Idle, session.State);
@@ -261,8 +245,6 @@ public sealed class SessionStoreTests
             session =>
             {
                 Assert.Equal(second.Id, session.Id);
-                Assert.Equal("modeler", session.Role);
-                Assert.Equal("auto", session.Mode);
                 Assert.Equal("xhigh", session.ModelProfile);
                 Assert.Equal(1, session.Order);
             });

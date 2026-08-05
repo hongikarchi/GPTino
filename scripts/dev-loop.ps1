@@ -21,7 +21,7 @@ param(
     [ValidateSet('paneling', 'structural')]
     [string]$SceneKind = 'paneling',
     [switch]$RegenerateScene,
-    # Launch WITHOUT opening Grasshopper, to exercise the Rhino-only target (curator-only panel).
+    # Launch WITHOUT opening Grasshopper, to exercise the Rhino-only target.
     [switch]$NoGrasshopper,
     [int]$ReadyTimeoutSeconds = 120,
     [string]$RhinoExe = 'C:\Program Files\Rhino 8\System\Rhino.exe'
@@ -107,7 +107,7 @@ if (Test-Path -LiteralPath $lockPath) {
 # Order: open the panel (starts the AgentHost) then open the saved .gh (forms the
 # rhino+gh target). Paths carry no spaces, so the .gh path is passed unquoted.
 # -NoGrasshopper leaves Grasshopper closed: the Rhino-only target must bring the panel
-# up on its own, which is the curator's whole premise and cannot be gated any other way.
+# up on its own, which Rhino-side document work depends on and cannot be gated any other way.
 $runscript = if ($NoGrasshopper) {
     '_GPTinoOpenPanel _Enter'
 }

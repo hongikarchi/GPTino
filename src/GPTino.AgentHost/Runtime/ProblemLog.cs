@@ -52,23 +52,6 @@ public sealed class ProblemLog
         });
     }
 
-    /// <summary>
-    /// A session-role gate declined a tool call (e.g. a planner session calling change_submit).
-    /// These denials create no job, so without this row they would exist only in the transcript.
-    /// </summary>
-    public void RecordRoleDenial(Guid sessionId, string role, string tool, string message)
-    {
-        Append(new
-        {
-            at = DateTimeOffset.UtcNow,
-            kind = "role-denial",
-            sessionId,
-            role,
-            tool,
-            message
-        });
-    }
-
     public void RecordQueuedConflict(Guid jobId, Guid sessionId, Guid otherJobId, ChangeConflict conflict)
     {
         Append(new

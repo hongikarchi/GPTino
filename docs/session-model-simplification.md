@@ -29,23 +29,50 @@ provenance default-deny + 승인 grant, fingerprint CAS, managed history/undo, �
 - ✅ **선행조건 B** (`4393a5b`) — 승인 카드를 에이전트 주도로 전환(approval_request 툴,
   approval_card 컬럼, PUT /sessions/{id}/approval이 승인 항목만 grant 발급, 승인 블록 턴 주입,
   패널 ApprovalCard). **승인 UI가 curator 탭에서 독립했으므로 탭 삭제가 안전해짐.**
-- ⬜ **다음: curator/role/mode 제거** — 아래 순서대로. 전수 접점은 조사 결과 기준:
-  1. 서버 게이트: DynamicToolDispatcher의 IsPlanMode/IsReadOnlyRole 분기 + ProblemLog.RecordRoleDenial
-  2. 지시문 주입: SessionOrchestrator의 curator 분기, CuratorInstructions.cs, assets/instructions/curator.md,
-     InstructionAssetParityTests의 curator 검증
-  3. 엔드포인트: PUT /sessions/{id}/mode, POST /sessions의 curator 거부, Program.cs 부팅 시 상주 curator 프로비저닝
-  4. 투영: RuntimeStateProjector의 mode/role, ApiModels의 Mode/SetModeRequest/CreateSessionRequest.Role
-  5. 스케줄러: LiveDocumentBackend의 curator 우선순위 제외
-  6. SessionStore: 파킹/삭제가드/SetModeAsync/재정렬필터/NormalizeRoleAndMode 제거.
-     **role 컬럼은 NOT NULL·DEFAULT 없음 → 컬럼 유지 + 상수 'modeler' 공급** (DROP 금지)
-  7. 마이그레이션 3종: sort_order ≥1,000,000 복구 / curator 행을 일반 세션으로 흡수(이름·기록 보존) /
-     기존 plan·read-only 세션에 "이제 쓰기 가능해졌다" 시스템 메시지 통보
-  8. 패널: 탭 model|data 2개로, curator 리전·CuratorActions 삭제, ChatPane의 Plan/Auto·Shift+Tab·
-     role 분기 삭제, types/useRuntime/client/mock/deriveGraph/NoGrasshopper/styles 정리
-  9. 테스트·스크립트: CuratorSessionTests 삭제, SessionStoreTests의 planner/SetMode 케이스,
-     DynamicToolDispatcherTests의 거부 케이스, smoke-agenthost.ps1의 role='planner', docs/modes.md 폐기
-  10. 라이브 게이트: 감사→승인카드→grant→수정이 새 위치에서 끝까지 통과하는지 확인
+- ✅ **curator/role/mode 제거** — 서버·패널·테스트·문서 전수 완료. 실제로 걷어낸 것:
+  1. **서버 게이트**: `IsPlanMode`/`IsReadOnlyRole` 분기와 `ProblemLog.RecordRoleDenial` 삭제.
+     쓰기 경로에 남은 게이트는 **일시정지 하나**뿐 (`WriteToolsAreGatedByPauseAlone` 테스트가 고정)
+  2. **지시문 주입**: `CuratorInstructions.cs`·`assets/instructions/curator.md` 삭제,
+     `roleInstructions` 파라미터를 `ICodexSessionClient`/`CodexAppServerClient`/orchestrator에서 제거
+  3. **엔드포인트**: `PUT /sessions/{id}/mode`, `POST /approval-grants`, `GET /audit`,
+     부팅 시 상주 curator 프로비저닝, `POST /sessions`의 curator 거부 — 전부 삭제
+  4. **투영·모델**: `SessionRecord.Role/Mode`, `CreateSessionRequest.Role`, `SetModeRequest`,
+     `RuntimeStateProjector.ProjectMode/ProjectRole` 삭제
+  5. **SessionStore**: 파킹·삭제가드·`SetModeAsync`·재정렬필터·`NormalizeRoleAndMode` 제거.
+     `role` 컬럼은 NOT NULL·DEFAULT 없음 → **컬럼 유지 + 상수 `'modeler'` 공급** (DROP 안 함),
+     `mode` 컬럼은 더 이상 읽지도 쓰지도 않음
+  6. **마이그레이션** `AbsorbRolesAndModesAsync` — 순서가 중요(앞 둘이 셋째가 지우는 값을 읽음):
+     쓰기 못 하던 세션(plan/planner/read-only)에 **시스템 메시지로 통보** → 파킹된 curator를
+     일반 순서 끝으로 복귀 → role을 상수로 붕괴. 멱등
+  7. **패널**: 탭 `model|data` 2개, curator 리전·`CuratorActions`·`AuditCard` 삭제,
+     ChatPane의 Plan/Auto 세그먼트·Shift+Tab·role 분기 삭제, `NoGrasshopper`의 "Go to Curator" 제거
+  8. **테스트·스크립트·문서**: `CuratorSessionTests` 삭제, SessionStore/Dispatcher 케이스 재작성,
+     `smoke-agenthost.ps1`의 `role='planner'` 제거, `docs/modes.md` 폐기,
+     `docs/curator-plan.md`은 **기록으로 보존**(감사 엔진·typed op·데이터뷰의 설계 근거라서)
+  - 검증: 서버 369/369, 패널 34/34 + typecheck + build 통과
+- ⬜ **라이브 게이트**: 감사 → 승인 카드 → grant → 수정이 새 위치(일반 세션)에서 끝까지 통과하는지
 - ⬜ **artifacts 프루닝** (26.4GB, dev-loop 런 1,234개) — dry-run 목록 승인 후 실행 + 자동 프루닝 추가
+
+## 무엇이 사라지고 무엇이 남았나
+
+**사라진 안전장치는 없다.** plan 모드와 read-only role이 막던 것은 `change_submit`/`arrange_layout`
+단 둘이었고, 그 자리는 이미 더 정밀한 장치가 지키고 있다: provenance 기본거부(사람이 그린 기하는
+승인 grant 없이 못 건드림), fingerprint CAS, managed history/undo, acceptance predicate.
+plan 모드는 **세션 전체**를 막았고 승인 카드는 **항목 하나**를 연다 — 후자가 좁고 정확하다.
+
+**대신 사라진 것**: 세션을 만들 때 역할을 고르는 결정, 모드 토글을 잊어서 생기는 오작동,
+그리고 "이 세션은 뭘 할 수 있는가"라는 질문 자체. 세션은 이제 하나뿐이고, 능력은 스킬에서,
+자율성은 판단에서, 성공 기준은 goal 카드에서 온다.
+
+## 참고 — 터미널 codex 대비 체감 성능 차이 (구 modes.md에서 이관)
+
+1. **sandbox=read-only + MCP 전부 차단**: 에이전트가 쓸 수 있는 건 gptino_v1 typed 툴뿐.
+   터미널 세션의 파일 쓰기·임의 명령 실행 자유도가 없다 (의도된 제약).
+2. **브리지 타임아웃과 UI 스레드 정체**: 무거운 GH solve가 Rhino UI 스레드를 점유하면 브리지 op가
+   45초에서 포기되고, 에이전트에게는 툴 호출 "실패"로 보인다 — 중간 포기의 주요 원인.
+3. **게이트 거부가 에러로 보임**: fingerprint 불일치/stale 거부는 신뢰성 계층의 정상 동작이지만
+   모델에게는 실패 신호라 재시도 대신 포기를 고를 수 있다. 거부 메시지에 해결 지시문을 넣는 것이
+   이 부분을 겨냥한다.
 
 ## 실행 순서
 

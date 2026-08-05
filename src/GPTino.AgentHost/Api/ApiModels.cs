@@ -12,7 +12,6 @@ public static class SessionStates
 public sealed record SessionRecord(
     Guid Id,
     string Name,
-    string Role,
     string ModelProfile,
     string? Model,
     string State,
@@ -29,12 +28,7 @@ public sealed record SessionRecord(
     // one. The store persists it; the agent proposes it and the user confirms it.
     string? GoalCard = null,
     // A pending/answered approval card as opaque JSON (ApprovalCard shape), or null.
-    string? ApprovalCard = null,
-    // Orthogonal to Role: Role says WHO the session is (modeler|curator|read-only, fixed at
-    // creation), Mode says HOW it currently runs (auto|plan, user-toggleable). Before the curator
-    // work plan mode was encoded by rewriting Role to 'planner', which made a mode flip erase the
-    // session's identity.
-    string Mode = "auto");
+    string? ApprovalCard = null);
 
 /// <summary>
 /// What the agent understood the user to be asking for, framed BEFORE the work starts so the
@@ -71,7 +65,6 @@ public sealed record ChatMessage(
 
 public sealed record CreateSessionRequest(
     string Name,
-    string Role = "modeler",
     // Reasoning-effort level (low|medium|high|xhigh|max|ultra); field name kept as ModelProfile for
     // wire back-compat. Default xhigh. No adaptive routing — the value is used directly (clamped to
     // the model's supported efforts at turn time).
@@ -121,8 +114,6 @@ public sealed record AnswerApprovalRequest(
 
 public sealed record ApprovalGrantItem(Guid ObjectId, string Fingerprint);
 
-public sealed record MintApprovalGrantRequest(IReadOnlyList<ApprovalGrantItem> Items);
-
 /// <summary>Panel viewport focus: mode is select | isolate | lock | restore.</summary>
 public sealed record FocusRequest(IReadOnlyList<Guid>? ObjectIds, string? Mode, bool? Zoom);
 
@@ -142,8 +133,6 @@ public sealed record SendMessageRequest(
 public sealed record IncomingAttachment(string FileName, string MediaType, string DataBase64);
 
 public sealed record SetPausedRequest(bool Paused);
-
-public sealed record SetModeRequest(string Mode);
 
 public sealed record SetModelRequest(string ModelProfile, string? Model = null);
 

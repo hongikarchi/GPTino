@@ -1794,8 +1794,8 @@ button.llm-auth:hover strong {
   backdrop-filter: blur(12px);
 }
 
-/* [Model | Curator | Data] view switch: presentation only — the curator underneath is an ordinary
-   session on the same broker. Sits below the header/banners, above the tab-scoped content. */
+/* [Model | Data] view switch: presentation only — neither tab is a mode, and neither gates what a
+   session may do. Sits below the header/banners, above the tab-scoped content. */
 .tab-bar {
   display: flex;
   padding: 6px 16px 0;
@@ -1817,7 +1817,7 @@ button.llm-auth:hover strong {
 .tab-dot.warning { background: var(--red); }
 
 /* Tab body shown when a Grasshopper-dependent tab has no definition to work on. The panel is up
-   and Curator is fully usable, so this is an empty state, not an error screen. */
+   and Rhino-side work still runs, so this is an empty state, not an error screen. */
 .tab-empty {
   flex: 1 1 auto;
   display: flex;
@@ -1892,17 +1892,6 @@ button.llm-auth:hover strong {
   font-size: var(--fs-sec);
   line-height: 1.5;
 }
-
-/* Curator tab: preset row above the chat. */
-.curator-region { display: flex; flex-direction: column; min-height: 0; }
-.curator-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 16px 2px;
-}
-.curator-region > .chat-pane,
-.curator-region > * { min-height: 0; }
 
 /* Data tab: the Rhino<->GH reference/bake ledger. Same sections the drawer used to show,
    now a first-class region instead of something floating over the other tabs. */

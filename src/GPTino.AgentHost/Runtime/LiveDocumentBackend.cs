@@ -191,7 +191,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             lock (_connectionGate)
             {
                 // A Rhino-only target has no Grasshopper document to list. It is a real registered
-                // target (the curator runs on it), it just contributes no row here.
+                // target (Rhino-side work runs on it), it just contributes no row here.
                 return _targets.Values
                     .OrderBy(state => state.Sequence)
                     .Where(state => state.Target.GrasshopperPath is not null)
@@ -1533,15 +1533,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     {
         var (sessions, version) = await _store.ReadStateAsync(cancellationToken).ConfigureAwait(false);
         var projectId = CurrentTarget?.ProjectId ?? _options.ProjectId;
-        // Curator sessions are deliberately absent from the priority order: the scheduler ranks
-        // absent ids int.MaxValue, so document hygiene always yields to modeling work — durably,
-        // regardless of when sessions are created or how the user reorders the rail.
         var order = new SessionOrderSnapshot(
             projectId,
-            sessions
-                .Where(item => !string.Equals(item.Role, "curator", StringComparison.OrdinalIgnoreCase))
-                .Select(item => item.Id)
-                .ToArray(),
+            sessions.Select(item => item.Id).ToArray(),
             version);
         var states = sessions.ToDictionary(item => item.Id, item => item.State switch
         {
@@ -2833,9 +2827,9 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             }
 
             // No Grasshopper document means the canvas contributes no resources — which is a state,
-            // not a failure. Refusing here would deny the curator its ChangeSet envelope (projectId
-            // and sessionId come from snapshot_read) and its preflight, even though every resource
-            // it touches lives outside the snapshot anyway and is resolved by a rhinoTables scope.
+            // not a failure. Refusing here would deny Rhino-only work its ChangeSet envelope
+            // (projectId and sessionId come from snapshot_read) and its preflight, even though every
+            // resource it touches lives outside the snapshot anyway and is resolved by a rhinoTables scope.
             if (!targetState.Target.HasGrasshopper)
             {
                 return CaptureCanvaslessSnapshot(targetState);
@@ -2898,7 +2892,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
 
     /// <summary>
     /// The snapshot of a target with no Grasshopper document: a real envelope carrying the target,
-    /// the history head and the project identity, with an EMPTY canvas and no resources. Curator
+    /// the history head and the project identity, with an EMPTY canvas and no resources. Rhino-side
     /// resources (layers, document tables) live outside the snapshot in every target anyway — they
     /// are resolved by a rhinoTables inspection scope — so nothing is lost by having none here.
     /// The revision only advances when the target changes; with no canvas there is nothing else to
@@ -5530,7 +5524,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             {
                 // Ambiguity is counted over GRASSHOPPER documents only. The Rhino-only target is
                 // always registered and serves every Rhino-side operation, so it must never make an
-                // unbound session look ambiguous — the curator is never bound to a .gh.
+                // unbound session look ambiguous — Rhino-only work is never bound to a .gh.
                 var grasshopperTargets = _targets.Values.Count(state => state.Target.HasGrasshopper);
                 if (grasshopperTargets <= 1)
                 {
@@ -6352,7 +6346,6 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         new(
             record.SessionId,
             "Recovered session",
-            "modeler",
             "auto",
             null,
             SessionStates.Failed,
@@ -7395,7 +7388,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             // the bound Grasshopper document id, which was wrong twice over: a Rhino layer table has
             // nothing to do with Grasshopper, and sibling .gh documents open on one Rhino file would
             // each name the same physical table by a different id — so two layer writes could not
-            // see each other's CAS domain. Curator work also has no .gh to borrow an id from.
+            // see each other's CAS domain. Rhino-only work also has no .gh to borrow an id from.
             if (!string.Equals(resource.Id, projectId.ToString("D"), StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(

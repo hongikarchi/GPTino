@@ -299,17 +299,11 @@ public sealed class SessionOrchestrator : IDisposable
                 _events.Publish();
                 var threadId = latest.CodexThreadId;
                 var migratedThread = false;
-                // Role text rides thread start AND every resume, so a curator thread keeps its
-                // role after restarts and thread migrations alike.
-                var roleInstructions = string.Equals(latest.Role, "curator", StringComparison.OrdinalIgnoreCase)
-                    ? Hosting.CuratorInstructions.Text
-                    : null;
                 if (string.IsNullOrWhiteSpace(threadId))
                 {
                     threadId = await _codex.StartThreadAsync(
                         _options.ResolveThreadWorkspaceDirectory(),
                         selection.Model,
-                        roleInstructions,
                         cancellationToken).ConfigureAwait(false);
                     await _store.SetThreadIdAsync(sessionId, threadId, cancellationToken).ConfigureAwait(false);
                     await TrySetThreadGoalAsync(threadId, content, latest.GoalEnabled, cancellationToken).ConfigureAwait(false);
@@ -323,7 +317,6 @@ public sealed class SessionOrchestrator : IDisposable
                             threadId,
                             _options.ResolveThreadWorkspaceDirectory(),
                             selection.Model,
-                            roleInstructions,
                             cancellationToken).ConfigureAwait(false);
                     }
                     catch (CodexProtocolException exception) when (IsUnsupportedPaginatedThread(exception))
@@ -333,7 +326,6 @@ public sealed class SessionOrchestrator : IDisposable
                             threadId,
                             content,
                             selection.Model,
-                            roleInstructions,
                             cancellationToken).ConfigureAwait(false);
                         migratedThread = true;
                     }
@@ -360,7 +352,6 @@ public sealed class SessionOrchestrator : IDisposable
                         threadId,
                         content,
                         selection.Model,
-                        roleInstructions,
                         cancellationToken).ConfigureAwait(false);
                     turnId = await _codex.StartTurnAsync(
                         threadId,
@@ -440,13 +431,11 @@ public sealed class SessionOrchestrator : IDisposable
         string incompatibleThreadId,
         string currentMessage,
         string? model,
-        string? roleInstructions,
         CancellationToken cancellationToken)
     {
         var replacementThreadId = await _codex.StartThreadAsync(
             _options.ResolveThreadWorkspaceDirectory(),
             model,
-            roleInstructions,
             cancellationToken).ConfigureAwait(false);
         await _store.SetThreadIdAsync(sessionId, replacementThreadId, cancellationToken).ConfigureAwait(false);
         var recoveredMessage = await BuildRecoveredThreadMessageAsync(

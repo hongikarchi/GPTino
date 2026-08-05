@@ -99,7 +99,7 @@ public interface ICordycepsRhinoSceneAdapter
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Saves or restores a named layer state (RhinoDoc.NamedLayerStates). Save is the curator's
+    /// Saves or restores a named layer state (RhinoDoc.NamedLayerStates). Save is the
     /// pre-reorganization checkpoint: one call before a layer sweep makes the whole sweep
     /// revertible without touching object geometry.
     /// </summary>

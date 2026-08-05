@@ -1,18 +1,13 @@
 import type {
-  ApprovalGrant,
   ArchiveMessage,
   ArchiveProject,
   DataFlowDetail,
   DeletedSession,
-  RhinoAuditKind,
-  RhinoAuditResult,
   MessageRequest,
   ModelInfo,
   ModelProfile,
   RuntimeState,
-  SessionMode,
   SessionOrderRequest,
-  SessionRole,
   FocusMode,
   FocusResult,
 } from "../types";
@@ -26,24 +21,19 @@ export interface GptinoApiClient {
     onError?: (error: Error) => void,
   ): () => void;
   listModels(): Promise<ModelInfo[]>;
-  createSession(name: string, grasshopperDoc?: string, role?: SessionRole): Promise<void>;
+  createSession(name: string, grasshopperDoc?: string): Promise<void>;
   /** On-demand Rhino<->GH data-flow detail for one GH doc (omit docId when only one is open). */
   focusObjects(objectIds: string[], mode: FocusMode, zoom?: boolean): Promise<FocusResult>;
   /** Prose language for GPTino's answers ("ko" | "en"); UI labels stay English either way. */
   getLanguage(): Promise<{ language: string }>;
   setLanguage(language: string): Promise<{ language: string }>;
   getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail>;
-  /** Server-computed document-hygiene audit (deterministic; the card renders it verbatim). */
-  getAudit(kind: RhinoAuditKind, options?: { tolerance?: number; bandFactor?: number; limit?: number }): Promise<RhinoAuditResult>;
-  /** Mint a user approval bound to the exact (objectId, fingerprint) pairs shown on the card. */
-  mintApprovalGrant(items: { objectId: string; fingerprint: string }[]): Promise<ApprovalGrant>;
   reorderSessions(request: SessionOrderRequest): Promise<void>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   /** Stop the current turn and pull the last user message back for editing; returns its text. */
   retractLastMessage(sessionId: string): Promise<string | null>;
   /** Bind (docKey) or unbind (null) the GH document this session's writes target. */
   setSessionTarget(sessionId: string, grasshopperDoc: string | null): Promise<void>;
-  setSessionMode(sessionId: string, mode: SessionMode): Promise<void>;
   setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
   /** Toggle the session's native Codex thread goal (objective + budget) on/off. */
   /** Answer a proposed approval card: grant the ticked items (mints one bound grant) or reject. */
@@ -189,12 +179,11 @@ class HttpApiClient implements GptinoApiClient {
     });
   }
 
-  createSession(name: string, grasshopperDoc?: string, role?: SessionRole): Promise<void> {
+  createSession(name: string, grasshopperDoc?: string): Promise<void> {
     return this.request("/sessions", {
       method: "POST",
       body: JSON.stringify({
         name,
-        role: role ?? "modeler",
         // New sessions default to xhigh reasoning effort on the GPT-5.6-Sol model (see also mock.ts).
         modelProfile: "xhigh",
         model: "gpt-5.6-sol",
@@ -236,26 +225,6 @@ class HttpApiClient implements GptinoApiClient {
     return this.request<DataFlowDetail>(`/data-flow${query}`);
   }
 
-  async getAudit(
-    kind: RhinoAuditKind,
-    options?: { tolerance?: number; bandFactor?: number; limit?: number },
-  ): Promise<RhinoAuditResult> {
-    const query = new URLSearchParams({ kind });
-    if (options?.tolerance != null) query.set("tolerance", String(options.tolerance));
-    if (options?.bandFactor != null) query.set("bandFactor", String(options.bandFactor));
-    if (options?.limit != null) query.set("limit", String(options.limit));
-    // The backend wraps bridge reads as { result, fingerprint, diagnostics }.
-    const wrapped = await this.request<{ result: RhinoAuditResult }>(`/audit?${query}`);
-    return wrapped.result;
-  }
-
-  mintApprovalGrant(items: { objectId: string; fingerprint: string }[]): Promise<ApprovalGrant> {
-    return this.request<ApprovalGrant>("/approval-grants", {
-      method: "POST",
-      body: JSON.stringify({ items }),
-    });
-  }
-
   setSessionPaused(sessionId: string, paused: boolean): Promise<void> {
     return this.request(`/sessions/${encodeURIComponent(sessionId)}/pause`, {
       method: "PUT",
@@ -275,13 +244,6 @@ class HttpApiClient implements GptinoApiClient {
     return this.request(`/sessions/${encodeURIComponent(sessionId)}/target`, {
       method: "PUT",
       body: JSON.stringify({ grasshopperDoc }),
-    });
-  }
-
-  setSessionMode(sessionId: string, mode: SessionMode): Promise<void> {
-    return this.request(`/sessions/${encodeURIComponent(sessionId)}/mode`, {
-      method: "PUT",
-      body: JSON.stringify({ mode }),
     });
   }
 

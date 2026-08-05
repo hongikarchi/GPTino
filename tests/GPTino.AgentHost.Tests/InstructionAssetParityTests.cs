@@ -19,10 +19,6 @@ public sealed class InstructionAssetParityTests
     public void PayloadGuideAssetMatchesCompiledFallback() =>
         AssertAssetMatchesFallback("payload-guide.md", DynamicToolSpecs.DefaultPayloadGuide);
 
-    [Fact]
-    public void CuratorInstructionsAssetMatchesCompiledFallback() =>
-        AssertAssetMatchesFallback("curator.md", CuratorInstructions.DefaultText);
-
     private static void AssertAssetMatchesFallback(string assetFileName, string fallback)
     {
         var assetPath = Path.Combine(RepoRoot(), "assets", "instructions", assetFileName);

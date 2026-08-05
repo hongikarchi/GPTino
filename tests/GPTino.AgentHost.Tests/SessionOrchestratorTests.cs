@@ -1009,16 +1009,12 @@ public sealed class SessionOrchestratorTests
                     ["low", "medium", "high"])
             ]);
 
-        public string? LastRoleInstructions { get; private set; }
-
         public Task<string> StartThreadAsync(
             string cwd,
             string? model,
-            string? roleInstructions = null,
             CancellationToken cancellationToken = default)
         {
             IsRunning = true;
-            LastRoleInstructions = roleInstructions;
             Interlocked.Increment(ref _startThreadCount);
             return Task.FromResult(ThreadToStart);
         }
@@ -1027,10 +1023,8 @@ public sealed class SessionOrchestratorTests
             string threadId,
             string cwd,
             string? model,
-            string? roleInstructions = null,
             CancellationToken cancellationToken = default)
         {
-            LastRoleInstructions = roleInstructions;
             if (ResumeThread is not null)
             {
                 await ResumeThread(threadId, cwd, model, cancellationToken);

@@ -24,14 +24,10 @@ describe("deriveGraph", () => {
     const model = deriveGraph(state);
 
     const sessionNodes = model.nodes.filter((candidate) => candidate.kind === "session");
-    // The curator session lives on its own tab: it never renders on the Model rail.
     expect(sessionNodes.map((candidate) => candidate.id)).toEqual(
-      state.sessions
-        .filter((session) => session.role !== "curator")
-        .map((session) => `session:${session.id}`),
+      state.sessions.map((session) => `session:${session.id}`),
     );
-    expect(sessionNodes.some((candidate) => candidate.id === "session:curator")).toBe(false);
-    expect(sessionNodes.map((candidate) => candidate.rank)).toEqual([1, 2, 3, 4]);
+    expect(sessionNodes.map((candidate) => candidate.rank)).toEqual([1, 2, 3, 4, 5]);
     expect(node(model, "orchestrator").kind).toBe("orchestrator");
     expect(node(model, "doc:rhino").docTarget).toBe("rhino");
     expect(node(model, `doc:gh:${DOC_FACADE}`).docTarget).toBe("grasshopper");

@@ -756,7 +756,6 @@ try {
         $apiHeaders = @{ 'X-GPTino-Token' = $apiToken }
         $createSessionBody = @{
             name = 'Codex live smoke'
-            role = 'planner'
             modelProfile = 'auto'
             model = $null
         } | ConvertTo-Json -Compress

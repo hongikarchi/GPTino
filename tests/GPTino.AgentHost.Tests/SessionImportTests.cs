@@ -29,7 +29,6 @@ public sealed class SessionImportTests
         var imported = await store.ImportSessionAsync(seed);
 
         Assert.Equal("Facade (imported)", imported.Name);
-        Assert.Equal("modeler", imported.Role);
         Assert.Equal("auto", imported.ModelProfile);
         Assert.Equal(SessionStates.Idle, imported.State);
         Assert.Null(imported.CodexThreadId);

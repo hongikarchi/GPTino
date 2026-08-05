@@ -6,8 +6,6 @@ const session = (id: string, status: SessionStatus, over: Partial<GptinoSession>
   id,
   title: `Session ${id}`,
   status,
-  mode: "auto",
-  role: "modeler",
   modelProfile: "xhigh",
   paused: false,
   messages: [],
