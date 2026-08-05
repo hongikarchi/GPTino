@@ -339,6 +339,17 @@ api.MapPost("/focus", async (
     return Results.Ok(await liveBackend.FocusRhinoObjectsAsync(arguments, cancellationToken));
 });
 
+// Which language GPTino writes its prose in. A project-level preference (not per session):
+// the panel toggles it, and the next thread start/resume composes it into instructions.
+api.MapGet("/language", (ProjectContextStore context) =>
+    Results.Ok(new LanguageSetting(context.ReadLanguage())));
+
+api.MapPost("/language", (LanguageSetting request, ProjectContextStore context) =>
+{
+    context.WriteLanguage(request.Language);
+    return Results.Ok(new LanguageSetting(context.ReadLanguage()));
+});
+
 // Mints a user-approval grant for the audit card's Approve action: bound to exactly the
 // (objectId, fingerprint) pairs the user saw, expiring, and required before destructive ops can
 // touch objects without GPTino provenance stamps.

@@ -366,6 +366,9 @@ const demoState: RuntimeState = {
   lastUpdatedAt: now.toISOString(),
 };
 
+/** Demo-only prose-language preference so the header toggle round-trips without a server. */
+let demoLanguage = "en";
+
 const demoAudits: Record<RhinoAuditKind, RhinoAuditResult> = {
   nearMissEndpoints: {
     kind: "nearMissEndpoints",
@@ -786,6 +789,15 @@ export function createMockApiClient(): GptinoApiClient {
         restored: mode === "restore",
         fingerprint: `focus-${mode}-${objectIds.length}-${zoom ? "z" : "n"}`,
       };
+    },
+    async getLanguage() {
+      await delay(30);
+      return { language: demoLanguage };
+    },
+    async setLanguage(language: string) {
+      await delay(30);
+      demoLanguage = language === "ko" ? "ko" : "en";
+      return { language: demoLanguage };
     },
     async getDataFlowDetail(docId?: string | null) {
       await delay(160);

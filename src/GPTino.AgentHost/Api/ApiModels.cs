@@ -64,6 +64,9 @@ public sealed record MintApprovalGrantRequest(IReadOnlyList<ApprovalGrantItem> I
 /// <summary>Panel viewport focus: mode is select | isolate | lock | restore.</summary>
 public sealed record FocusRequest(IReadOnlyList<Guid>? ObjectIds, string? Mode, bool? Zoom);
 
+/// <summary>Prose language for GPTino's answers: "ko" or "en" (anything else reads as "en").</summary>
+public sealed record LanguageSetting(string Language);
+
 public sealed record ReorderSessionsRequest(
     IReadOnlyList<Guid> OrderedSessionIds,
     long OrderVersion);

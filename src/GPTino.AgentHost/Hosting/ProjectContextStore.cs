@@ -60,6 +60,36 @@ public sealed class ProjectContextStore : IThreadInstructionComposer
 
     public string MemoryPath => Path.Combine(ContextDirectory, "MEMORY.md");
 
+    /// <summary>
+    /// Which language GPTino writes its PROSE in (chat answers, findings, explanations).
+    /// UI control labels and typed payloads are unaffected — those stay English so the
+    /// vocabulary matches the docs and the operation contract. Stored beside the other
+    /// context files so it travels with the project, and composed into every thread's
+    /// instructions (a change lands on the next turn's thread start/resume).
+    /// </summary>
+    public string LanguagePath => Path.Combine(ContextDirectory, "language");
+
+    public string ReadLanguage()
+    {
+        try
+        {
+            if (!File.Exists(LanguagePath)) return "en";
+            var value = File.ReadAllText(LanguagePath).Trim().ToLowerInvariant();
+            return value == "ko" ? "ko" : "en";
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return "en";
+        }
+    }
+
+    public void WriteLanguage(string language)
+    {
+        var normalized = string.Equals(language?.Trim(), "ko", StringComparison.OrdinalIgnoreCase) ? "ko" : "en";
+        Directory.CreateDirectory(ContextDirectory);
+        File.WriteAllText(LanguagePath, normalized);
+    }
+
     public void EnsureScaffolded(
         Guid projectId,
         string projectName,
@@ -90,6 +120,15 @@ public sealed class ProjectContextStore : IThreadInstructionComposer
         try
         {
             var builder = new StringBuilder(baseInstructions);
+            if (ReadLanguage() == "ko")
+            {
+                builder.Append("\n\n## Response language\n")
+                    .Append("Write your prose to the user in KOREAN — chat answers, findings, ")
+                    .Append("explanations, questions, and reports. Keep these in English regardless: ")
+                    .Append("code and comments, tool names and JSON payload keys, operation/predicate ")
+                    .Append("vocabulary, component nicknames, and technical identifiers. Do not translate ")
+                    .Append("values a tool returned; quote them verbatim.");
+            }
             AppendSection(builder, "Project rules", RulesPath);
             AppendSection(builder, "Project memory", MemoryPath);
             return builder.ToString();

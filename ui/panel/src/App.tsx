@@ -140,7 +140,7 @@ function NewSessionPopover({
 }
 
 export default function App() {
-  const { runtime, serverRuntime, models, loading, error, demo, busyActions, actions } = useRuntime();
+  const { runtime, serverRuntime, models, loading, error, demo, busyActions, language, actions } = useRuntime();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Completion deep-links (toasts, OS notifications) must be tab-aware: a curator completion
   // switches to the curator tab instead of selecting it on the Model rail. The handler needs
@@ -314,6 +314,20 @@ export default function App() {
         </div>
 
         <div className="runtime-summary">
+          {/* Prose language for GPTino's answers. UI labels (Effort, Plan/Auto, tool names)
+              stay English on purpose — they are vocabulary, not prose. */}
+          <button
+            type="button"
+            className="language-toggle"
+            title={
+              language === "ko"
+                ? "GPTino의 답변 언어: 한국어 (클릭하면 English) — 다음 턴부터 적용"
+                : "GPTino answers in English (click for 한국어) — applies from the next turn"
+            }
+            onClick={() => void actions.setLanguage(language === "ko" ? "en" : "ko")}
+          >
+            {language === "ko" ? "한" : "ENG"}
+          </button>
           <div
             className={`connection-state health-${runtime.health}`}
             title={runtime.healthDetail ?? "Document runtime"}

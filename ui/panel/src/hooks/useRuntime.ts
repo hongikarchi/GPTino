@@ -164,6 +164,31 @@ export function useRuntime() {
     (docId?: string | null) => clientRef.current!.getDataFlowDetail(docId),
     [],
   );
+
+  // Prose language for GPTino's answers. Project-level (not per session) and applied when
+  // the next thread starts/resumes, so the toggle reports optimistically and never blocks.
+  const [language, setLanguageState] = useState("en");
+  useEffect(() => {
+    let disposed = false;
+    clientRef.current
+      ?.getLanguage()
+      .then((value) => {
+        if (!disposed) setLanguageState(value.language === "ko" ? "ko" : "en");
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, []);
+  const setLanguage = useCallback(async (next: string) => {
+    setLanguageState(next === "ko" ? "ko" : "en");
+    try {
+      const applied = await clientRef.current!.setLanguage(next);
+      setLanguageState(applied.language === "ko" ? "ko" : "en");
+    } catch {
+      // Leave the optimistic value; the next reload re-reads the server's answer.
+    }
+  }, []);
   // The audit card keys its fetch effect on this — stable identity required.
   const getAudit = useCallback(
     (kind: RhinoAuditKind, options?: { tolerance?: number; bandFactor?: number; limit?: number }) =>
@@ -313,6 +338,7 @@ export function useRuntime() {
       listArchive,
       readArchiveMessages,
       focusObjects,
+      setLanguage,
       getDataFlowDetail,
       getAudit,
       mintApprovalGrant,
@@ -326,7 +352,7 @@ export function useRuntime() {
         );
       },
     }),
-    [focusObjects, getAudit, getDataFlowDetail, listArchive, listDeleted, mintApprovalGrant, readArchiveMessages, reorder, runAction, shift, updateSession],
+    [focusObjects, getAudit, getDataFlowDetail, listArchive, listDeleted, mintApprovalGrant, readArchiveMessages, reorder, runAction, setLanguage, shift, updateSession],
   );
 
   return {
@@ -337,6 +363,7 @@ export function useRuntime() {
     error,
     demo: clientRef.current.demo,
     busyActions,
+    language,
     actions,
   };
 }

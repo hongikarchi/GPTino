@@ -29,6 +29,9 @@ export interface GptinoApiClient {
   createSession(name: string, grasshopperDoc?: string, role?: SessionRole): Promise<void>;
   /** On-demand Rhino<->GH data-flow detail for one GH doc (omit docId when only one is open). */
   focusObjects(objectIds: string[], mode: FocusMode, zoom?: boolean): Promise<FocusResult>;
+  /** Prose language for GPTino's answers ("ko" | "en"); UI labels stay English either way. */
+  getLanguage(): Promise<{ language: string }>;
+  setLanguage(language: string): Promise<{ language: string }>;
   getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail>;
   /** Server-computed document-hygiene audit (deterministic; the card renders it verbatim). */
   getAudit(kind: RhinoAuditKind, options?: { tolerance?: number; bandFactor?: number; limit?: number }): Promise<RhinoAuditResult>;
@@ -188,6 +191,17 @@ class HttpApiClient implements GptinoApiClient {
         model: "gpt-5.6-sol",
         ...(grasshopperDoc ? { grasshopperDoc } : {}),
       }),
+    });
+  }
+
+  getLanguage(): Promise<{ language: string }> {
+    return this.request<{ language: string }>("/language");
+  }
+
+  setLanguage(language: string): Promise<{ language: string }> {
+    return this.request<{ language: string }>("/language", {
+      method: "POST",
+      body: JSON.stringify({ language }),
     });
   }
 
