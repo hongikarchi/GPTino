@@ -12,8 +12,11 @@ inventing verdict math.
 [2] load combos     ULS (factored) for strength/utilization, SLS (unfactored) for deflection
 [3] solve           Karamba script (AnalyzeThI default)
 [4] raw output      displacements / member forces / reactions
-[5] verdicts        DETERMINISTIC CODE ONLY: Karamba Utilization/OptiCroSec, or the vetted
-                    structural_check.py payload (skill_read + wire verbatim, like bake_manager.py)
+[5] verdicts        DETERMINISTIC CODE ONLY. Deflection limits: the vetted structural_check.py
+                    payload (skill_read + wire verbatim, like bake_manager.py) — it takes
+                    exactly four inputs and judges SLS deflection. Strength/utilization:
+                    Karamba's own Utilization/OptiCroSec (PyNite has no code checks — say so
+                    rather than improvising one)
 [6] interpretation  YOU read the numbers and explain; you never do the safety arithmetic
 ```
 

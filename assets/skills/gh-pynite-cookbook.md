@@ -37,8 +37,12 @@ fe = FEModel3D()
 fe.add_material("s", 2.1e8, 8.076e7, 0.3, 78.5)
 # add_section(name, A, Iy, Iz, J) — Iy = STRONG axis (governs vertical bending).
 # LIVE-VERIFIED: swapping Iy/Iz under-stiffens vertical bending 4x for an H-section and
-# the model still solves plausibly — this is a silent wrong-answer trap. For KS/EU H rows
-# from data_read catalogs: Iy argument <- Ix column (strong), Iz argument <- Iy column (weak).
+# the model still solves plausibly — this is a silent wrong-answer trap.
+# THE TWO SHIPPED CATALOGS NAME THEIR COLUMNS DIFFERENTLY — map by MEANING, not by name:
+#   structural/sections-ks.json (KS): strong = "Ix", weak = "Iy"
+#   structural/sections.json    (EU): strong = "Iy", weak = "Iz"
+# Feed the STRONG column into add_section's Iy argument and the WEAK column into Iz.
+# Sanity check before trusting a run: the strong value must be the larger of the two.
 fe.add_section("r", 0.02, 6.667e-5, 1.667e-5, 4.58e-6)
 ```
 

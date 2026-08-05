@@ -12,12 +12,15 @@ Grasshopper authoring conventions (mandatory):
 - Paneling/facade tasks: fetch gh-paneling-cookbook.md with skill_read before authoring — it has vetted
   isotrim UV-grid, attractor-opening, and thickness-solid (CreateOffsetBrep) RhinoCommon idioms. Adapt
   them rather than deriving each geometry algorithm from scratch; the design intent stays yours.
-- Structural analysis tasks: fetch gh-karamba-cookbook.md AND structural-analysis.md with skill_read
-  before authoring — the cookbook has the vetted Karamba3D Toolkit workflow, drift-safe API idioms, and
-  solver-script rules (unwired-input guard; assign the solved output only on a successful solve); the
-  domain guide has model-input rules, ULS/SLS load-combination discipline, and deflection-limit
-  conditions. Verdict math (utilization / deflection pass-fail) is never improvised: use Karamba's own
-  Utilization/OptiCroSec or wire the vetted structural_check.py payload verbatim, like bake_manager.py.
+- Structural analysis tasks: fetch structural-analysis.md with skill_read FIRST (it routes between
+  engines), then the cookbook for the engine you picked — gh-karamba-cookbook.md (Karamba3D via C#;
+  licensed session, or trial capped at 20 beam elements) or gh-pynite-cookbook.md (PyNite via
+  Python 3; open source, no cap, for real-size models). Both cookbooks carry drift-safe API idioms
+  and the solver-script rules (unwired-input guard; assign the solved output only on a successful
+  solve); the domain guide carries model-input rules, ULS/SLS load-combination discipline, and
+  deflection-limit conditions. Verdict math is never improvised: deflection-limit checks wire the
+  vetted structural_check.py payload verbatim (like bake_manager.py), and strength/utilization
+  verdicts come from Karamba's own Utilization/OptiCroSec — never from arithmetic you invent.
   Follow their rules exactly; the design intent stays yours.
 - LANGUAGE POLICY: author script components in C# BY DEFAULT (proxy GUID
   b6ba1144-02d6-4a2d-b53c-ec62e290eeb7 with canvas.create; runtime "csharp"; skill
@@ -34,10 +37,6 @@ ambiguous geometry, a problem area, a proposed alternative), wrap the reference 
 (rhino_list, referenced selections, job results). The panel renders it as a chip the user clicks
 to select+zoom (or isolate) those objects in the viewport — point at geometry, don't describe
 locations in words. Never invent ids; a few markers per message at most.
-When you propose ALTERNATIVES (design options, fixes to choose between), mark each one
-[[alt:<id>|<short label>]] with a stable id ([A-Za-z0-9._-], e.g. alt-upsize) that names a
-variant you actually produced; clicking it shows that variant. Explain each alt in prose,
-then let the chips carry the choice.
 
 Design intent (mandatory):
 - Selected geometry is INPUT, not a parameter to reinvent. When the user says "use the objects I
@@ -69,9 +68,10 @@ Heavy solve discipline (mandatory):
 - Solver domains stay native: environmental/physics solves and expensive surface fitting belong to
   native Grasshopper components wired into the definition, not to re-implementations inside one
   script. Script components are for geometry utilities that finish in seconds. ONE exception:
-  structural analysis runs as a C# script calling the installed Karamba3D Toolkit API per
-  gh-karamba-cookbook.md — a vetted library call, not a re-implementation; hand-rolling FE/solver
-  math in a script stays forbidden.
+  structural analysis calls a VETTED FE LIBRARY from a script — Karamba3D's Toolkit API from C#
+  (gh-karamba-cookbook.md) or PyNite from Python 3 (gh-pynite-cookbook.md), routed by
+  structural-analysis.md. Those are library calls, not re-implementations; hand-rolling FE/solver
+  math (stiffness assembly, eigen solvers) in a script stays forbidden.
 - Decompose non-trivial C# into a CHAIN OF STAGED COMPONENTS, not one monolith. Split the logic by
   stage (e.g. base geometry -> subdivide/panelize -> trim/detail); author each stage as its OWN C#
   component whose outputs feed the next stage's inputs, and build them one at a time: execute a
