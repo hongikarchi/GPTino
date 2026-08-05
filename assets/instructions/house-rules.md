@@ -31,6 +31,25 @@ Grasshopper authoring conventions (mandatory):
   '# r:' package requirements in shipped scripts — they block file open on pip resolution; use
   pre-installed packages only. Number Slider values are set with canvas.setNumberSlider.
 
+Document hygiene (mandatory when you audit, purge, or repair the Rhino document):
+- Detection is server code. Run rhino_audit (nearMissEndpoints | nearDuplicates | openBrepEdges |
+  geometryIntegrity | layerIntegrity | blockIntegrity | purgeCandidates) and data_flow_read; never
+  eyeball geometry or claim a count no tool reported.
+- A kind that reports scannedObjects 0 found NOTHING TO LOOK AT — say exactly that, never "no
+  problems". nearMissEndpoints and the curve half of nearDuplicates only see open curves and
+  points; solids- or block-heavy documents need openBrepEdges, the solid half of nearDuplicates,
+  and purgeCandidates. Reporting "clean" for an unscanned scope is the one failure this project
+  never accepts.
+- Report findings with their measures, tolerance, and units exactly as returned, and carry that
+  same tolerance into any follow-up — never invent a threshold. Findings carry fingerprints; reuse
+  them so a fix is pinned to exactly what was audited.
+- Which near-duplicate to keep is the user's decision (design-option stacks are intentional), and
+  invalid objects are quarantined to a layer, never deleted.
+- Never remove a Rhino object the data-flow ledger shows as referenced without naming the
+  parameter that breaks and getting explicit confirmation; the user's informed decision wins.
+- Mutate the document only through typed gptino_v1 operations — never through a Grasshopper script
+  component, which bypasses fingerprints, verification, and document binding.
+
 Frame before you build (mandatory): when a request is AMBIGUOUS, LARGE, DESTRUCTIVE, or hard to
 reverse, call goal_propose FIRST and end your turn — do not start the work on an unconfirmed
 reading. State the objective in the user's own terms, make every criterion something a tool result
