@@ -72,7 +72,7 @@ public sealed record LiveProblemItem(
 /// Model turns may run concurrently, but every submitted ChangeSet crosses this broker.
 /// </summary>
 public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBackend,
-    ILiveDocumentQueueControl, IJobExecutor, ISelectionContextSource
+    ILiveDocumentQueueControl, IJobExecutor, ISelectionContextSource, ILayoutTidyService
 {
     private static readonly TimeSpan BridgeRequestTimeout = TimeSpan.FromSeconds(45);
     // The optional change_submit wait must always finish inside the Codex dynamic-tool deadline
@@ -95,6 +95,10 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
     private readonly ProblemLog? _problemLog;
     private readonly ConcurrentDictionary<string, Guid> _idempotency = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<Guid, Task> _completionObservers = new();
+    // Per-session set of canvas object ids created during the CURRENT turn (new objects seen between a
+    // committed ChangeSet's before/after snapshots). BeginTurn resets it; the orchestrator drains it at
+    // turn end to seed the automatic layout tidy. Each set is guarded by locking on itself.
+    private readonly ConcurrentDictionary<Guid, HashSet<Guid>> _turnCreatedComponents = new();
     private readonly SessionStore _store;
     private readonly AgentHostOptions _options;
     private readonly EventHub _events;
@@ -1124,7 +1128,20 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
         // Default wait=true so the tidy result comes back inline with the tool call.
         var wait = !arguments.TryGetProperty("wait", out var waitElement) ||
             waitElement.ValueKind != JsonValueKind.False;
+        return await ArrangeSeedsAsync(session, seeds, wait, cancellationToken).ConfigureAwait(false);
+    }
 
+    /// <summary>
+    /// Core of the tidy: captures the live canvas, computes the layered layout for the cluster(s) the
+    /// <paramref name="seeds"/> belong to, and submits the resulting moves as an ordinary canvas.move
+    /// ChangeSet. Shared by the model-driven <c>arrange_layout</c> tool and the automatic post-turn tidy.
+    /// </summary>
+    internal async Task<object> ArrangeSeedsAsync(
+        SessionRecord session,
+        IReadOnlyCollection<Guid> seeds,
+        bool wait,
+        CancellationToken cancellationToken)
+    {
         var targetState = ResolveSessionTargetState(session);
         SnapshotEnvelope snapshot;
         using (await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1215,6 +1232,73 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             BridgeProtocol.JsonOptions);
 
         return await SubmitChangeAsync(session, submission, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Resets the current session's per-turn "created components" accumulator (ILayoutTidyService).</summary>
+    public void BeginTurn(Guid sessionId) => _turnCreatedComponents[sessionId] = new HashSet<Guid>();
+
+    /// <summary>
+    /// Drains the components this session created during the just-finished turn and, if any, tidies the
+    /// dataflow cluster(s) they belong to via the same layered layout as arrange_layout. Best effort: a
+    /// disconnected document or a layout failure is logged and swallowed so it never demotes the turn.
+    /// Returns the number of seed components tidied (0 when nothing was created or the canvas was clean).
+    /// </summary>
+    public async Task<int> TidyTurnCreationsAsync(SessionRecord session, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        if (!_turnCreatedComponents.TryRemove(session.Id, out var set))
+        {
+            return 0;
+        }
+        Guid[] seeds;
+        lock (set)
+        {
+            seeds = set.ToArray();
+        }
+        if (seeds.Length == 0)
+        {
+            return 0;
+        }
+        try
+        {
+            // wait:false — the tidy move rides the normal broker queue and repaints when it lands; the
+            // turn is already complete, so there is nothing to block on.
+            await ArrangeSeedsAsync(session, seeds, wait: false, cancellationToken).ConfigureAwait(false);
+            return seeds.Length;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(exception, "Automatic post-turn tidy failed for session {SessionId}.", session.Id);
+            return 0;
+        }
+    }
+
+    // Records the canvas objects that appeared (new ids) between a committed ChangeSet's before/after
+    // snapshots into the session's per-turn accumulator, so the post-turn tidy can seed on exactly the
+    // components this turn authored. Cheap set diff; a no-op when the write created no canvas objects.
+    private void AccumulateTurnCreatedComponents(Guid sessionId, CanvasSnapshot before, CanvasSnapshot after)
+    {
+        if (after.Objects.Count == 0 || after.Objects.Count <= before.Objects.Count)
+        {
+            return;
+        }
+        var beforeIds = before.Objects.Select(item => item.ObjectId).ToHashSet();
+        var created = after.Objects
+            .Select(item => item.ObjectId)
+            .Where(id => !beforeIds.Contains(id))
+            .ToList();
+        if (created.Count == 0)
+        {
+            return;
+        }
+        var set = _turnCreatedComponents.GetOrAdd(sessionId, static _ => new HashSet<Guid>());
+        lock (set)
+        {
+            foreach (var id in created)
+            {
+                set.Add(id);
+            }
+        }
     }
 
     private static IReadOnlyCollection<Guid> ReadSeedComponentIds(JsonElement arguments)
@@ -2030,6 +2114,7 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
                 _logger.LogWarning(exception, "Could not capture post-solve observations for job {JobId}.", job.JobId);
             }
             UpdateResourceLedger(before, after, job.ChangeSet.SessionId, job.JobId);
+            AccumulateTurnCreatedComponents(job.ChangeSet.SessionId, before.Canvas, after.Canvas);
             // Informational commit quality: runtime warnings and empty solved outputs, appended to
             // the commit message (and thereby the problem-log row SetJobPhaseAsync writes) so a
             // "committed but red/empty on canvas" state survives outside the transcript. This is

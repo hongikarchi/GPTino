@@ -97,6 +97,8 @@ builder.Services.AddSingleton<ILiveDocumentQueueControl>(services =>
     services.GetRequiredService<LiveDocumentBackend>());
 builder.Services.AddSingleton<ISelectionContextSource>(services =>
     services.GetRequiredService<LiveDocumentBackend>());
+builder.Services.AddSingleton<ILayoutTidyService>(services =>
+    services.GetRequiredService<LiveDocumentBackend>());
 builder.Services.AddHostedService(services => services.GetRequiredService<LiveDocumentBackend>());
 builder.Services.AddSingleton<CodexAppServerClient>();
 builder.Services.AddSingleton<ICodexSessionClient>(services => services.GetRequiredService<CodexAppServerClient>());
@@ -139,6 +141,35 @@ var queueControl = app.Services.GetRequiredService<ILiveDocumentQueueControl>();
 _ = app.Services.GetRequiredService<SessionOrchestrator>();
 codex.DynamicToolHandler = dispatcher.DispatchAsync;
 await queueControl.RefreshScheduleAsync();
+
+// The Codex login/install flow happens in an external terminal while the panel sits on its login
+// gate; nothing in that flow touches an endpoint, so no activity-driven Publish() would ever
+// re-project the flipped auth state. This watcher is the missing publisher: it re-reads the probe
+// on a cadence just above its cache TTL and publishes ONLY on a status change, so the gate (and
+// the header chip) lift by themselves shortly after auth.json appears — and re-gate if it goes.
+var authProbe = app.Services.GetRequiredService<CodexAuthProbe>();
+_ = Task.Run(async () =>
+{
+    var lastStatus = authProbe.Read().Status;
+    try
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(4));
+        while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping))
+        {
+            var status = authProbe.Read().Status;
+            if (status == lastStatus)
+            {
+                continue;
+            }
+            lastStatus = status;
+            events.Publish();
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        // Host shutdown.
+    }
+});
 
 app.Use(async (context, next) =>
 {

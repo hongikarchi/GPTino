@@ -271,11 +271,11 @@ public static class HouseRules
           4) executePython in its own final ChangeSet AFTER the wires commit — or skip it when step 2 already
              executed and step 3's job result shows healthy committed.outputs (the wire write solves inline).
              Executing a component whose inputs are still unwired (None) without defensive defaults is a defect.
-        - Tidy the canvas as the LAST step. Once your authoring chain has committed, call arrange_layout ONCE with
-          seedComponentIds set to the objectIds you created this turn. The server lays the whole connected dataflow
-          cluster out left-to-right (inputs -> script stages -> outputs, stacked and grouped) from the wires and real
-          sizes, so you NEVER hand-pick move coordinates or issue a manual canvas.move just to tidy up. It is a no-op
-          when the cluster is already clean.
+        - The canvas tidies itself AUTOMATICALLY after your turn: the server lays the whole connected dataflow
+          cluster(s) you authored out left-to-right (inputs -> script stages -> outputs, stacked and grouped) from the
+          wires and real component sizes. So you do NOT need arrange_layout as a final step, and you NEVER hand-pick
+          move coordinates or issue a manual canvas.move just to tidy up. You MAY still call arrange_layout mid-chain
+          (seedComponentIds = the objectIds you created) to re-tidy before continuing; it is a no-op when already clean.
         - Orientation costs at most ONE snapshot_read per user request. Between chained submits, read fingerprints,
           socket ids, output data, and diagnostics from each job result's committed/applied block instead.
         - Optimistic-concurrency bookkeeping is automatic — do NOT carry snapshotId/revision/fingerprints between

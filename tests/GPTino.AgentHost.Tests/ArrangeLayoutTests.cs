@@ -75,6 +75,22 @@ public sealed class ArrangeLayoutTests
     }
 
     [Fact]
+    public async Task AutoTidyWithoutTurnCreationsIsANoOp()
+    {
+        // The post-turn auto-tidy (ILayoutTidyService) must be a safe no-op when the turn created nothing:
+        // no seeds accumulated -> no snapshot capture, no move, and it never throws into turn completion.
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        await using var responder = harness.StartResponder();
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Tidy"));
+
+        harness.Backend.BeginTurn(session.Id);
+        var moved = await harness.Backend.TidyTurnCreationsAsync(session, CancellationToken.None);
+
+        Assert.Equal(0, moved);
+        Assert.DoesNotContain(responder.Requests, r => string.Equals(r.Operation, "canvas.move", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task RejectsAnEmptySeedSet()
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync();

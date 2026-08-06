@@ -37,6 +37,7 @@ public sealed class SessionOrchestrator : IDisposable
     private readonly ConcurrentDictionary<string, byte> _assistantTurns = new();
     private readonly ConcurrentDictionary<Guid, ActiveTurn> _activeTurns = new();
     private readonly ISelectionContextSource? _selectionContext;
+    private readonly ILayoutTidyService? _layoutTidy;
     private readonly SessionActivityLog? _activity;
     private readonly SessionUsageState? _usage;
     private readonly AttachmentStore _attachments;
@@ -62,9 +63,11 @@ public sealed class SessionOrchestrator : IDisposable
         SessionActivityLog? activity = null,
         SessionUsageState? usage = null,
         AttachmentStore? attachments = null,
-        ImageUrlAttachmentFetcher? urlFetcher = null)
+        ImageUrlAttachmentFetcher? urlFetcher = null,
+        ILayoutTidyService? layoutTidy = null)
     {
         _selectionContext = selectionContext;
+        _layoutTidy = layoutTidy;
         _activity = activity;
         _usage = usage;
         _attachments = attachments ?? new AttachmentStore(options.ResolveDataDirectory());
@@ -281,6 +284,9 @@ public sealed class SessionOrchestrator : IDisposable
                     parallelAcquired = false;
                 }
                 _events.Publish();
+                // Open a fresh per-turn accumulator so the post-turn auto-tidy seeds only on the
+                // components THIS turn creates (see CompleteTurnAsync).
+                _layoutTidy?.BeginTurn(sessionId);
 
                 // Manual effort: the session's stored reasoning effort (low..ultra) is used directly and
                 // clamped to the chosen model's advertised set — no adaptive per-message routing, no
@@ -1158,6 +1164,7 @@ public sealed class SessionOrchestrator : IDisposable
     {
         var transition = _stateTransitionGates.GetOrAdd(sessionId, static _ => new SemaphoreSlim(1, 1));
         await transition.WaitAsync(cancellationToken).ConfigureAwait(false);
+        SessionRecord? tidyTarget = null;
         try
         {
             var current = await _store.FindSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
@@ -1185,10 +1192,26 @@ public sealed class SessionOrchestrator : IDisposable
                 completed && hasAssistant ? SessionStates.Idle : SessionStates.Failed,
                 null,
                 cancellationToken).ConfigureAwait(false);
+            if (completed && hasAssistant)
+            {
+                tidyTarget = current;
+            }
         }
         finally
         {
             transition.Release();
+        }
+
+        // Automatic canvas tidy: a successful turn that authored components lays out its dataflow cluster
+        // with the real bounds, so the user always gets a clean layout even if the model skipped
+        // arrange_layout. Runs outside the state gate; best effort (the service swallows its own failures).
+        if (tidyTarget is not null && _layoutTidy is not null)
+        {
+            var moved = await _layoutTidy.TidyTurnCreationsAsync(tidyTarget, cancellationToken).ConfigureAwait(false);
+            if (moved > 0)
+            {
+                _events.Publish();
+            }
         }
     }
 
