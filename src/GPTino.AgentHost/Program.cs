@@ -23,6 +23,11 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     WebRootPath = Directory.Exists(packagedWebRoot) ? packagedWebRoot : null
 });
 builder.WebHost.UseUrls("http://127.0.0.1:0");
+// No policy cap on message-attachment size: the user decides what is worth attaching (large images
+// cost tokens/context, which is their call, not ours). Kestrel's default ~28 MiB body cap would
+// otherwise reject a big paste with an opaque 413, so lift it entirely. This host is loopback-only
+// and token-gated (see the middleware below), so an unbounded body is not an external DoS surface.
+builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize = null);
 builder.Logging.ClearProviders();
 builder.Logging.AddSimpleConsole(console =>
 {

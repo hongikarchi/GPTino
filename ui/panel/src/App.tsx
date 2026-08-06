@@ -10,7 +10,7 @@ import { ToastStack } from "./components/Toast";
 import { useRuntime } from "./hooks/useRuntime";
 import { useSessionCompletion } from "./hooks/useSessionCompletion";
 import { ensureNotificationPermission } from "./notifications";
-import type { CodexAuth, GrasshopperDocInfo } from "./types";
+import type { GrasshopperDocInfo } from "./types";
 import "./styles.css";
 
 const NOTIFY_ASKED_KEY = "gptino.notify.asked";
@@ -30,46 +30,45 @@ function requestNotifyPermissionOnce() {
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-// LLM sign-in indicator (blue = signed in, red = signed out / CLI missing).
-// Codex only for now — a Claude backend is deferred, so a second provider
-// indicator would slot in right next to this one when that lands.
-// When signed in the detail line collapses into the tooltip; the extra text is
-// only worth its space while it is a call to action.
-function LlmAuthIndicator({ auth, busy, onLogin }: { auth: CodexAuth; busy: boolean; onLogin: () => void }) {
-  const loggedIn = auth.status === "logged-in";
-  const detail =
-    auth.detail ??
-    (loggedIn
-      ? "Signed in"
-      : auth.status === "cli-missing"
-        ? "Codex CLI not found"
-        : "Signed out — click to log in");
-  if (loggedIn) {
+// A provider status chip in the header: a colored dot (blue = connected, red = not) plus the
+// provider name. When disconnected AND actionable it is a button whose click runs the reconnect
+// action (Codex → login terminal; Grasshopper → the _Grasshopper command); otherwise a static div.
+// The connection axis (was a separate "connected" chip) is now just the dot colour on each provider.
+function StatusChip({
+  label,
+  connected,
+  detail,
+  actionable = false,
+  busy = false,
+  onClick,
+}: {
+  label: string;
+  connected: boolean;
+  detail: string;
+  actionable?: boolean;
+  busy?: boolean;
+  onClick?: () => void;
+}) {
+  const className = `status-chip ${connected ? "status-on" : "status-off"}`;
+  if (connected || !actionable) {
     return (
-      <div className={`llm-auth llm-${auth.status}`} title={`Codex — ${detail}`}>
-        <span className="llm-light" />
-        <div>
-          <strong>Codex</strong>
-        </div>
+      <div className={className} title={`${label} — ${detail}`}>
+        <span className="status-dot" />
+        <strong>{label}</strong>
       </div>
     );
   }
   return (
-    <button
-      type="button"
-      className={`llm-auth llm-${auth.status}`}
-      onClick={onLogin}
-      disabled={busy}
-      title={`Codex — ${detail}. Click to open a terminal and run 'codex login'.`}
-    >
-      <span className="llm-light" />
-      <div>
-        <strong>Codex</strong>
-        <span>{detail}</span>
-      </div>
+    <button type="button" className={className} onClick={onClick} disabled={busy} title={`${label} — ${detail}`}>
+      <span className="status-dot" />
+      <strong>{label}</strong>
     </button>
   );
 }
+
+// The Rhino-side WebView intercepts this scheme and runs the _Grasshopper command; there is no HTTP
+// request behind it. Shared by the Grasshopper status chip and the (still-available) empty-state CTA.
+const OPEN_GRASSHOPPER_URL = "gptino://open-grasshopper";
 
 // Popover replacing the old window.prompt for naming a new session. When more
 // than one GH doc is registered it also asks which document the session should
@@ -275,7 +274,14 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="document-header">
-        <div className="brand-mark" title="GPTino — Rhino orchestration">G</div>
+        {/* The Rhino-runtime connection (was a standalone "connected" chip) is folded into the
+            brand mark's tint: green when connected, amber/red when degraded/disconnected. */}
+        <div
+          className={`brand-mark health-${runtime.health}`}
+          title={runtime.healthDetail ?? `Rhino runtime — ${runtime.health}`}
+        >
+          G
+        </div>
 
         <div className="project-lockup">
           <div className="project-name-row">
@@ -299,20 +305,32 @@ export default function App() {
           >
             {language === "ko" ? "한" : "ENG"}
           </button>
-          <div
-            className={`connection-state health-${runtime.health}`}
-            title={runtime.healthDetail ?? "Document runtime"}
-          >
-            <span className="connection-light" />
-            <strong>{runtime.health}</strong>
-          </div>
           {runtime.codexAuth ? (
-            <LlmAuthIndicator
-              auth={runtime.codexAuth}
+            <StatusChip
+              label="Codex"
+              connected={runtime.codexAuth.status === "logged-in"}
+              detail={
+                runtime.codexAuth.detail ??
+                (runtime.codexAuth.status === "logged-in"
+                  ? "Signed in"
+                  : runtime.codexAuth.status === "cli-missing"
+                    ? "Codex CLI not found — click to open a terminal and run 'codex login'"
+                    : "Signed out — click to open a terminal and run 'codex login'")
+              }
+              actionable
               busy={busyActions.has("login-terminal")}
-              onLogin={() => void actions.openLoginTerminal()}
+              onClick={() => void actions.openLoginTerminal()}
             />
           ) : null}
+          <StatusChip
+            label="Grasshopper"
+            connected={hasGrasshopper}
+            detail={hasGrasshopper ? "Definition open" : "No definition open — click to open Grasshopper"}
+            actionable={!hasGrasshopper}
+            onClick={() => {
+              window.location.href = OPEN_GRASSHOPPER_URL;
+            }}
+          />
         </div>
 
         <div className="session-toolbar">
@@ -330,7 +348,7 @@ export default function App() {
               {canvasCollapsed ? `▸ Graph (${modelSessions.length})` : "▾ Graph"}
             </button>
             ) : null}
-            <div className="new-session-anchor" ref={newSessionAnchorRef} hidden={tab !== "model" || !hasGrasshopper}>
+            <div className="new-session-anchor" ref={newSessionAnchorRef} hidden={tab !== "model"}>
               <button
                 type="button"
                 className="new-session-button"
@@ -490,6 +508,7 @@ export default function App() {
               rhinoFile={runtime.rhinoFile}
               grasshopperFile={runtime.grasshopperFile ?? ""}
               getDetail={actions.getDataFlowDetail}
+              onSelectRhino={(objectIds) => void actions.focusObjects(objectIds, "select")}
             />
           ) : (
             <NoGrasshopper detail="This tab shows what a definition references from Rhino and what it bakes back, so it needs one open." />
@@ -499,11 +518,10 @@ export default function App() {
 
       {/* The chat region stays MOUNTED and toggles via `hidden`: unmounting a ChatPane would
           silently discard its composer draft and staged attachments on every tab switch. The Data
-          region holds no draft, so it unmounts — and re-reads the ledger on every visit. */}
+          region holds no draft, so it unmounts — and re-reads the ledger on every visit.
+          No Grasshopper gate here: chatting is allowed without a definition open (Rhino-side work,
+          planning) — a missing definition shows only as the red Grasshopper dot in the header. */}
       <main className="chat-region" hidden={tab !== "model"}>
-          {!hasGrasshopper ? (
-            <NoGrasshopper detail="Modeling sessions drive a Grasshopper definition, so they need one open and saved." />
-          ) : (
           <ChatPane
             key={selected?.id ?? "none"}
             session={selected}
@@ -532,7 +550,6 @@ export default function App() {
             onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
             onFocus={actions.focusObjects}
           />
-          )}
       </main>
 
       {archiveOpen ? (

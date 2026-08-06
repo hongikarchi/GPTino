@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DataFlowDetail, DocDataFlow, GrasshopperDocInfo } from "../types";
+import { Icon } from "./Icons";
 
 interface DataViewProps {
   /** Registered GH docs; null on a legacy single-doc server. */
@@ -11,6 +12,8 @@ interface DataViewProps {
   rhinoFile: string;
   grasshopperFile: string;
   getDetail(docId?: string | null): Promise<DataFlowDetail>;
+  /** Select + zoom the given Rhino objects in the viewport (reference IDs are clickable). */
+  onSelectRhino?(objectIds: string[]): void;
 }
 
 const shortId = (id: string) => id.slice(0, 8);
@@ -28,12 +31,22 @@ export function DataView({
   rhinoFile,
   grasshopperFile,
   getDetail,
+  onSelectRhino,
 }: DataViewProps) {
   const [selectedDocId, setSelectedDocId] = useState<string | null>(docs?.[0]?.id ?? null);
   const [detail, setDetail] = useState<DataFlowDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // Reference groups start collapsed so a definition with many referenced objects doesn't force a
+  // long scroll; the user opens the ones they care about. Keyed by parameter id.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
+  const toggleGroup = (key: string) =>
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
 
   // Follow the doc set: a Save As or a closed document must not leave the view pointed at a
   // document the runtime no longer knows.
@@ -161,22 +174,61 @@ export function DataView({
               <p className="archive-note">This definition references no Rhino objects.</p>
             ) : (
               <ul className="data-drawer-list">
-                {references.parameters.map((parameter) => (
-                  <li key={parameter.parameterId}>
-                    <span className="data-drawer-param">
-                      {parameter.nickName || parameter.parameterType}
-                      <span className="data-drawer-type"> {parameter.parameterType}</span>
-                    </span>
-                    <ul>
-                      {parameter.objects.map((object) => (
-                        <li key={object.rhinoObjectId} className={object.exists ? undefined : "data-drawer-missing"}>
-                          <code>{shortId(object.rhinoObjectId)}</code>{" "}
-                          {object.exists ? object.layerFullPath ?? "" : "missing — referenced object was deleted"}
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
-                ))}
+                {references.parameters.map((parameter) => {
+                  const groupKey = `ref-${parameter.parameterId}`;
+                  const open = openGroups.has(groupKey);
+                  const liveIds = parameter.objects.filter((object) => object.exists).map((object) => object.rhinoObjectId);
+                  return (
+                    <li key={parameter.parameterId} className="data-group">
+                      <button
+                        type="button"
+                        className="data-group-head"
+                        aria-expanded={open}
+                        onClick={() => toggleGroup(groupKey)}
+                      >
+                        <Icon name="chevron" className={`data-group-caret ${open ? "open" : ""}`} width={12} height={12} />
+                        <span className="data-drawer-param">
+                          {parameter.nickName || parameter.parameterType}
+                          <span className="data-drawer-type"> {parameter.parameterType}</span>
+                        </span>
+                        <span className="data-group-count">{parameter.objects.length}</span>
+                      </button>
+                      {open ? (
+                        <ul className="data-group-body">
+                          {onSelectRhino && liveIds.length > 1 ? (
+                            <li className="data-group-actions">
+                              <button
+                                type="button"
+                                className="data-id-button"
+                                title="Select and zoom all existing objects in this group"
+                                onClick={() => onSelectRhino(liveIds)}
+                              >
+                                Select all {liveIds.length}
+                              </button>
+                            </li>
+                          ) : null}
+                          {parameter.objects.map((object) => (
+                            <li key={object.rhinoObjectId} className={object.exists ? undefined : "data-drawer-missing"}>
+                              {object.exists && onSelectRhino ? (
+                                <button
+                                  type="button"
+                                  className="data-id-button"
+                                  title="Select and zoom this object in Rhino"
+                                  onClick={() => onSelectRhino([object.rhinoObjectId])}
+                                >
+                                  <code>{shortId(object.rhinoObjectId)}</code>
+                                </button>
+                              ) : (
+                                <code>{shortId(object.rhinoObjectId)}</code>
+                              )}{" "}
+                              {object.exists ? object.layerFullPath ?? "" : "missing — referenced object was deleted"}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>

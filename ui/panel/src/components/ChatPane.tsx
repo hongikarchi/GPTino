@@ -88,9 +88,8 @@ interface PendingAttachment {
   size: number;
 }
 
-// Mirrors the AgentHost AttachmentStore limits so violations surface before the round-trip.
-const MAX_ATTACHMENTS = 4;
-const MAX_TOTAL_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+// No count or size cap on attachments — the user decides what is worth attaching (large images
+// cost tokens/context, which is their call). Only the type allowlist is enforced client-side.
 const ALLOWED_MEDIA_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -150,6 +149,17 @@ const encodeAttachment = (item: PendingAttachment): Promise<MessageAttachment> =
 type StreamItem =
   | { type: "message"; at: number; message: ChatMessage }
   | { type: "activity"; at: number; activity: SessionActivity };
+
+// The stream is grouped into turns: the work log (activities) that precedes an assistant reply
+// belongs to that reply and folds away under it once the reply lands — click the reply to expand
+// the full log. Activities with no concluding reply yet are the LIVE log (rendered separately,
+// windowed to the last few) while the session is working, or an orphan log block otherwise.
+type StreamBlock =
+  | { type: "message"; key: string; at: number; message: ChatMessage; log: SessionActivity[] }
+  | { type: "log"; key: string; at: number; activities: SessionActivity[] };
+
+// How many live activity rows stay on screen while working; older ones fold behind a "+N earlier".
+const LIVE_LOG_VISIBLE = 3;
 
 // Reasoning-effort levels, ascending. The slider offers whichever of these the chosen model advertises.
 const EFFORT_ORDER: ModelProfile[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -317,8 +327,23 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
     [conflicts, session],
   );
 
-  const stream = useMemo<StreamItem[]>(() => {
-    if (!session) return [];
+  // Which folded turn logs the user has opened (assistant message id, or `orphan-<at>`), plus the
+  // live log's own toggle. Keyed by session via App's key={session.id}, so it resets on switch.
+  const [openLogs, setOpenLogs] = useState<Set<string>>(() => new Set());
+  const [liveLogOpen, setLiveLogOpen] = useState(false);
+  const toggleLog = (key: string) =>
+    setOpenLogs((current) => {
+      const next = new Set(current);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
+  // Group the time-sorted stream into turns. Activities accumulate into a buffer that flushes onto
+  // the next assistant reply (its folded log); a user/system message flushes the buffer as an
+  // orphan log block first. The trailing buffer is the LIVE log while working, else a final orphan.
+  const working = session?.status === "drafting" || session?.status === "working";
+  const { blocks, liveActivities } = useMemo<{ blocks: StreamBlock[]; liveActivities: SessionActivity[] }>(() => {
+    if (!session) return { blocks: [], liveActivities: [] };
     const items: StreamItem[] = session.messages.map((message) => ({
       type: "message",
       at: Date.parse(message.createdAt) || 0,
@@ -327,8 +352,50 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
     for (const activity of session.activity ?? []) {
       items.push({ type: "activity", at: Date.parse(activity.at) || 0, activity });
     }
-    return items.sort((a, b) => a.at - b.at);
+    items.sort((a, b) => a.at - b.at);
+
+    const out: StreamBlock[] = [];
+    let buffer: SessionActivity[] = [];
+    const flushOrphan = () => {
+      if (buffer.length === 0) return;
+      const at = Date.parse(buffer[buffer.length - 1].at) || 0;
+      out.push({ type: "log", key: `orphan-${at}-${buffer.length}`, at, activities: buffer });
+      buffer = [];
+    };
+    for (const item of items) {
+      if (item.type === "activity") {
+        buffer.push(item.activity);
+        continue;
+      }
+      if (item.message.role === "assistant") {
+        out.push({ type: "message", key: `m-${item.message.id}`, at: item.at, message: item.message, log: buffer });
+        buffer = [];
+      } else {
+        flushOrphan();
+        out.push({ type: "message", key: `m-${item.message.id}`, at: item.at, message: item.message, log: [] });
+      }
+    }
+    const isWorking = session.status === "drafting" || session.status === "working";
+    if (!isWorking) {
+      flushOrphan();
+      return { blocks: out, liveActivities: [] };
+    }
+    return { blocks: out, liveActivities: buffer };
   }, [session]);
+
+  // A single work-log row, reused by folded turn logs and the live window.
+  const renderActivity = (activity: SessionActivity, key: string) => (
+    <div
+      className={`activity-row ${activity.ok ? "" : "failed"}`}
+      key={key}
+      title={`${activity.kind}${activity.durationMs > 0 ? ` · ${activity.durationMs}ms` : ""}`}
+    >
+      <span className="activity-dot" />
+      {/* Ellipsized summaries stay recoverable: the text carries its own tooltip. */}
+      <span className="activity-text" title={activity.summary}>{activity.summary}</span>
+      <time dateTime={activity.at}>{formatTime(activity.at)}</time>
+    </div>
+  );
 
   // Switching sessions jumps straight to the newest message (an animated scroll
   // through the whole backlog is disorienting); new items in the same session
@@ -342,7 +409,7 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
     const el = streamRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: switched ? "auto" : "smooth" });
-  }, [session?.id, stream.length]);
+  }, [session?.id, blocks.length, liveActivities.length]);
 
   // Like a native <select>, the effort popover cannot outlive its session: it
   // closes whenever the selected session changes or disappears.
@@ -388,13 +455,8 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
   const addFiles = (incoming: File[]) => {
     if (incoming.length === 0) return;
     const next = [...pending];
-    let total = next.reduce((sum, item) => sum + item.size, 0);
     let error: string | null = null;
     for (const file of incoming) {
-      if (next.length >= MAX_ATTACHMENTS) {
-        error = `A message can carry at most ${MAX_ATTACHMENTS} attachments.`;
-        break;
-      }
       const mediaType = resolveMediaType(file);
       if (!mediaType) {
         error = `"${file.name}" is not a supported type (images, text, Markdown, JSON, CSV, PDF).`;
@@ -404,11 +466,6 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
         error = `"${file.name}" is empty.`;
         continue;
       }
-      if (total + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
-        error = "Attachments exceed the 8 MiB limit per message.";
-        continue;
-      }
-      total += file.size;
       next.push({ id: crypto.randomUUID(), file, fileName: file.name, mediaType, size: file.size });
     }
     setPending(next);
@@ -558,20 +615,20 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             ))}
           </div>
         ) : null}
-        {stream.map((item) =>
-          item.type === "message" ? (
+        {blocks.map((block) =>
+          block.type === "message" ? (
             <article
-              className={`message message-${item.message.role} ${item.message.pending ? "pending" : ""}`}
-              key={`m-${item.message.id}`}
+              className={`message message-${block.message.role} ${block.message.pending ? "pending" : ""}`}
+              key={block.key}
             >
               <div className="message-author">
                 <span>
-                  {item.message.role === "assistant" ? "GPTino" : item.message.role === "system" ? "System" : "You"}
+                  {block.message.role === "assistant" ? "GPTino" : block.message.role === "system" ? "System" : "You"}
                 </span>
-                <time dateTime={item.message.createdAt}>{formatTime(item.message.createdAt)}</time>
+                <time dateTime={block.message.createdAt}>{formatTime(block.message.createdAt)}</time>
               </div>
               <p>
-                {parseMessageSegments(item.message.content).map((segment, index) => {
+                {parseMessageSegments(block.message.content).map((segment, index) => {
                   if (segment.kind === "text") return <span key={index}>{segment.text}</span>;
                   if (segment.kind === "alt") {
                     return onSelectAlt ? (
@@ -603,18 +660,46 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
                   );
                 })}
               </p>
-              {item.message.pending ? <span className="pending-label">Sending…</span> : null}
+              {block.message.pending ? <span className="pending-label">Sending…</span> : null}
+              {/* The turn's work log, folded away under the reply it produced. Click to expand. */}
+              {block.log.length > 0 ? (
+                <div className="turn-log">
+                  <button
+                    type="button"
+                    className="turn-log-toggle"
+                    aria-expanded={openLogs.has(block.key)}
+                    onClick={() => toggleLog(block.key)}
+                    title={openLogs.has(block.key) ? "작업 로그 접기" : "이 답변까지의 작업 로그 펼치기"}
+                  >
+                    <Icon name="chevron" className={`turn-log-caret ${openLogs.has(block.key) ? "open" : ""}`} width={12} height={12} />
+                    {block.log.length} step{block.log.length === 1 ? "" : "s"}
+                  </button>
+                  {openLogs.has(block.key) ? (
+                    <div className="turn-log-list">
+                      {block.log.map((activity, index) => renderActivity(activity, `${block.key}-a${index}`))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </article>
           ) : (
-            <div
-              className={`activity-row ${item.activity.ok ? "" : "failed"}`}
-              key={`a-${item.at}-${item.activity.kind}-${item.activity.summary}`}
-              title={`${item.activity.kind}${item.activity.durationMs > 0 ? ` · ${item.activity.durationMs}ms` : ""}`}
-            >
-              <span className="activity-dot" />
-              {/* Ellipsized summaries stay recoverable: the text carries its own tooltip. */}
-              <span className="activity-text" title={item.activity.summary}>{item.activity.summary}</span>
-              <time dateTime={item.activity.at}>{formatTime(item.activity.at)}</time>
+            // An orphan log: work that produced no assistant reply before the next user/system turn.
+            <div className="turn-log orphan" key={block.key}>
+              <button
+                type="button"
+                className="turn-log-toggle"
+                aria-expanded={openLogs.has(block.key)}
+                onClick={() => toggleLog(block.key)}
+                title={openLogs.has(block.key) ? "작업 로그 접기" : "작업 로그 펼치기"}
+              >
+                <Icon name="chevron" className={`turn-log-caret ${openLogs.has(block.key) ? "open" : ""}`} width={12} height={12} />
+                {block.activities.length} step{block.activities.length === 1 ? "" : "s"}
+              </button>
+              {openLogs.has(block.key) ? (
+                <div className="turn-log-list">
+                  {block.activities.map((activity, index) => renderActivity(activity, `${block.key}-a${index}`))}
+                </div>
+              ) : null}
             </div>
           ),
         )}
@@ -636,7 +721,29 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             onFocus={onFocus}
           />
         ) : null}
-        {session.status === "drafting" || session.status === "working" ? (
+        {/* The live work log: only the last few steps stay on screen; older ones fold behind a
+            toggle so an active turn never floods the view. Folds into the reply once it lands. */}
+        {liveActivities.length > 0 ? (
+          <div className="live-log">
+            {liveActivities.length > LIVE_LOG_VISIBLE ? (
+              <button
+                type="button"
+                className="turn-log-toggle"
+                aria-expanded={liveLogOpen}
+                onClick={() => setLiveLogOpen((open) => !open)}
+              >
+                <Icon name="chevron" className={`turn-log-caret ${liveLogOpen ? "open" : ""}`} width={12} height={12} />
+                {liveLogOpen
+                  ? "Hide earlier steps"
+                  : `+${liveActivities.length - LIVE_LOG_VISIBLE} earlier step${liveActivities.length - LIVE_LOG_VISIBLE === 1 ? "" : "s"}`}
+              </button>
+            ) : null}
+            {(liveLogOpen ? liveActivities : liveActivities.slice(-LIVE_LOG_VISIBLE)).map((activity, index) =>
+              renderActivity(activity, `live-${activity.at}-${index}`),
+            )}
+          </div>
+        ) : null}
+        {working ? (
           <div className="thinking-row" aria-label="GPTino is working">
             <span />
             <span />
@@ -814,7 +921,7 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             onClick={() => fileInputRef.current?.click()}
             disabled={sending || session.paused}
             aria-label="Attach files"
-            title="Attach files — images, text, Markdown, JSON, CSV, PDF (max 4, 8 MB total). Paste or drop also works."
+            title="Attach files — images, text, Markdown, JSON, CSV, PDF (no count or size limit). Paste or drop also works."
           >
             <Icon name="paperclip" />
           </button>

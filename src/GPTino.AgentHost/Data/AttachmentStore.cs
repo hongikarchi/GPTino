@@ -11,9 +11,13 @@ namespace GPTino.AgentHost.Data;
 /// </summary>
 public sealed class AttachmentStore(string dataRoot)
 {
+    // User-supplied attachments (paperclip/paste/drop) are NOT capped by count or size: the user
+    // decides what is worth attaching. These two constants now bound only the best-effort auto-fetch
+    // of image URLs pasted into a message (see ImageUrlAttachmentFetcher), where an unbounded remote
+    // download IS a real DoS/SSRF surface — a distinct risk from a file the user chose off their disk.
     public const int MaxAttachmentsPerMessage = 4;
 
-    /// <summary>Maximum decoded payload across all attachments of one message: 8 MiB.</summary>
+    /// <summary>Maximum decoded payload across all auto-fetched remote image URLs in one message: 8 MiB.</summary>
     public const long MaxTotalDecodedBytes = 8 * 1024 * 1024;
 
     private const int MaxFileNameLength = 80;
@@ -52,16 +56,11 @@ public sealed class AttachmentStore(string dataRoot)
         {
             return [];
         }
-        if (attachments.Count > MaxAttachmentsPerMessage)
-        {
-            throw new ArgumentException(
-                $"A message can carry at most {MaxAttachmentsPerMessage} attachments; {attachments.Count} were sent.");
-        }
 
         // Preflight: decode and validate every attachment before any write, so a rejected batch
-        // leaves no partial files behind.
+        // leaves no partial files behind. Count and total size are intentionally NOT bounded here —
+        // the user chose these files; type/base64/empty/name safety is still enforced per item.
         var staged = new (string FileName, string MediaType, byte[] Bytes)[attachments.Count];
-        long totalBytes = 0;
         for (var index = 0; index < attachments.Count; index++)
         {
             var attachment = attachments[index];
@@ -85,13 +84,6 @@ public sealed class AttachmentStore(string dataRoot)
             if (bytes.Length == 0)
             {
                 throw new ArgumentException($"Attachment '{attachment.FileName}' is empty.");
-            }
-
-            totalBytes += bytes.Length;
-            if (totalBytes > MaxTotalDecodedBytes)
-            {
-                throw new ArgumentException(
-                    $"Attachments exceed the {MaxTotalDecodedBytes / (1024 * 1024)} MiB limit per message.");
             }
 
             staged[index] = (SanitizeFileName(attachment.FileName), mediaType, bytes);

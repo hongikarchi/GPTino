@@ -57,34 +57,22 @@ public sealed class AttachmentStoreTests
     }
 
     [Fact]
-    public async Task MoreThanFourAttachmentsAreRejectedBeforeAnyWrite()
+    public async Task ManyLargeUserAttachmentsAreAcceptedSinceCountAndSizeAreNotCapped()
     {
-        using var directory = new TestDirectory();
-        var store = new AttachmentStore(directory.Path);
-        var attachments = Enumerable.Range(0, 5)
-            .Select(index => new IncomingAttachment($"file-{index}.txt", "text/plain", Encode("x")))
-            .ToList();
-
-        var exception = await Assert.ThrowsAsync<ArgumentException>(() => store.SaveAsync(SessionId, attachments));
-
-        Assert.Contains("at most 4", exception.Message, StringComparison.Ordinal);
-        Assert.False(Directory.Exists(Path.Combine(directory.Path, "attachments")));
-    }
-
-    [Fact]
-    public async Task DecodedPayloadOverEightMebibytesIsRejectedBeforeAnyWrite()
-    {
+        // The policy caps (≤4 attachments, ≤8 MiB total) were removed: the user decides what to
+        // attach. Five 3-MiB images (15 MiB, well past the old ceilings) must all persist.
         using var directory = new TestDirectory();
         var store = new AttachmentStore(directory.Path);
         var threeMebibytes = Convert.ToBase64String(new byte[3 * 1024 * 1024]);
-        var attachments = Enumerable.Range(0, 3)
+        var attachments = Enumerable.Range(0, 5)
             .Select(index => new IncomingAttachment($"blob-{index}.png", "image/png", threeMebibytes))
             .ToList();
 
-        var exception = await Assert.ThrowsAsync<ArgumentException>(() => store.SaveAsync(SessionId, attachments));
+        var saved = await store.SaveAsync(SessionId, attachments);
 
-        Assert.Contains("8 MiB", exception.Message, StringComparison.Ordinal);
-        Assert.False(Directory.Exists(Path.Combine(directory.Path, "attachments")));
+        Assert.Equal(5, saved.Count);
+        Assert.All(saved, attachment => Assert.True(File.Exists(attachment.AbsolutePath)));
+        Assert.All(saved, attachment => Assert.Equal(3 * 1024 * 1024, attachment.ByteCount));
     }
 
     [Fact]

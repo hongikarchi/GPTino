@@ -187,27 +187,10 @@ textarea:disabled {
   padding: 0 10px;
 }
 
-.connection-state {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.connection-state strong {
-  font-size: var(--fs-sec);
-  font-weight: 600;
-  text-transform: capitalize;
-}
-
-.connection-light {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--dim);
-  box-shadow: 0 0 0 3px rgb(96 104 102 / 0.13);
-}
-
-.llm-auth {
+/* Provider status chips (Codex, Grasshopper): a colored dot + the provider name. The dot carries
+   the connection axis — blue when connected, red when not — so there is no separate "connected"
+   chip. A disconnected+actionable chip renders as a button (login terminal / open Grasshopper). */
+.status-chip {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -219,34 +202,20 @@ textarea:disabled {
   text-align: left;
 }
 
-button.llm-auth {
+button.status-chip {
   cursor: pointer;
 }
 
-button.llm-auth:hover strong {
+button.status-chip:hover strong {
   color: #fff;
 }
 
-.llm-auth strong {
-  display: block;
+.status-chip strong {
   font-size: var(--fs-sec);
   font-weight: 600;
 }
 
-.llm-auth span {
-  display: block;
-  /* The signed-out call-to-action line is capped so it can never starve the
-     project title's grid track; the full text stays in the button tooltip. */
-  max-width: 16ch;
-  margin-top: 1px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--fs-meta);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.llm-light {
+.status-dot {
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
@@ -255,24 +224,23 @@ button.llm-auth:hover strong {
   box-shadow: 0 0 0 3px rgb(96 104 102 / 0.13);
 }
 
-.llm-logged-in .llm-light {
+.status-on .status-dot {
   background: #63a8ff;
   box-shadow: 0 0 0 3px rgb(99 168 255 / 0.15), 0 0 12px rgb(99 168 255 / 0.32);
 }
 
-.llm-logged-out .llm-light,
-.llm-cli-missing .llm-light {
+.status-off .status-dot {
   background: var(--red);
   box-shadow: 0 0 0 3px rgb(225 111 98 / 0.15), 0 0 12px rgb(225 111 98 / 0.32);
 }
 
-.health-connected .connection-light {
-  background: var(--lime);
-  box-shadow: 0 0 0 3px rgb(183 225 102 / 0.13), 0 0 14px rgb(183 225 102 / 0.28);
+.status-off strong {
+  color: var(--muted);
 }
 
-.health-degraded .connection-light { background: var(--amber); }
-.health-disconnected .connection-light { background: var(--red); }
+/* Rhino-runtime health folds into the brand mark's tint (green connected → amber → red). */
+.brand-mark.health-degraded { border-color: #82662f; background: var(--amber); color: #241a08; }
+.brand-mark.health-disconnected { border-color: #82463e; background: var(--red); color: #2d1411; }
 
 .error-banner,
 .pause-banner {
@@ -790,6 +758,36 @@ button.llm-auth:hover strong {
 .activity-row.failed .activity-dot { background: var(--red); }
 .activity-row .activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-row time { margin-left: auto; flex: 0 0 auto; color: var(--dim); font-size: var(--fs-micro); }
+
+/* A turn's work log, folded under the reply it produced (click the toggle to expand). The live
+   window (during an active turn) and orphan logs reuse the same toggle. */
+.turn-log { margin: 3px 0 2px; }
+.turn-log.orphan { margin: 2px 0; }
+.live-log { margin: 2px 0; }
+
+.turn-log-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font-size: var(--fs-micro);
+  cursor: pointer;
+}
+
+.turn-log-toggle:hover { color: var(--muted); background: rgb(255 255 255 / 0.04); }
+
+.turn-log-caret {
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+
+.turn-log-caret.open { transform: rotate(90deg); }
+
+.turn-log-list { margin-top: 1px; padding-left: 6px; border-left: 1px solid var(--border-soft); }
 
 .composer-wrap {
   padding: 8px 12px 10px;
@@ -1801,8 +1799,9 @@ button.llm-auth:hover strong {
   padding: 6px 16px 0;
 }
 
-/* Three tabs, so three columns: .segmented defaults to two and the third wrapped onto its own row. */
-.view-tabs { width: 260px; grid-template-columns: repeat(3, 1fr); }
+/* Two tabs (Model | Data). .segmented already defaults to two equal columns; the width just keeps
+   the pair compact at the left of the bar instead of stretching the full row. */
+.view-tabs { width: 196px; }
 .view-tabs button { position: relative; }
 
 .tab-dot {
@@ -1967,6 +1966,54 @@ button.llm-auth:hover strong {
 .data-drawer-type { color: var(--dim); font-size: var(--fs-meta); }
 .data-drawer-missing { color: var(--red); }
 .data-drawer-missing code { color: var(--red); }
+
+/* Collapsible reference groups: the header toggles, the body holds the clickable object ids. */
+.data-group { margin-bottom: 4px; }
+
+.data-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.data-group-head:hover { background: rgb(255 255 255 / 0.04); }
+
+.data-group-caret { flex: 0 0 auto; color: var(--dim); transition: transform 120ms ease; }
+.data-group-caret.open { transform: rotate(90deg); }
+
+.data-group-count {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.06);
+  color: var(--muted);
+  font-size: var(--fs-micro);
+}
+
+.data-group-body { list-style: none; margin: 2px 0 0; padding-left: 18px; color: var(--muted); }
+.data-group-actions { margin-bottom: 2px; }
+
+.data-id-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--cyan);
+  cursor: pointer;
+}
+
+.data-id-button:hover { text-decoration: underline; }
+.data-id-button code { color: var(--cyan); }
 
 .archive-header {
   display: flex;
