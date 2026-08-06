@@ -38,7 +38,7 @@
       "license": "MIT"
     },
     {
-      "target": "src/GPTino.AgentHost/Codex/AdaptiveModelRouting.cs",
+      "target": "src/GPTino.AgentHost/Codex/EffectiveModelState.cs",
       "source": "skillmeld",
       "commit": "66776dfcd3cf57b209cf302a2dbfeda73e1bc630",
       "upstreamPaths": [],

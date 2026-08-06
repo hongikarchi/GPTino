@@ -4,7 +4,7 @@
 시각화 → 대안)을 에이전트가 호출 가능한 **서버 툴 2개 + 상주 솔버 스크립트 + 기존 카드/칩 UX**로
 옮긴다. 원칙은 rhino_audit과 동일 — **탐지·계산은 결정론적 서버 코드, 해석·역질문·판단은 LLM**.
 
-**상위 문서**: `structural-analysis-dev-plan.md` (Karamba/PyNite 검증 이력, 실무 수용 기준 5항),
+**상위 문서**: `archive/structural-analysis-dev-plan.md` (Karamba/PyNite 검증 이력, 실무 수용 기준 5항),
 `structural-analysis-plan.md` (전략). 이 문서는 "호스트 툴 승격" 잔여 항목의 실행 계획.
 
 ---

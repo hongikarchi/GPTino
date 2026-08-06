@@ -16,8 +16,9 @@ submits an immutable `ChangeSet`. JSON properties and enum values are camelCase.
   `readSet`; every `operations[].writes` entry is covered by `writeSet`.
 - A supported exact create target uses the shared optimistic sentinel
   `gptino:absent`. It passes only while that resource is still absent. This is
-  supported for `createComponent`, `createRhinoPrimitive`, `createRhinoObject`,
-  `bakeGeometry`, `connectWire`, and a new `setGroup`; all other resources
+  supported for `createComponent`, `referenceRhinoObjects`,
+  `createRhinoPrimitive`, `createRhinoObject`, `bakeGeometry`, `connectWire`, a
+  new `setGroup`, and a new layer via `ensureRhinoLayer`; all other resources
   require actual fingerprints.
 - Every operation has a unique `operationId`, an owning adapter, and a
   session-relative `payloadArtifact` path.
@@ -63,16 +64,27 @@ Resource kinds are `document`, `grasshopperComponent`,
 `grasshopperComponentSource`, `grasshopperComponentIo`,
 `grasshopperComponentValue`, `grasshopperComponentLayout`, `grasshopperWire`,
 `grasshopperGroup`, `grasshopperSolver`, `rhinoObject`, `rhinoObjectGeometry`,
-`rhinoObjectAttributes`, `rhinoLayer`, `rhinoGroup`, `rhinoMaterial`, and
-`rhinoLinetype`. A resource field of `*` addresses its whole conflict domain.
+`rhinoObjectAttributes`, `rhinoLayer`, `rhinoGroup`, `rhinoMaterial`,
+`rhinoLinetype`, `rhinoLayerTable` (the layer table as a whole — one CAS domain
+covering presence and absence of layers, used by `saveRhinoLayerState`),
+`rhinoBlockDefinition`, and `rhinoDimensionStyle`. A resource field of `*`
+addresses its whole conflict domain.
 
-Two bounded discovery tools are read-only and do not enter the writer queue:
+Bounded discovery tools are read-only and do not enter the writer queue:
 
 - `component_catalog` searches installed Grasshopper component metadata with
   `{query?,limit?:1..100,includeObsolete?:boolean}`.
 - `rhino_list` lists at most 500 objects using optional object/layer/name/type,
   logical-entity, and selection filters. It returns deterministic GUID order,
   per-object fingerprints and bounds, a union bound, and a truncation flag.
+- `rhino_layers` lists the layer table with per-layer fingerprints plus the
+  whole-table fingerprint (the CAS base for layer writes and layer states).
+- `rhino_audit` runs the read-only document audits (duplicates, near-miss
+  endpoints, invalid geometry, unused table entries, …) whose findings carry the
+  exact fingerprints later hygiene ChangeSets declare.
+- `structural_extract` and `structural_solve` are the read-only structural
+  pipeline (geometry extraction and PyNite solve); they never mutate the
+  document.
 
 Use those results to choose exact component type IDs, object IDs, and base
 fingerprints before drafting a ChangeSet.
@@ -119,7 +131,8 @@ may cover only its write operations.
 | `moveComponent`, `setLayout` | Cordyceps / `canvas.move` | `{operationId,pivots:{guid:{x,y}},expectedFingerprints:{guid:sha256}}` |
 | `setValue` | Cordyceps / `canvas.setNumberSlider` | `{operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces}`; only Number Slider is supported |
 | `connectWire`, `disconnectWire` | Cordyceps / `canvas.setWire` | `{operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:"connect"|"disconnect",rejectCycles:true}` |
-| `createComponent` | Cordyceps / `canvas.create` | `{operationId,objectId,componentTypeId,pivot:{x,y},nickName}` |
+| `createComponent` | Cordyceps / `canvas.create` | `{operationId,objectId,componentTypeId,pivot:{x,y},nickName}`; the model-facing contract mandates `pivot:"gptino:auto"` with optional `autoUpstream:[objectId,...]` — the broker resolves it to a concrete non-overlapping pivot before dispatch |
+| `referenceRhinoObjects` | Cordyceps / `canvas.referenceRhinoObjects` | `{operationId,objectId,rhinoObjectIds:[guid,...],paramType:"curve"\|"brep"\|"mesh"\|"surface"\|"point"\|"geometry",pivot,nickName}`; creates a typed GH parameter that persistently references existing Rhino objects (a live reference, not a baked copy); writeSet is `grasshopperComponent` + `gptino:absent`, like `createComponent` |
 | `deleteComponent` | Cordyceps / `canvas.delete` | `{operationId,objectId,expectedFingerprint}` |
 | `setGroup` | Cordyceps / `canvas.setGroup` | `{operationId,groupId,name,objectIds,argbColor}` |
 | `updatePythonSource` | Wireify / `python.setSource` | `{operationId,componentId,expectedSourceSha256,source,runtime:"csharp"|"cpython3"|"ironPython2",expireSolution}` — the `python.*` operations drive every Rhino 8 script component regardless of language |
@@ -131,12 +144,25 @@ may cover only its write operations.
 | `transformRhinoObject` | Rhino / `rhino.transform` | `{operationId,objectId,expectedFingerprint,matrix:{m00,m01,m02,m03,m10,m11,m12,m13,m20,m21,m22,m23,m30,m31,m32,m33}}` |
 | `createRhinoObject`, `modifyRhinoObject`, `bakeGeometry`, `updateRhinoAttributes` | Rhino / `rhino.upsert` | `{operationId,objectId,logicalEntityId,geometryType,geometryJson,attributesJson,expectedFingerprint}`; `createRhinoObject`/`bakeGeometry` require payload `null` plus writeSet `gptino:absent`, while modification/attribute updates require the same inspected fingerprint in both places |
 | `deleteRhinoObject` | Rhino / `rhino.delete` | `{operationId,objectId,expectedFingerprint}` |
+| `fixRhinoEndpointPair` | Rhino / `rhino.fixEndpointPair` | `{operationId,anchorObjectId,anchorEnd,moveObjectId,moveEnd,expectedAnchorFingerprint,expectedFingerprint,tolerance}`; heals one audited near-miss pair — the anchor is a declared read, the moved object the single write; ends are 0=start/1=end |
+| `ensureRhinoLayer` | Rhino / `rhino.ensureLayer` | `{operationId,layerId,fullPath,parentLayerId?,argbColor?}`; creates a layer by full path (`Parent::Child` nesting) or updates the one already there; a new layer declares writeSet kind `rhinoLayer` + `gptino:absent` |
+| `purgeTableEntries` | Rhino / `rhino.purgeTableEntries` | `{operationId,entries:[{table:"block"\|"dimStyle"\|"linetype"\|"material",id}]}`; deletes unused document-table entries — "unused" is re-verified live at execution |
+| `moveObjectsToLayer` | Rhino / `rhino.moveObjectsToLayer` | `{operationId,items:[{objectId,expectedFingerprint}],targetLayerId}`; attribute-only batch (geometry untouched), also the quarantine vehicle for invalid objects; every item declares its own exact `rhinoObject` expectation |
+| `updateRhinoLayerProperties` | Rhino / `rhino.updateLayer` | `{operationId,layerId,expectedFingerprint,argbColor?,visible?,locked?}`; presentation only — rename/re-parent are not available (they rewrite descendant paths); writeSet kind `rhinoLayer` |
+| `deleteRhinoLayer` | Rhino / `rhino.deleteLayer` | `{operationId,layerId,expectedFingerprint}`; only an empty leaf layer, with emptiness re-proved at execution; writeSet kind `rhinoLayer` |
+| `saveRhinoLayerState` | Rhino / `rhino.layerState` | `{operationId,action:"save"\|"restore"\|"delete",name}`; named layer states — declares one write of kind `rhinoLayerTable` whose id is the document's projectId and whose fingerprint is the whole-table fingerprint from `rhino_layers` |
 
 `Rename`, `SetSolverState`, `DocumentGlobal`, and `UpdateRhinoLayer` are
 reserved backend enum values: they are not advertised in the model-facing tool
 schema and any ChangeSet that reaches the broker with one of them fails closed
-at submit. Layer updates remain disabled until deterministic layer inspection
-can prove both presence and absence.
+at submit. `UpdateRhinoLayer` (which bundled rename and re-parent, whose
+descendant-path rewrites remain out of scope) is superseded by the narrow,
+provable layer operations above — `ensureRhinoLayer`,
+`updateRhinoLayerProperties`, `deleteRhinoLayer`, and `saveRhinoLayerState`.
+Destructive operations on objects without GPTino provenance stamps additionally
+require a user-minted approval grant (`changeSet.approvalGrantId`, issued via
+the panel's audit card); the server injects the per-operation approval flags
+and rejects model-authored ones.
 `geometryJson` must be RhinoCommon native JSON whose actual object type matches
 `geometryType`, and the decoded geometry must pass `IsValidWithLog`.
 `attributesJson` is RhinoCommon `ObjectAttributes` JSON and is type-checked; an

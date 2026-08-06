@@ -109,17 +109,18 @@ after-fingerprint forward. Because a Grasshopper solve can change runtime
 messages, that ChangeSet may write only one Python component and cannot mix in
 another kind of write. Layout remains a separate Cordyceps domain in other jobs.
 
-## Model routing
+## Model selection
 
-`Auto` is a policy, not a fixed model. GPTino classifies each request before a
-turn. Read-only work may use the fastest available read model; exact small
-move/wire operations may use a live-write-qualified fast model. Python,
-I/O-schema, geometry/topology, delete/bake, runtime-error, ambiguous, recovery,
-or large-context work has a high-assurance floor. A user's Deep choice is never
-downgraded, and a pinned weak model cannot bypass the floor. If the model catalog
-cannot prove that a high-assurance model is available, the turn fails closed.
+Model and reasoning effort are manual, per-session settings — adaptive
+per-message routing and the fast/standard/deep capability profiles were removed
+(see `docs/session-model-simplification.md`). Each turn resolves the session's
+pinned model (or the catalog default) and uses the session's stored reasoning
+effort directly, clamped only to the effort set that model advertises; there is
+no per-request classification, no capability floor, and no recovery escalation.
+If the pinned model is absent from the catalog, the turn fails closed with the
+available choices.
 
-Routing decides who may plan; typed operations, fingerprints, the broker, and
+Model choice decides who plans; typed operations, fingerprints, the broker, and
 verification still decide what may mutate the documents.
 
 ## Security boundary
