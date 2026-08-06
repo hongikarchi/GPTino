@@ -3,6 +3,7 @@ import type {
   ArchiveMessage,
   ArchiveProject,
   ChatMessage,
+  CodexAuth,
   DataFlowDetail,
   DeletedSession,
   MessageRequest,
@@ -13,6 +14,21 @@ import type {
   SessionOrderRequest,
   FocusMode,
 } from "../types";
+
+// The demo boots signed in so UI verification flows aren't stopped at the login gate;
+// `?demo=1&codex=logged-out` or `&codex=cli-missing` boots into the gate to demo it (the gate
+// button flips the mock to logged-in). window is guarded for node-side test imports.
+function initialCodexAuth(): CodexAuth {
+  const requested =
+    typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("codex");
+  if (requested === "logged-out") {
+    return { status: "logged-out", detail: "Signed out — click to log in" };
+  }
+  if (requested === "cli-missing") {
+    return { status: "cli-missing", detail: "Codex CLI not found — click to install and sign in" };
+  }
+  return { status: "logged-in", detail: "Signed in" };
+}
 
 /** A goal card mid-conversation so the demo shows the frame-before-you-build flow. */
 const demoGoalCard = JSON.stringify({
@@ -359,7 +375,7 @@ const demoState: RuntimeState = {
     },
   ],
   contextFolder: "C:\\Users\\user\\AppData\\Local\\GPTino\\projects\\a31f924c\\context",
-  codexAuth: { status: "logged-out", detail: "Signed out — click to log in" },
+  codexAuth: initialCodexAuth(),
   currentSelection: {
     rhinoObjectCount: 2,
     rhinoObjectIds: [

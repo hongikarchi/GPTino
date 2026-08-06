@@ -1766,6 +1766,10 @@ button.status-chip:hover strong {
 .boot-line span { display: block; width: 45%; height: 100%; background: var(--lime); animation: boot 1.2s infinite ease-in-out; }
 @keyframes boot { from { transform: translateX(-110%); } to { transform: translateX(240%); } }
 .error-screen .brand-mark { color: var(--ink-red); border-color: var(--red-edge); background: var(--red); }
+/* Login gate (Codex signed-out / CLI missing): boot-screen layout, amber-leaning mark — the
+   panel is healthy, it is waiting on the user, not broken. */
+.login-screen .brand-mark { color: var(--ink-amber); border-color: var(--amber-edge); background: var(--amber); }
+.boot-hint { color: var(--muted); font-size: var(--fs-sec); }
 
 /* Session canvas — node-and-wire view of sessions → single-writer broker → documents */
 

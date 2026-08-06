@@ -5,12 +5,14 @@ using Microsoft.Extensions.Logging;
 namespace GPTino.AgentHost.Codex;
 
 /// <summary>
-/// Opens a visible console running <c>codex login</c> so the user can complete the browser OAuth
-/// flow from the panel. AgentHost itself runs windowless with redirected stdio, so — like the
-/// per-session <see cref="Hosting.TerminalLauncher"/> — this must spawn a separate process that
-/// owns its own console rather than reusing AgentHost's std streams. The spawned shell inherits
-/// AgentHost's environment (including any <c>CODEX_HOME</c>), so it writes credentials to the
-/// same store the Codex app-server reads.
+/// Opens a visible console that remediates whichever Codex auth state the panel is blocked on:
+/// with the CLI installed it runs <c>codex login</c> (browser OAuth); with the CLI missing it
+/// first installs it via <c>npm install -g</c> and chains into login. AgentHost itself runs
+/// windowless with redirected stdio, so — like the per-session
+/// <see cref="Hosting.TerminalLauncher"/> — this must spawn a separate process that owns its own
+/// console rather than reusing AgentHost's std streams. The spawned shell inherits AgentHost's
+/// environment (including any <c>CODEX_HOME</c>), so it writes credentials to the same store the
+/// Codex app-server reads.
 /// </summary>
 public sealed class CodexLoginLauncher
 {
@@ -30,25 +32,29 @@ public sealed class CodexLoginLauncher
             message = "Opening a Codex login terminal is only supported on Windows.";
             return false;
         }
-        if (!CodexInstallation.TryLocateExecutable(_options, out var codexPath))
-        {
-            message = "Codex CLI was not found. Install it with npm, then run 'codex login'.";
-            return false;
-        }
+        // `cmd /k ...` — /k keeps the window open after the flow so the user sees the result and
+        // can retry. With the CLI installed, the doubled outer quotes are how cmd's /k preserves a
+        // quoted executable path that may contain spaces. With it missing, the terminal installs
+        // the CLI and chains into login; if npm itself is absent, cmd's own "'npm' is not
+        // recognized" plus the echoed Node.js hint stay visible in the open window — that IS the
+        // guidance surface, and the panel's login gate stays up for a retry after installing Node.
+        var hasCli = CodexInstallation.TryLocateExecutable(_options, out var codexPath);
+        var arguments = hasCli
+            ? $"/k \"\"{codexPath}\" login\""
+            : "/k \"echo Installing the Codex CLI with npm (requires Node.js - https://nodejs.org) & npm install -g @openai/codex && codex login\"";
         try
         {
-            // `cmd /k ""<path>" login"` — the doubled outer quotes are how cmd's /k preserves a
-            // quoted executable path that may contain spaces; /k keeps the window open after the
-            // OAuth flow so the user sees the result and can retry.
             var startInfo = new ProcessStartInfo("cmd.exe")
             {
-                Arguments = $"/k \"\"{codexPath}\" login\"",
+                Arguments = arguments,
                 UseShellExecute = true,
                 CreateNoWindow = false,
                 WindowStyle = ProcessWindowStyle.Normal,
             };
             using var process = Process.Start(startInfo);
-            message = "Opened a terminal running 'codex login'.";
+            message = hasCli
+                ? "Opened a terminal running 'codex login'."
+                : "Opened a terminal installing the Codex CLI, then running 'codex login'.";
             return true;
         }
         catch (Exception exception)

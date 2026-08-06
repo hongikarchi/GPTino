@@ -20,11 +20,12 @@ namespace GPTino.AgentHost.Runtime;
 internal static class CanvasLayout
 {
     internal sealed record Options(
-        float ColumnGap = 110f,   // horizontal clearance between one layer's right edge and the next
-        float RowGap = 28f,       // vertical clearance between stacked nodes in a column
-        float GroupGap = 26f,     // extra vertical clearance between different groups in the same column
-        float MoveEpsilon = 1.5f, // pivots that move less than this are left untouched (avoids churn)
-        int BarycenterSweeps = 4) // crossing-reduction passes (down/up alternating)
+        float ColumnGap = 110f,    // horizontal clearance between one layer's right edge and the next
+        float RowGap = 28f,        // vertical clearance between stacked nodes in a column
+        float GroupGap = 26f,      // extra vertical clearance between different groups in the same column
+        float MoveEpsilon = 1.5f,  // pivots that move less than this are left untouched (avoids churn)
+        int BarycenterSweeps = 4,  // crossing-reduction passes (down/up alternating)
+        int CoordinateSweeps = 8)  // wire-straightening passes for the vertical coordinate assignment
     {
         internal static readonly Options Default = new();
     }
@@ -51,9 +52,10 @@ internal static class CanvasLayout
             return new Dictionary<Guid, CanvasPoint>();
         }
 
+        var groupOf = BuildGroupMap(canvas.Groups);
         var layer = AssignLayers(scope, incoming, outgoing);
-        var columns = OrderWithinLayers(scope, layer, incoming, outgoing, byId, canvas.Groups, options);
-        var targets = AssignCoordinates(columns, byId, options);
+        var columns = OrderWithinLayers(scope, layer, incoming, outgoing, byId, groupOf, options);
+        var targets = AssignCoordinates(columns, byId, incoming, outgoing, groupOf, options);
 
         // Emit only the components whose pivot actually changes — keeps the resulting canvas.move minimal
         // and makes a re-run on an already-tidy cluster a genuine no-op.
@@ -199,7 +201,7 @@ internal static class CanvasLayout
         IReadOnlyDictionary<Guid, SortedSet<Guid>> incoming,
         IReadOnlyDictionary<Guid, SortedSet<Guid>> outgoing,
         IReadOnlyDictionary<Guid, CanvasObjectState> byId,
-        IReadOnlyList<GroupState> groups,
+        IReadOnlyDictionary<Guid, Guid> groupOf,
         Options options)
     {
         var maxLayer = layer.Values.Max();
@@ -249,14 +251,6 @@ internal static class CanvasLayout
 
         // Group contiguity: within each layer, pull members of the same group together. Groups are ordered
         // by their members' mean barycenter so a group lands where its wires already want it.
-        var groupOf = new Dictionary<Guid, Guid>();
-        foreach (var group in groups)
-        {
-            foreach (var member in group.ObjectIds)
-            {
-                groupOf[member] = group.GroupId; // last wins; a node in multiple groups picks the last listed
-            }
-        }
         Guid GroupKey(Guid id) => groupOf.TryGetValue(id, out var g) ? g : id;
         for (var l = 0; l < layers.Count; l++)
         {
@@ -279,46 +273,196 @@ internal static class CanvasLayout
         return layers;
     }
 
+    private static Dictionary<Guid, Guid> BuildGroupMap(IReadOnlyList<GroupState> groups)
+    {
+        var groupOf = new Dictionary<Guid, Guid>();
+        foreach (var group in groups)
+        {
+            foreach (var member in group.ObjectIds)
+            {
+                groupOf[member] = group.GroupId; // last wins; a node in multiple groups picks the last listed
+            }
+        }
+        return groupOf;
+    }
+
     // ---- coordinate assignment from real bounds ----
 
     private static IReadOnlyDictionary<Guid, CanvasPoint> AssignCoordinates(
         IReadOnlyList<IReadOnlyList<Guid>> layers,
         IReadOnlyDictionary<Guid, CanvasObjectState> byId,
+        IReadOnlyDictionary<Guid, SortedSet<Guid>> incoming,
+        IReadOnlyDictionary<Guid, SortedSet<Guid>> outgoing,
+        IReadOnlyDictionary<Guid, Guid> groupOf,
         Options options)
     {
-        // Column widths / heights from REAL bounds so nothing overlaps and spacing is even.
+        // Column widths from REAL bounds so nothing overlaps horizontally and X spacing is even.
         var columnWidth = layers
             .Select(col => col.Count == 0 ? 0f : col.Max(id => byId[id].Bounds.Width))
             .ToArray();
-        var columnHeight = layers
-            .Select(col => col.Sum(id => byId[id].Bounds.Height)
-                + Math.Max(0, col.Count - 1) * options.RowGap)
-            .ToArray();
+
+        // Per-column minimum top offsets: node i's top must be >= node (i-1)'s top + its height + gap[i],
+        // where the gap gets an extra GroupGap whenever consecutive nodes belong to different groups. So
+        // offset[l][i] is the smallest possible (top[i] - top[0]) for that column.
+        var offset = new float[layers.Count][];
+        Guid GroupKey(Guid id) => groupOf.TryGetValue(id, out var g) ? g : id;
+        for (var l = 0; l < layers.Count; l++)
+        {
+            var column = layers[l];
+            var offsets = new float[column.Count];
+            for (var i = 1; i < column.Count; i++)
+            {
+                var gap = options.RowGap;
+                if (!GroupKey(column[i - 1]).Equals(GroupKey(column[i])))
+                {
+                    gap += options.GroupGap;
+                }
+                offsets[i] = offsets[i - 1] + byId[column[i - 1]].Bounds.Height + gap;
+            }
+            offset[l] = offsets;
+        }
+
+        // Column intrinsic heights (bottom edge of the last node's stack) used to center each column and to
+        // seed an initial vertical band; the real coordinates are then straightened by the sweeps below.
+        var columnHeight = new float[layers.Count];
+        for (var l = 0; l < layers.Count; l++)
+        {
+            var column = layers[l];
+            columnHeight[l] = column.Count == 0
+                ? 0f
+                : offset[l][^1] + byId[column[^1]].Bounds.Height;
+        }
         var tallest = columnHeight.DefaultIfEmpty(0f).Max();
 
         // Anchor the tidied cluster at its current top-left so it stays roughly where the user had it.
         var anchorX = layers.SelectMany(c => c).Select(id => TopLeft(byId[id]).X).DefaultIfEmpty(0f).Min();
         var anchorY = layers.SelectMany(c => c).Select(id => TopLeft(byId[id]).Y).DefaultIfEmpty(0f).Min();
 
+        // Initialize every node's bounds-center Y by stacking its column from a vertically-centered band.
+        var centerY = new Dictionary<Guid, float>();
+        for (var l = 0; l < layers.Count; l++)
+        {
+            var column = layers[l];
+            var columnTop = anchorY + (tallest - columnHeight[l]) / 2f;
+            for (var i = 0; i < column.Count; i++)
+            {
+                var obj = byId[column[i]];
+                centerY[column[i]] = columnTop + offset[l][i] + obj.Bounds.Height / 2f;
+            }
+        }
+
+        StraightenWires(layers, byId, incoming, outgoing, offset, centerY, options);
+
+        // Re-anchor: the sweeps shift the band freely, so translate the whole cluster back so its topmost
+        // node sits at the original anchorY — keeping the tidy where the user had it.
+        var minTop = float.PositiveInfinity;
+        foreach (var (id, cy) in centerY)
+        {
+            minTop = Math.Min(minTop, cy - byId[id].Bounds.Height / 2f);
+        }
+        var shift = float.IsPositiveInfinity(minTop) ? 0f : anchorY - minTop;
+
         var result = new Dictionary<Guid, CanvasPoint>();
         var columnLeft = anchorX;
         for (var l = 0; l < layers.Count; l++)
         {
-            var column = layers[l];
             var centerX = columnLeft + columnWidth[l] / 2f;
-            // Vertically center each column against the tallest so layers read as one balanced band.
-            var y = anchorY + (tallest - columnHeight[l]) / 2f;
-            foreach (var id in column)
+            foreach (var id in layers[l])
             {
                 var obj = byId[id];
-                var top = y;
-                var boundsCenter = new CanvasPoint(centerX, top + obj.Bounds.Height / 2f);
+                var boundsCenter = new CanvasPoint(centerX, centerY[id] + shift);
                 result[id] = PivotForBoundsCenter(obj, boundsCenter);
-                y += obj.Bounds.Height + options.RowGap;
             }
             columnLeft += columnWidth[l] + options.ColumnGap;
         }
         return result;
+    }
+
+    // Straightens wires: pulls each node toward the mean bounds-center of its connected neighbours in an
+    // adjacent layer, then re-packs the column to the closest valid (ordered, non-overlapping) positions.
+    // Alternating down/up sweeps balance the pull from inputs and outputs. Pure and deterministic.
+    private static void StraightenWires(
+        IReadOnlyList<IReadOnlyList<Guid>> layers,
+        IReadOnlyDictionary<Guid, CanvasObjectState> byId,
+        IReadOnlyDictionary<Guid, SortedSet<Guid>> incoming,
+        IReadOnlyDictionary<Guid, SortedSet<Guid>> outgoing,
+        float[][] offset,
+        Dictionary<Guid, float> centerY,
+        Options options)
+    {
+        for (var sweep = 0; sweep < options.CoordinateSweeps; sweep++)
+        {
+            var downward = sweep % 2 == 0;
+            // Downward sweeps read the already-settled left neighbours (incoming); upward reads the right
+            // neighbours (outgoing). Visit layers in the matching direction so the reference side is fixed.
+            var order = downward
+                ? Enumerable.Range(0, layers.Count)
+                : Enumerable.Range(0, layers.Count).Reverse();
+            var relative = downward ? incoming : outgoing;
+            foreach (var l in order)
+            {
+                var column = layers[l];
+                if (column.Count == 0)
+                {
+                    continue;
+                }
+                // desiredTop[i] places node i so its center lands on the mean of its neighbours' centers;
+                // nodes with no neighbour this side keep their current position.
+                var desiredTop = new float[column.Count];
+                for (var i = 0; i < column.Count; i++)
+                {
+                    var obj = byId[column[i]];
+                    var target = relative.TryGetValue(column[i], out var neighbours)
+                        ? neighbours.Where(centerY.ContainsKey).Select(n => centerY[n]).DefaultIfEmpty(centerY[column[i]]).Average()
+                        : centerY[column[i]];
+                    desiredTop[i] = target - obj.Bounds.Height / 2f;
+                }
+                PackColumnNearest(column, desiredTop, offset[l], byId, centerY);
+            }
+        }
+    }
+
+    // Given each node's desired top and the column's cumulative minimum offsets, choose ordered tops that
+    // honour the min separation (top[i] - offset[i] non-decreasing) and are L2-closest to the desired tops.
+    // Solved by pool-adjacent-violators (isotonic regression) on v[i] = desiredTop[i] - offset[i].
+    private static void PackColumnNearest(
+        IReadOnlyList<Guid> column,
+        float[] desiredTop,
+        float[] offset,
+        IReadOnlyDictionary<Guid, CanvasObjectState> byId,
+        Dictionary<Guid, float> centerY)
+    {
+        var n = column.Count;
+        // Isotonic regression via PAVA: blocks hold (weighted mean value, weight).
+        var blockValue = new float[n];
+        var blockWeight = new int[n];
+        var blockStart = new int[n];
+        var blocks = 0;
+        for (var i = 0; i < n; i++)
+        {
+            blockValue[blocks] = desiredTop[i] - offset[i];
+            blockWeight[blocks] = 1;
+            blockStart[blocks] = i;
+            blocks++;
+            while (blocks > 1 && blockValue[blocks - 2] > blockValue[blocks - 1])
+            {
+                var mergedWeight = blockWeight[blocks - 2] + blockWeight[blocks - 1];
+                blockValue[blocks - 2] =
+                    (blockValue[blocks - 2] * blockWeight[blocks - 2] + blockValue[blocks - 1] * blockWeight[blocks - 1])
+                    / mergedWeight;
+                blockWeight[blocks - 2] = mergedWeight;
+                blocks--;
+            }
+        }
+        for (var b = 0; b < blocks; b++)
+        {
+            var end = b + 1 < blocks ? blockStart[b + 1] : n;
+            for (var i = blockStart[b]; i < end; i++)
+            {
+                var top = blockValue[b] + offset[i];
+                centerY[column[i]] = top + byId[column[i]].Bounds.Height / 2f;
+            }
+        }
     }
 
     private static CanvasPoint TopLeft(CanvasObjectState obj) =>

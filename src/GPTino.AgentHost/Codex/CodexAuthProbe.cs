@@ -61,7 +61,7 @@ public sealed class CodexAuthProbe
         {
             return new CodexAuthSnapshot(
                 CodexAuthStatus.CliMissing,
-                "Codex CLI was not found. Install it with npm, then sign in.");
+                "Codex CLI not found — click to open a terminal that installs it (npm) and signs in.");
         }
         return new CodexAuthSnapshot(
             CodexAuthStatus.LoggedOut,

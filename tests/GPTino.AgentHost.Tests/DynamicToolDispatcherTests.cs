@@ -251,6 +251,11 @@ public sealed class DynamicToolDispatcherTests
         Assert.Equal(
             "H-300x300x10x15",
             inputRoot.GetProperty("markSections").GetProperty("SC1").GetString());
+        // The variant mark resolved by PREFIX to the same section instead of falling to the
+        // default — the real-model regression the gate caught.
+        Assert.Equal(
+            "H-300x300x10x15",
+            inputRoot.GetProperty("markSections").GetProperty("SC1 (Bracing)").GetString());
         // The user's answers reached the solver options verbatim.
         Assert.True(inputRoot.GetProperty("options").GetProperty("repairFreeEnds").GetBoolean());
         Assert.Equal(
@@ -299,7 +304,7 @@ public sealed class DynamicToolDispatcherTests
         Assert.True(result.Success, result.Text);
         using var payload = JsonDocument.Parse(result.Text);
         var root = payload.RootElement;
-        Assert.Equal(1, root.GetProperty("memberCount").GetInt32());
+        Assert.Equal(2, root.GetProperty("memberCount").GetInt32());
         Assert.Equal(2, root.GetProperty("mergedDuplicateAxes").GetInt32());
         // 306 / 1.02 = 300 exactly → the H-300x300 row wins with zero error.
         var guess = root.GetProperty("sectionGuesses").GetProperty("SC1");
@@ -434,6 +439,20 @@ public sealed class DynamicToolDispatcherTests
                             kind = "instance",
                             sourceObjectIds = new[] { "a0b1c2d3-0001-4e4e-9f9f-000000000001" },
                             fingerprints = new[] { "fp-sc1" },
+                        },
+                        // A VARIANT mark: members on "SC1 (Bracing)" are SC1s, and the real-model
+                        // gate caught them falling to the default section (38 braces solving 90%
+                        // too heavy) when only exact-mark lookups existed.
+                        new
+                        {
+                            mark = "SC1 (Bracing)",
+                            layer = "철골::SC1 (Bracing)",
+                            a = new { x = 0.0, y = 0.0, z = 3000.0 },
+                            b = new { x = 6000.0, y = 0.0, z = 0.0 },
+                            length = 6708.2,
+                            kind = "pca",
+                            sourceObjectIds = new[] { "a0b1c2d3-0002-4e4e-9f9f-000000000002" },
+                            fingerprints = new[] { "fp-sc1-brace" },
                         },
                     },
                     prototypes = new object[]

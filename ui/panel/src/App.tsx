@@ -264,6 +264,40 @@ export default function App() {
     );
   }
 
+  // GPT is the panel's reason to exist: every session turn runs through the Codex CLI, so a
+  // signed-out (or CLI-less) panel blocks at the first screen — the same role the open-Grasshopper
+  // block plays for a missing definition — instead of letting the user discover the failure at
+  // send time. One button opens a terminal that remediates the specific state (login, or
+  // npm-install + login). The auth probe re-reads on every SSE re-projection (3s cache), so
+  // finishing in the terminal unlocks this screen by itself a few seconds later. Gate only on the
+  // two known-bad wire values so an unexpected value can never brick the panel.
+  const codexAuth = runtime.codexAuth;
+  if (codexAuth && (codexAuth.status === "logged-out" || codexAuth.status === "cli-missing")) {
+    const cliMissing = codexAuth.status === "cli-missing";
+    return (
+      <main className="boot-screen login-screen">
+        <div className="brand-mark large">G</div>
+        <div className="boot-copy">
+          <strong>{cliMissing ? "Codex CLI is not installed" : "Sign in to GPT"}</strong>
+          <span>
+            {cliMissing
+              ? "GPTino drives GPT through the Codex CLI. The terminal installs it with npm (needs Node.js), then signs you in."
+              : "GPTino needs a signed-in Codex CLI to run sessions. The terminal runs 'codex login' — finish the browser sign-in there."}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => void actions.openLoginTerminal()}
+          disabled={busyActions.has("login-terminal")}
+        >
+          {cliMissing ? "Install Codex & log in" : "Log in to GPT"}
+        </button>
+        <span className="boot-hint">This screen unlocks automatically once you're signed in.</span>
+      </main>
+    );
+  }
+
   const modelSessions = runtime.sessions;
   const selected = modelSessions.find(({ id }) => id === selectedId);
   const ghDocs = runtime.grasshopperDocs != null && runtime.grasshopperDocs.length > 0 ? runtime.grasshopperDocs : null;
@@ -337,7 +371,7 @@ export default function App() {
                 (runtime.codexAuth.status === "logged-in"
                   ? "Signed in"
                   : runtime.codexAuth.status === "cli-missing"
-                    ? "Codex CLI not found — click to open a terminal and run 'codex login'"
+                    ? "Codex CLI not found — click to open a terminal that installs it and signs in"
                     : "Signed out — click to open a terminal and run 'codex login'")
               }
               actionable
