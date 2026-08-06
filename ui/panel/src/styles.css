@@ -1,33 +1,109 @@
 :root {
   font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
-  color: #eceeed;
-  background: #0e1011;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+
+  /* ===================== Color tokens (single source of truth) =====================
+     Every value below is what the panel already renders; nothing changes visually here.
+     A light theme overrides these under :root[data-theme="light"]. */
+
+  /* Base surfaces, dark -> raised */
   --bg: #0e1011;
   --surface: #131617;
   --surface-2: #171a1b;
   --surface-3: #1c2021;
+  --surface-raised: #171b1c;
+  --surface-user: #1a1e1f;
+
+  /* Borders */
   --border: #282d2e;
   --border-soft: #202425;
+  --border-strong: #303637;
+  --border-hover: #404849;
+  --border-muted: #3a4344;
+  --border-faint: #353c3d;
+
+  /* Text */
   --text: #eceeed;
+  --text-hi: #ffffff;
+  --text-strong: #f2f3f2;
+  --fg: #e8eaea;
+  --text-soft: #d6dad8;
   --muted: #a9b2af;
   --dim: #848d8a;
+  --placeholder: #7f8886;
+
+  /* Accents */
   --lime: #b7e166;
   --lime-strong: #ccf47d;
   --cyan: #6fd3c7;
   --amber: #e6b85c;
   --red: #e16f62;
   --violet: #a994e8;
+  --accent: #4a9eff;
+  --info: #63a8ff;
+  --warn: #d9a441;
+  --ok: #7ac74f;
+  --danger: #e5534b;
+  --red-delete: #c85050;
+
+  /* Dark ink on accent fills */
+  --ink-lime: #17200d;
+  --ink-red: #2d1411;
+  --ink-amber: #241a08;
+  --ink-warm: #10120f;
+
+  /* Accent edges (darker accent shades used as borders/strokes) */
+  --lime-edge: #5f7935;
+  --lime-edge-2: #526334;
+  --lime-edge-3: #596c3c;
+  --lime-edge-4: #536538;
+  --lime-edge-5: #708c3c;
+  --amber-edge: #82662f;
+  --red-edge: #82463e;
+  --red-edge-2: #6b3a35;
+
+  /* Tinted text on colored banners */
+  --text-lime: #cfe0ab;
+  --text-amber: #ecd3a1;
+  --text-amber-2: #d5c294;
+  --text-amber-3: #e7c98a;
+  --text-red: #d9c2be;
+  --text-red-2: #f5c3bb;
+  --text-red-3: #f2b8b0;
+  --text-red-4: #f2beb6;
+  --text-red-5: #e7a3a3;
+  --text-red-6: #eaa39b;
+  --text-red-7: #e0a49c;
+  --text-red-8: #ffc4bd;
+
+  /* Canvas (node graph) palette */
+  --canvas-grid: #212726;
+  --canvas-node: #161a1b;
+  --canvas-node-2: #14181a;
+  --canvas-node-sel: #171b17;
+  --wire-idle: #3d4544;
+  --wire-commit: #4a5352;
+  --wire-bake: #4d4470;
+  --wire-queued: #2e5a54;
+  --wire-port: #2c3233;
+  --wire-port-strong: #40484a;
+  --wire-under: #0c0e0f;
+
+  /* Overlay / shadow bases (for alpha tints via color-mix) */
+  --overlay: #ffffff;
+  --shadow: #000000;
+
   --radius: 10px;
   --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
-  /* Type scale. --fs-micro is the floor — nothing in this panel renders smaller,
-     and it is reserved for uppercase letterspaced mono labels. */
   --fs-micro: 10px;
   --fs-meta: 11px;
   --fs-sec: 12px;
   --fs-body: 13px;
   --fs-title: 15px;
+
+  color: var(--text);
+  background: var(--bg);
 }
 
 * {
@@ -49,7 +125,7 @@ body {
   min-height: 100vh;
   overflow: hidden;
   background:
-    radial-gradient(circle at 18% -20%, rgb(183 225 102 / 0.08), transparent 28rem),
+    radial-gradient(circle at 18% -20%, color-mix(in srgb, var(--lime) 8%, transparent), transparent 28rem),
     var(--bg);
 }
 
@@ -97,7 +173,7 @@ textarea:disabled {
   gap: 8px 12px;
   padding: 9px 14px;
   border-bottom: 1px solid var(--border);
-  background: rgb(15 18 19 / 0.94);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
   backdrop-filter: blur(18px);
 }
 
@@ -106,13 +182,13 @@ textarea:disabled {
   height: 34px;
   display: grid;
   place-items: center;
-  border: 1px solid #5f7935;
+  border: 1px solid var(--lime-edge);
   border-radius: 8px;
-  color: #17200d;
+  color: var(--ink-lime);
   background: var(--lime);
   font-size: 17px;
   font-weight: 800;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.22);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--overlay) 22%, transparent);
 }
 
 .brand-mark.large {
@@ -135,7 +211,7 @@ textarea:disabled {
 .project-name-row h1 {
   margin: 0;
   overflow: hidden;
-  color: #f2f3f2;
+  color: var(--text-strong);
   font-size: var(--fs-title);
   line-height: 1.2;
   letter-spacing: -0.01em;
@@ -145,10 +221,10 @@ textarea:disabled {
 
 .demo-chip {
   padding: 2px 7px;
-  border: 1px solid rgb(230 184 92 / 0.3);
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
   border-radius: 999px;
   color: var(--amber);
-  background: rgb(230 184 92 / 0.08);
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
   font-family: var(--mono);
   font-size: var(--fs-micro);
   font-weight: 500;
@@ -206,7 +282,7 @@ button.status-chip {
 }
 
 button.status-chip:hover strong {
-  color: #fff;
+  color: var(--text-hi);
 }
 
 .status-chip strong {
@@ -220,17 +296,17 @@ button.status-chip:hover strong {
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--dim);
-  box-shadow: 0 0 0 3px rgb(96 104 102 / 0.13);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dim) 13%, transparent);
 }
 
 .status-on .status-dot {
-  background: #63a8ff;
-  box-shadow: 0 0 0 3px rgb(99 168 255 / 0.15), 0 0 12px rgb(99 168 255 / 0.32);
+  background: var(--info);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 15%, transparent), 0 0 12px color-mix(in srgb, var(--info) 32%, transparent);
 }
 
 .status-off .status-dot {
   background: var(--red);
-  box-shadow: 0 0 0 3px rgb(225 111 98 / 0.15), 0 0 12px rgb(225 111 98 / 0.32);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 15%, transparent), 0 0 12px color-mix(in srgb, var(--red) 32%, transparent);
 }
 
 .status-off strong {
@@ -238,8 +314,8 @@ button.status-chip:hover strong {
 }
 
 /* Rhino-runtime health folds into the brand mark's tint (green connected → amber → red). */
-.brand-mark.health-degraded { border-color: #82662f; background: var(--amber); color: #241a08; }
-.brand-mark.health-disconnected { border-color: #82463e; background: var(--red); color: #2d1411; }
+.brand-mark.health-degraded { border-color: var(--amber-edge); background: var(--amber); color: var(--ink-amber); }
+.brand-mark.health-disconnected { border-color: var(--red-edge); background: var(--red); color: var(--ink-red); }
 
 .error-banner,
 .pause-banner {
@@ -247,16 +323,16 @@ button.status-chip:hover strong {
   align-items: center;
   gap: 9px;
   padding: 7px 14px;
-  border-bottom: 1px solid rgb(225 111 98 / 0.25);
-  color: #f2beb6;
-  background: rgb(225 111 98 / 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
+  color: var(--text-red-4);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
   font-size: var(--fs-sec);
 }
 
 .pause-banner {
-  color: #ecd3a1;
-  border-color: rgb(230 184 92 / 0.25);
-  background: rgb(230 184 92 / 0.07);
+  color: var(--text-amber);
+  border-color: color-mix(in srgb, var(--amber) 25%, transparent);
+  background: color-mix(in srgb, var(--amber) 7%, transparent);
 }
 
 .error-banner svg,
@@ -294,9 +370,9 @@ button.status-chip:hover strong {
   gap: 9px;
   padding: 7px 14px;
   border: 0;
-  border-bottom: 1px solid rgb(225 111 98 / 0.4);
-  color: #f5c3bb;
-  background: rgb(225 111 98 / 0.13);
+  border-bottom: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+  color: var(--text-red-2);
+  background: color-mix(in srgb, var(--red) 13%, transparent);
   font-size: var(--fs-sec);
   font-weight: 600;
   text-align: left;
@@ -304,7 +380,7 @@ button.status-chip:hover strong {
 }
 
 .conflict-banner:hover {
-  background: rgb(225 111 98 / 0.18);
+  background: color-mix(in srgb, var(--red) 18%, transparent);
 }
 
 .conflict-banner svg {
@@ -338,9 +414,9 @@ button.status-chip:hover strong {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 10px 14px 12px;
-  border-bottom: 1px solid rgb(225 111 98 / 0.25);
-  background: rgb(225 111 98 / 0.04);
-  scrollbar-color: #363d3d transparent;
+  border-bottom: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
+  background: color-mix(in srgb, var(--red) 4%, transparent);
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .conflict-card {
@@ -348,9 +424,9 @@ button.status-chip:hover strong {
   grid-template-columns: 26px minmax(0, 1fr);
   gap: 9px;
   padding: 10px 11px;
-  border: 1px solid rgb(225 111 98 / 0.22);
+  border: 1px solid color-mix(in srgb, var(--red) 22%, transparent);
   border-radius: 8px;
-  background: rgb(20 17 17 / 0.85);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
   overflow-wrap: anywhere;
 }
 
@@ -361,7 +437,7 @@ button.status-chip:hover strong {
   place-items: center;
   border-radius: 6px;
   color: var(--red);
-  background: rgb(225 111 98 / 0.1);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
 }
 
 .conflict-icon svg { width: 14px; }
@@ -369,7 +445,7 @@ button.status-chip:hover strong {
 
 .conflict-card .conflict-problem {
   margin: 4px 0 0;
-  color: #d9c2be;
+  color: var(--text-red);
   font-size: var(--fs-sec);
   line-height: 1.5;
 }
@@ -379,8 +455,8 @@ button.status-chip:hover strong {
   padding: 6px 9px;
   border-left: 2px solid var(--lime);
   border-radius: 0 6px 6px 0;
-  color: #cfe0ab;
-  background: rgb(183 225 102 / 0.06);
+  color: var(--text-lime);
+  background: color-mix(in srgb, var(--lime) 6%, transparent);
   font-size: var(--fs-sec);
   line-height: 1.5;
 }
@@ -427,7 +503,7 @@ button.status-chip:hover strong {
      the stream already scrolls internally, so it takes the shrink. */
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
-  background: #111415;
+  background: var(--surface);
 }
 
 .chat-header {
@@ -446,13 +522,13 @@ button.status-chip:hover strong {
   align-self: center;
   padding: 4px 10px;
   font-size: var(--fs-micro, 10px);
-  color: #e7a3a3;
-  background: rgba(200, 80, 80, 0.08);
-  border: 1px solid rgba(200, 80, 80, 0.35);
+  color: var(--text-red-5);
+  background: color-mix(in srgb, var(--red-delete) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red-delete) 35%, transparent);
   border-radius: 6px;
   cursor: pointer;
 }
-.chat-delete:hover:not(:disabled) { background: rgba(200, 80, 80, 0.16); }
+.chat-delete:hover:not(:disabled) { background: color-mix(in srgb, var(--red-delete) 16%, transparent); }
 .chat-delete:disabled { opacity: 0.5; cursor: default; }
 
 /* Escape hatch for sessions persisted in the paused state — the composer is
@@ -463,12 +539,12 @@ button.status-chip:hover strong {
   padding: 4px 10px;
   font-size: var(--fs-micro, 10px);
   color: var(--lime);
-  background: rgb(183 225 102 / 0.08);
-  border: 1px solid rgb(183 225 102 / 0.35);
+  background: color-mix(in srgb, var(--lime) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lime) 35%, transparent);
   border-radius: 6px;
   cursor: pointer;
 }
-.chat-resume:hover:not(:disabled) { background: rgb(183 225 102 / 0.16); }
+.chat-resume:hover:not(:disabled) { background: color-mix(in srgb, var(--lime) 16%, transparent); }
 .chat-resume:disabled { opacity: 0.5; cursor: default; }
 
 .deleted-session-row {
@@ -491,7 +567,7 @@ button.status-chip:hover strong {
   margin: 0;
   min-width: 0;
   overflow: hidden;
-  color: #f2f3f2;
+  color: var(--text-strong);
   font-size: var(--fs-title);
   letter-spacing: -0.02em;
   text-overflow: ellipsis;
@@ -500,7 +576,7 @@ button.status-chip:hover strong {
 
 /* Click the title to rename it in place. */
 .chat-title { cursor: text; border-radius: 5px; padding: 0 2px; }
-.chat-title:hover { background: rgb(255 255 255 / 0.05); }
+.chat-title:hover { background: color-mix(in srgb, var(--overlay) 5%, transparent); }
 
 .chat-title-input {
   min-width: 0;
@@ -508,8 +584,8 @@ button.status-chip:hover strong {
   padding: 1px 4px;
   border: 1px solid var(--border);
   border-radius: 5px;
-  background: var(--surface-3, #1c2021);
-  color: #f2f3f2;
+  background: var(--surface-3);
+  color: var(--text-strong);
   font-size: var(--fs-title);
   letter-spacing: -0.02em;
 }
@@ -550,13 +626,13 @@ button.status-chip:hover strong {
 .status-drafting .status-dot,
 .status-verifying .status-dot {
   background: var(--lime);
-  box-shadow: 0 0 7px rgb(183 225 102 / 0.4);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--lime) 40%, transparent);
 }
 
 .status-queued .status-dot { background: var(--cyan); }
 .status-paused .status-dot { background: var(--amber); }
 .status-blocked .status-dot { background: var(--red); }
-.status-blocked { color: #eaa39b; }
+.status-blocked { color: var(--text-red-6); }
 
 /* Token status line (right side of the composer hint row) — codex-CLI style:
    fuel-gauge meters where the filled part is what remains. Neutral until a
@@ -617,10 +693,10 @@ button.status-chip:hover strong {
 .blocked-callout {
   margin: 0 0 14px;
   padding: 10px 12px;
-  border: 1px solid rgb(225 111 98 / 0.28);
+  border: 1px solid color-mix(in srgb, var(--red) 28%, transparent);
   border-left: 3px solid var(--red);
   border-radius: 8px;
-  background: rgb(225 111 98 / 0.06);
+  background: color-mix(in srgb, var(--red) 6%, transparent);
   /* Conflict details quote raw paths/ids; inherited so every child wraps them. */
   overflow-wrap: anywhere;
 }
@@ -629,7 +705,7 @@ button.status-chip:hover strong {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #f2b8b0;
+  color: var(--text-red-3);
   font-size: var(--fs-sec);
 }
 
@@ -637,7 +713,7 @@ button.status-chip:hover strong {
 
 .blocked-callout p {
   margin: 5px 0 0;
-  color: #d9c2be;
+  color: var(--text-red);
   font-size: var(--fs-sec);
   line-height: 1.55;
 }
@@ -647,8 +723,8 @@ button.status-chip:hover strong {
   padding: 6px 9px;
   border-left: 2px solid var(--lime);
   border-radius: 0 6px 6px 0;
-  color: #cfe0ab;
-  background: rgb(183 225 102 / 0.06);
+  color: var(--text-lime);
+  background: color-mix(in srgb, var(--lime) 6%, transparent);
   font-size: var(--fs-sec);
   line-height: 1.5;
 }
@@ -663,7 +739,7 @@ button.status-chip:hover strong {
   padding: 14px clamp(12px, 3vw, 28px);
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-color: #363d3d transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .message {
@@ -674,17 +750,17 @@ button.status-chip:hover strong {
 .message-user {
   margin-left: auto;
   padding: 10px 12px;
-  border: 1px solid #303637;
+  border: 1px solid var(--border-strong);
   border-radius: 10px 10px 2px 10px;
-  background: #1a1e1f;
+  background: var(--surface-user);
 }
 
 .message-system {
   width: 100%;
   padding: 9px 11px;
   border-left: 2px solid var(--amber);
-  color: #d5c294;
-  background: rgb(230 184 92 / 0.05);
+  color: var(--text-amber-2);
+  background: color-mix(in srgb, var(--amber) 5%, transparent);
 }
 
 .message-author {
@@ -704,7 +780,7 @@ button.status-chip:hover strong {
 
 .message p {
   margin: 0;
-  color: #d6dad8;
+  color: var(--text-soft);
   font-size: var(--fs-body);
   line-height: 1.6;
   overflow-wrap: anywhere;
@@ -725,13 +801,13 @@ button.status-chip:hover strong {
   margin-left: 10px;
   padding: 2px 8px;
   font-size: var(--fs-micro, 10px);
-  color: #e7c98a;
-  background: rgba(230, 184, 92, 0.1);
-  border: 1px solid rgba(230, 184, 92, 0.4);
+  color: var(--text-amber-3);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
   border-radius: 6px;
   cursor: pointer;
 }
-.stop-edit-button:hover { background: rgba(230, 184, 92, 0.18); }
+.stop-edit-button:hover { background: color-mix(in srgb, var(--amber) 18%, transparent); }
 
 .thinking-row > span {
   width: 4px;
@@ -771,7 +847,7 @@ button.status-chip:hover strong {
   background: var(--cyan);
 }
 
-.activity-row.failed { color: #e0a49c; }
+.activity-row.failed { color: var(--text-red-7); }
 .activity-row.failed .activity-dot { background: var(--red); }
 .activity-row .activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-row time { margin-left: auto; flex: 0 0 auto; color: var(--dim); font-size: var(--fs-micro); }
@@ -795,7 +871,7 @@ button.status-chip:hover strong {
   cursor: pointer;
 }
 
-.turn-log-toggle:hover { color: var(--muted); background: rgb(255 255 255 / 0.04); }
+.turn-log-toggle:hover { color: var(--muted); background: color-mix(in srgb, var(--overlay) 4%, transparent); }
 
 .turn-log-caret {
   flex: 0 0 auto;
@@ -809,7 +885,7 @@ button.status-chip:hover strong {
 .composer-wrap {
   padding: 8px 12px 10px;
   border-top: 1px solid var(--border-soft);
-  background: #121516;
+  background: var(--surface);
 }
 
 .control-strip {
@@ -827,7 +903,7 @@ button.status-chip:hover strong {
   padding: 2px;
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: #0e1112;
+  background: var(--bg);
 }
 
 .segmented button {
@@ -845,7 +921,7 @@ button.status-chip:hover strong {
 .segmented button.active {
   color: var(--text);
   background: var(--surface-3);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow) 25%, transparent);
 }
 
 .quality-control {
@@ -932,7 +1008,7 @@ button.status-chip:hover strong {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-2);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow) 35%, transparent);
 }
 
 .effort-slider input[type="range"] {
@@ -968,8 +1044,8 @@ button.status-chip:hover strong {
 }
 
 .goal-toggle.on {
-  color: #17200d;
-  border-color: #5f7935;
+  color: var(--ink-lime);
+  border-color: var(--lime-edge);
   background: var(--lime);
 }
 
@@ -986,20 +1062,20 @@ button.status-chip:hover strong {
 
 .composer {
   position: relative;
-  border: 1px solid #303637;
+  border: 1px solid var(--border-strong);
   border-radius: 9px;
-  background: #171b1c;
+  background: var(--surface-raised);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .composer:focus-within {
-  border-color: #596c3c;
-  box-shadow: 0 0 0 2px rgb(183 225 102 / 0.07);
+  border-color: var(--lime-edge-3);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--lime) 7%, transparent);
 }
 
 .composer.dragging {
-  border-color: #596c3c;
-  box-shadow: 0 0 0 2px rgb(183 225 102 / 0.14);
+  border-color: var(--lime-edge-3);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--lime) 14%, transparent);
 }
 
 .composer textarea {
@@ -1016,7 +1092,7 @@ button.status-chip:hover strong {
   line-height: 1.5;
 }
 
-.composer textarea::placeholder { color: #7f8886; }
+.composer textarea::placeholder { color: var(--placeholder); }
 
 .send-button {
   position: absolute;
@@ -1027,9 +1103,9 @@ button.status-chip:hover strong {
   display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid #708c3c;
+  border: 1px solid var(--lime-edge-5);
   border-radius: 7px;
-  color: #17200d;
+  color: var(--ink-lime);
   background: var(--lime);
   cursor: pointer;
 }
@@ -1054,7 +1130,7 @@ button.status-chip:hover strong {
 
 .attach-button:hover:not(:disabled) {
   color: var(--text);
-  border-color: #3a4142;
+  border-color: var(--border-muted);
 }
 
 .attach-button svg { width: 14px; }
@@ -1096,17 +1172,17 @@ button.status-chip:hover strong {
   align-items: center;
   gap: 5px;
   padding: 1px 8px;
-  border: 1px solid var(--accent, #4a9eff);
+  border: 1px solid var(--accent);
   border-radius: 10px;
-  color: var(--accent, #4a9eff);
-  background: color-mix(in srgb, var(--accent, #4a9eff) 8%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   font-size: var(--fs-meta);
   cursor: pointer;
   line-height: 1.5;
 }
 
 .focus-chip:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent, #4a9eff) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .focus-chip:disabled {
@@ -1126,8 +1202,8 @@ button.status-chip:hover strong {
 }
 
 .focus-chip-mode.active {
-  color: var(--accent, #4a9eff);
-  border-color: var(--accent, #4a9eff);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .focus-chip-note {
@@ -1144,17 +1220,17 @@ button.status-chip:hover strong {
   gap: 5px;
   margin: 0 2px;
   padding: 1px 8px;
-  border: 1px solid var(--warn, #d9a441);
+  border: 1px solid var(--warn);
   border-radius: 10px;
-  color: var(--warn, #d9a441);
-  background: color-mix(in srgb, var(--warn, #d9a441) 8%, transparent);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
   font-size: var(--fs-meta);
   line-height: 1.5;
   cursor: pointer;
 }
 
 .alt-chip:hover {
-  background: color-mix(in srgb, var(--warn, #d9a441) 18%, transparent);
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
 }
 
 /* Goal card: the agent's reading of the request, answered before the work starts. Sits in the
@@ -1162,9 +1238,9 @@ button.status-chip:hover strong {
 .goal-card {
   margin: 8px 0;
   padding: 10px 12px;
-  border: 1px solid var(--accent, #4a9eff);
+  border: 1px solid var(--accent);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent, #4a9eff) 6%, var(--surface-2));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-2));
   font-size: var(--fs-body);
 }
 
@@ -1213,11 +1289,11 @@ button.status-chip:hover strong {
 }
 
 .goal-card-block li.pass {
-  color: var(--ok, #7ac74f);
+  color: var(--ok);
 }
 
 .goal-card-block li.fail {
-  color: var(--danger, #e5534b);
+  color: var(--danger);
 }
 
 .goal-card-evidence {
@@ -1253,16 +1329,16 @@ button.status-chip:hover strong {
 
 .goal-card-choose {
   padding: 3px 10px;
-  border: 1px solid var(--accent, #4a9eff);
+  border: 1px solid var(--accent);
   border-radius: 6px;
-  color: var(--accent, #4a9eff);
-  background: color-mix(in srgb, var(--accent, #4a9eff) 10%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   font-size: var(--fs-meta);
   cursor: pointer;
 }
 
 .goal-card-choose:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent, #4a9eff) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .goal-card-show {
@@ -1279,9 +1355,9 @@ button.status-chip:hover strong {
 .approval-card {
   margin: 8px 0;
   padding: 10px 12px;
-  border: 1px solid var(--warn, #d9a441);
+  border: 1px solid var(--warn);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--warn, #d9a441) 6%, var(--surface-2));
+  background: color-mix(in srgb, var(--warn) 6%, var(--surface-2));
   font-size: var(--fs-body);
 }
 
@@ -1346,8 +1422,8 @@ button.status-chip:hover strong {
 }
 
 .alt-chip.active {
-  color: var(--bg, #10120f);
-  background: var(--warn, #d9a441);
+  color: var(--bg);
+  background: var(--warn);
 }
 
 .attachment-chip .chip-name {
@@ -1380,7 +1456,7 @@ button.status-chip:hover strong {
 
 .chip-remove:hover:not(:disabled) {
   color: var(--red);
-  background: rgb(225 111 98 / 0.12);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
 }
 
 .attachment-error {
@@ -1432,7 +1508,7 @@ button.status-chip:hover strong {
   line-height: 1.4;
 }
 
-.problem-chip:hover { background: rgb(255 255 255 / 0.05); }
+.problem-chip:hover { background: color-mix(in srgb, var(--overlay) 5%, transparent); }
 .problem-count { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
 .problem-count.error { color: var(--red); }
 .problem-count.warn { color: var(--amber); }
@@ -1450,8 +1526,8 @@ button.status-chip:hover strong {
   gap: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface-2, #171a1b);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 0.45);
+  background: var(--surface-2);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow) 45%, transparent);
 }
 
 .problem-item { display: flex; flex-direction: column; gap: 2px; }
@@ -1480,7 +1556,7 @@ button.status-chip:hover strong {
 
 .secondary-button:hover {
   color: var(--text);
-  border-color: #404849;
+  border-color: var(--border-hover);
 }
 
 .secondary-button svg,
@@ -1489,8 +1565,8 @@ button.status-chip:hover strong {
   height: 13px;
 }
 
-.danger-button { color: #eaa39b; border-color: rgb(225 111 98 / 0.28); background: rgb(225 111 98 / 0.07); }
-.danger-button:hover { color: #ffc4bd; border-color: rgb(225 111 98 / 0.5); }
+.danger-button { color: var(--text-red-6); border-color: color-mix(in srgb, var(--red) 28%, transparent); background: color-mix(in srgb, var(--red) 7%, transparent); }
+.danger-button:hover { color: var(--text-red-8); border-color: color-mix(in srgb, var(--red) 50%, transparent); }
 
 .empty-state,
 .boot-screen {
@@ -1508,7 +1584,7 @@ button.status-chip:hover strong {
   min-height: 100vh;
   display: grid;
   gap: 14px;
-  background: radial-gradient(circle, rgb(183 225 102 / 0.06), transparent 30%), var(--bg);
+  background: radial-gradient(circle, color-mix(in srgb, var(--lime) 6%, transparent), transparent 30%), var(--bg);
 }
 
 .boot-copy strong,
@@ -1518,7 +1594,7 @@ button.status-chip:hover strong {
 .boot-line { width: 180px; height: 2px; overflow: hidden; background: var(--border); }
 .boot-line span { display: block; width: 45%; height: 100%; background: var(--lime); animation: boot 1.2s infinite ease-in-out; }
 @keyframes boot { from { transform: translateX(-110%); } to { transform: translateX(240%); } }
-.error-screen .brand-mark { color: #2d1411; border-color: #82463e; background: var(--red); }
+.error-screen .brand-mark { color: var(--ink-red); border-color: var(--red-edge); background: var(--red); }
 
 /* Session canvas — node-and-wire view of sessions → single-writer broker → documents */
 
@@ -1527,7 +1603,7 @@ button.status-chip:hover strong {
   height: clamp(200px, 30vh, 340px);
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
-  background: #0c0e0f;
+  background: var(--wire-under);
 }
 
 .new-session-button {
@@ -1536,7 +1612,7 @@ button.status-chip:hover strong {
   align-items: center;
   gap: 5px;
   padding: 0 9px;
-  border: 1px solid #526334;
+  border: 1px solid var(--lime-edge-2);
   border-radius: 6px;
   color: var(--lime);
   background: var(--surface-2);
@@ -1569,7 +1645,7 @@ button.status-chip:hover strong {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-2);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 0.45);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow) 45%, transparent);
 }
 
 .popover-label {
@@ -1642,7 +1718,7 @@ button.status-chip:hover strong {
 
 .popover-create {
   height: 28px;
-  border: 1px solid #526334;
+  border: 1px solid var(--lime-edge-2);
   border-radius: 6px;
   color: var(--lime);
   background: var(--surface-3);
@@ -1669,14 +1745,14 @@ button.status-chip:hover strong {
 }
 
 .session-canvas.panning { cursor: grabbing; }
-.session-canvas .grid-dot { fill: #212726; }
+.session-canvas .grid-dot { fill: var(--canvas-grid); }
 .session-canvas .canvas-backdrop { fill-opacity: 1; }
 
 /* Wires: dark under-stroke + kind color + optional animated flow overlay */
 
 .wire-under {
   fill: none;
-  stroke: #0c0e0f;
+  stroke: var(--wire-under);
   stroke-width: 4.5;
 }
 
@@ -1703,11 +1779,11 @@ button.status-chip:hover strong {
 .wire-queued .wire-color { stroke: var(--cyan); stroke-dasharray: 4 6; }
 .wire-paused .wire-color { stroke: var(--amber); stroke-dasharray: 2 7; opacity: 0.55; }
 .wire-blocked .wire-color { stroke: var(--red); stroke-dasharray: 4 6; }
-.wire-idle .wire-color { stroke: #3d4544; stroke-width: 1.2; }
-.wire-commit .wire-color { stroke: #4a5352; }
+.wire-idle .wire-color { stroke: var(--wire-idle); stroke-width: 1.2; }
+.wire-commit .wire-color { stroke: var(--wire-commit); }
 /* Selected session → its bound doc: the commit wire picks up the lime accent. */
 .wire-commit.selected .wire-color { stroke: var(--lime); stroke-width: 2; }
-.wire-commit.selected .wire-port { fill: var(--lime); stroke: #536538; }
+.wire-commit.selected .wire-port { fill: var(--lime); stroke: var(--lime-edge-4); }
 .wire-conflict .wire-color { stroke: var(--red); stroke-dasharray: 3 5; opacity: 0.8; }
 .wire-conflict .wire-under { stroke-width: 3.5; }
 
@@ -1716,26 +1792,26 @@ button.status-chip:hover strong {
 .wire-reference .wire-color { stroke: var(--violet); stroke-dasharray: 4 6; opacity: 0.85; }
 .wire-bake .wire-color { stroke: var(--violet); stroke-dasharray: 8 4; opacity: 0.85; }
 .wire-reference .wire-port,
-.wire-bake .wire-port { fill: var(--violet); stroke: #4d4470; }
+.wire-bake .wire-port { fill: var(--violet); stroke: var(--wire-bake); }
 .wire-reference.warning .wire-color { stroke: var(--red); }
-.wire-reference.warning .wire-port { fill: var(--red); stroke: #6b3a35; }
+.wire-reference.warning .wire-port { fill: var(--red); stroke: var(--red-edge-2); }
 
-.wire-port { fill: #2c3233; stroke: #40484a; stroke-width: 1; }
-.wire-active .wire-port { fill: var(--lime); stroke: #536538; }
-.wire-queued .wire-port { fill: var(--cyan); stroke: #2e5a54; }
-.wire-conflict .wire-port { fill: var(--red); stroke: #6b3a35; }
+.wire-port { fill: var(--wire-port); stroke: var(--wire-port-strong); stroke-width: 1; }
+.wire-active .wire-port { fill: var(--lime); stroke: var(--lime-edge-4); }
+.wire-queued .wire-port { fill: var(--cyan); stroke: var(--wire-queued); }
+.wire-conflict .wire-port { fill: var(--red); stroke: var(--red-edge-2); }
 
 .wire-chip rect {
   fill: var(--surface-3);
-  stroke: rgb(111 211 199 / 0.4);
+  stroke: color-mix(in srgb, var(--cyan) 40%, transparent);
   stroke-width: 1;
 }
 
 .wire-reference .wire-chip rect,
-.wire-bake .wire-chip rect { stroke: rgb(169 148 232 / 0.4); }
+.wire-bake .wire-chip rect { stroke: color-mix(in srgb, var(--violet) 40%, transparent); }
 .wire-reference .wire-chip text,
 .wire-bake .wire-chip text { fill: var(--violet); }
-.wire.warning .wire-chip rect { stroke: rgb(225 111 98 / 0.4); }
+.wire.warning .wire-chip rect { stroke: color-mix(in srgb, var(--red) 40%, transparent); }
 .wire.warning .wire-chip text { fill: var(--red); }
 
 .wire-chip text {
@@ -1755,25 +1831,25 @@ button.status-chip:hover strong {
 }
 
 .gnode-session { cursor: pointer; }
-.gnode-session:hover .gnode-box { stroke: #353c3d; fill: #161a1b; }
+.gnode-session:hover .gnode-box { stroke: var(--border-faint); fill: var(--canvas-node); }
 .gnode-session:focus-visible { outline: none; }
 .gnode-session:focus-visible .gnode-box { stroke: var(--lime); stroke-width: 1.6; }
 .gnode-session.selected .gnode-box {
   stroke: var(--lime);
   stroke-width: 1.4;
-  fill: #171b17;
+  fill: var(--canvas-node-sel);
 }
-.gnode-session.paused .gnode-box { stroke: rgb(230 184 92 / 0.45); }
+.gnode-session.paused .gnode-box { stroke: color-mix(in srgb, var(--amber) 45%, transparent); }
 /* Fade the box, not the text — a group opacity would push --dim labels below readable contrast. */
 .gnode-session.paused .gnode-box { fill-opacity: 0.8; }
 .gnode-session.paused .gnode-status-dot { opacity: 0.85; }
-.gnode-session.warning .gnode-box { stroke: rgb(225 111 98 / 0.55); }
+.gnode-session.warning .gnode-box { stroke: color-mix(in srgb, var(--red) 55%, transparent); }
 .gnode-session.dragging { opacity: 0.85; }
 .gnode-session.dragging .gnode-box { stroke: var(--cyan); stroke-dasharray: 4 4; }
 
 .gnode text { user-select: none; pointer-events: none; }
 .gnode-rank { fill: var(--dim); font-family: var(--mono); font-size: 11px; }
-.gnode-title { fill: #f2f3f2; font-size: 14px; font-weight: 600; }
+.gnode-title { fill: var(--text-strong); font-size: 14px; font-weight: 600; }
 .gnode-terminal { fill: var(--lime); font-family: var(--mono); font-size: 11px; }
 .gnode-warning { fill: var(--red); font-size: 14px; font-weight: 800; }
 .gnode-status { fill: var(--muted); font-family: var(--mono); font-size: 11.5px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -1788,12 +1864,12 @@ button.status-chip:hover strong {
 .gnode-sub { fill: var(--dim); font-size: 11.5px; }
 
 .gnode-orchestrator .gnode-box {
-  fill: #14181a;
-  stroke: #3a4344;
+  fill: var(--canvas-node-2);
+  stroke: var(--border-muted);
   stroke-width: 1.2;
 }
-.gnode-orchestrator.live .gnode-box { stroke: #536538; }
-.gnode-orchestrator.paused .gnode-box { stroke: rgb(230 184 92 / 0.6); }
+.gnode-orchestrator.live .gnode-box { stroke: var(--lime-edge-4); }
+.gnode-orchestrator.paused .gnode-box { stroke: color-mix(in srgb, var(--amber) 60%, transparent); }
 .gnode-lamp { fill: var(--dim); }
 .gnode-orchestrator.live .gnode-lamp { fill: var(--lime); animation: lamp-pulse 1.6s ease-in-out infinite; }
 .gnode-orchestrator.paused .gnode-lamp { fill: var(--amber); animation: none; }
@@ -1803,14 +1879,14 @@ button.status-chip:hover strong {
   50% { opacity: 0.45; }
 }
 
-.gnode-heading { fill: #f2f3f2; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+.gnode-heading { fill: var(--text-strong); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
 .gnode-writer { fill: var(--lime); font-size: 11.5px; font-weight: 600; }
 .gnode-writer.idle { fill: var(--dim); font-weight: 400; }
 .gnode-orchestrator.paused .gnode-writer { fill: var(--amber); }
 .gnode-phase { fill: var(--muted); font-size: 10.5px; }
 .gnode-footer { fill: var(--dim); font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em; }
 
-.gnode-doc .gnode-box { fill: #121516; }
+.gnode-doc .gnode-box { fill: var(--surface); }
 .gnode-detail { fill: var(--lime); font-family: var(--mono); font-size: 10.5px; }
 /* Resting reference/bake counts on GH doc nodes — visible even with the Data layer off. */
 .gnode-datachip { fill: var(--violet); font-family: var(--mono); font-size: 10px; }
@@ -1819,8 +1895,8 @@ button.status-chip:hover strong {
 .gnode-doc.openable:focus-visible .gnode-box { stroke: var(--violet); }
 .gnode-doc-mark { fill: var(--surface-3); stroke: var(--border); stroke-width: 1; }
 .gnode-doc-glyph { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; font-weight: 700; text-anchor: middle; }
-.session-canvas.health-degraded .gnode-doc .gnode-box { stroke: rgb(230 184 92 / 0.5); }
-.session-canvas.health-disconnected .gnode-doc .gnode-box { stroke: rgb(225 111 98 / 0.55); }
+.session-canvas.health-degraded .gnode-doc .gnode-box { stroke: color-mix(in srgb, var(--amber) 50%, transparent); }
+.session-canvas.health-disconnected .gnode-doc .gnode-box { stroke: color-mix(in srgb, var(--red) 55%, transparent); }
 
 /* Past-sessions archive — read-only browser over every project data root, reachable
    from the header even when a crash/autosave orphaned the original root. */
@@ -1843,7 +1919,7 @@ button.status-chip:hover strong {
 
 .history-button:hover {
   color: var(--text);
-  border-color: #404849;
+  border-color: var(--border-hover);
 }
 
 .history-button svg {
@@ -1858,7 +1934,7 @@ button.status-chip:hover strong {
   z-index: 40;
   display: flex;
   flex-direction: column;
-  background: rgb(12 14 15 / 0.97);
+  background: color-mix(in srgb, var(--bg) 97%, transparent);
   backdrop-filter: blur(12px);
 }
 
@@ -1934,7 +2010,7 @@ button.status-chip:hover strong {
 .audit-card-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: var(--fs-sec); }
 .audit-card-list > li { margin-bottom: 8px; }
 .audit-card-list label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
-.audit-card-detail { color: var(--fg, #e8eaea); }
+.audit-card-detail { color: var(--fg); }
 .audit-card-keep { display: flex; gap: 14px; padding: 4px 0 0 24px; color: var(--muted); font-size: var(--fs-meta); }
 .audit-card-keep label { display: inline-flex; gap: 4px; align-items: center; font-family: var(--mono); }
 .audit-card-footer { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
@@ -1954,10 +2030,10 @@ button.status-chip:hover strong {
 .audit-card-nothing-scanned {
   margin: 8px 0 0;
   padding: 7px 10px;
-  border-left: 3px solid var(--amber, #e6b85c);
+  border-left: 3px solid var(--amber);
   border-radius: 0 6px 6px 0;
-  background: rgb(230 184 92 / 0.08);
-  color: #ecd3a1;
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  color: var(--text-amber);
   font-size: var(--fs-sec);
   line-height: 1.5;
 }
@@ -1986,7 +2062,7 @@ button.status-chip:hover strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--fg, #e8eaea);
+  color: var(--fg);
 }
 .data-view-arrow { color: var(--violet); font-family: var(--mono); flex: 0 0 auto; }
 .data-view-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
@@ -2003,7 +2079,7 @@ button.status-chip:hover strong {
 .data-view-alert {
   margin: 8px 16px 0;
   padding: 6px 10px;
-  border: 1px solid rgb(214 92 78 / 0.4);
+  border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
   border-radius: 6px;
   color: var(--red);
   font-size: var(--fs-sec);
@@ -2032,7 +2108,7 @@ button.status-chip:hover strong {
 .data-drawer-list > li { margin-bottom: 8px; }
 .data-drawer-list ul { list-style: none; margin: 2px 0 0; padding-left: 12px; color: var(--muted); }
 .data-drawer-list code { font-family: var(--mono); color: var(--cyan); }
-.data-drawer-param { color: var(--fg, #e8eaea); }
+.data-drawer-param { color: var(--fg); }
 .data-drawer-type { color: var(--dim); font-size: var(--fs-meta); }
 .data-drawer-missing { color: var(--red); }
 .data-drawer-missing code { color: var(--red); }
@@ -2055,7 +2131,7 @@ button.status-chip:hover strong {
   cursor: pointer;
 }
 
-.data-group-head:hover { background: rgb(255 255 255 / 0.04); }
+.data-group-head:hover { background: color-mix(in srgb, var(--overlay) 4%, transparent); }
 
 .data-group-caret { flex: 0 0 auto; color: var(--dim); transition: transform 120ms ease; }
 .data-group-caret.open { transform: rotate(90deg); }
@@ -2065,7 +2141,7 @@ button.status-chip:hover strong {
   flex: 0 0 auto;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgb(255 255 255 / 0.06);
+  background: color-mix(in srgb, var(--overlay) 6%, transparent);
   color: var(--muted);
   font-size: var(--fs-micro);
 }
@@ -2092,7 +2168,7 @@ button.status-chip:hover strong {
   gap: 12px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
-  background: rgb(15 18 19 / 0.94);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
 }
 
 .archive-title {
@@ -2147,7 +2223,7 @@ button.status-chip:hover strong {
   padding: 10px;
   overflow-y: auto;
   border-right: 1px solid var(--border);
-  scrollbar-color: #363d3d transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .archive-project {
@@ -2158,7 +2234,7 @@ button.status-chip:hover strong {
   background: var(--surface);
 }
 
-.archive-project.open { border-color: #3a4344; }
+.archive-project.open { border-color: var(--border-muted); }
 /* Dim only the identity, never the explanatory text — the badge and note must stay readable. */
 .archive-project.unavailable .archive-project-name strong,
 .archive-project.unavailable .archive-project-files { opacity: 0.6; }
@@ -2206,8 +2282,8 @@ button.status-chip:hover strong {
 
 .archive-badge.current {
   color: var(--lime);
-  border-color: #526334;
-  background: rgb(183 225 102 / 0.07);
+  border-color: var(--lime-edge-2);
+  background: color-mix(in srgb, var(--lime) 7%, transparent);
 }
 
 .archive-project-files {
@@ -2303,11 +2379,11 @@ button.status-chip:hover strong {
   min-width: 0;
   margin: 10px;
   padding: 8px 11px;
-  border: 1px solid rgb(225 111 98 / 0.28);
+  border: 1px solid color-mix(in srgb, var(--red) 28%, transparent);
   border-left: 3px solid var(--red);
   border-radius: 8px;
-  color: #d9c2be;
-  background: rgb(225 111 98 / 0.06);
+  color: var(--text-red);
+  background: color-mix(in srgb, var(--red) 6%, transparent);
   font-size: var(--fs-sec);
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -2331,7 +2407,7 @@ button.status-chip:hover strong {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #111415;
+  background: var(--surface);
 }
 
 .archive-transcript-header {
@@ -2354,7 +2430,7 @@ button.status-chip:hover strong {
   flex-shrink: 0;
   height: 28px;
   padding: 0 12px;
-  border: 1px solid #526334;
+  border: 1px solid var(--lime-edge-2);
   border-radius: 6px;
   color: var(--lime);
   background: var(--surface-3);
@@ -2440,19 +2516,19 @@ button.status-chip:hover strong {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-2);
-  box-shadow: 0 10px 26px rgb(0 0 0 / 0.42);
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--shadow) 42%, transparent);
   pointer-events: auto;
   animation: toast-in 160ms ease-out;
 }
 
 .toast-success {
-  border-color: rgb(183 225 102 / 0.35);
-  background: linear-gradient(rgb(183 225 102 / 0.06), transparent), var(--surface-2);
+  border-color: color-mix(in srgb, var(--lime) 35%, transparent);
+  background: linear-gradient(color-mix(in srgb, var(--lime) 6%, transparent), transparent), var(--surface-2);
 }
 
 .toast-attention {
-  border-color: rgb(225 111 98 / 0.45);
-  background: linear-gradient(rgb(225 111 98 / 0.08), transparent), var(--surface-2);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  background: linear-gradient(color-mix(in srgb, var(--red) 8%, transparent), transparent), var(--surface-2);
 }
 
 .toast-body {
@@ -2470,7 +2546,7 @@ button.status-chip:hover strong {
   cursor: pointer;
 }
 
-.toast-body:hover { background: rgb(255 255 255 / 0.03); }
+.toast-body:hover { background: color-mix(in srgb, var(--overlay) 3%, transparent); }
 
 .toast-icon {
   flex: 0 0 auto;
@@ -2482,8 +2558,8 @@ button.status-chip:hover strong {
 }
 
 .toast-icon svg { width: 14px; height: 14px; }
-.toast-success .toast-icon { color: var(--lime); background: rgb(183 225 102 / 0.12); }
-.toast-attention .toast-icon { color: var(--red); background: rgb(225 111 98 / 0.12); }
+.toast-success .toast-icon { color: var(--lime); background: color-mix(in srgb, var(--lime) 12%, transparent); }
+.toast-attention .toast-icon { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 
 .toast-check { font-size: var(--fs-body); font-weight: 800; line-height: 1; }
 
@@ -2535,7 +2611,7 @@ button.status-chip:hover strong {
   cursor: pointer;
 }
 
-.toast-dismiss:hover { color: var(--text); background: rgb(255 255 255 / 0.05); }
+.toast-dismiss:hover { color: var(--text); background: color-mix(in srgb, var(--overlay) 5%, transparent); }
 
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(8px); }
