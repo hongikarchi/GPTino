@@ -124,31 +124,45 @@ def build_structural_solids():
     rs.AddBlock([proto_beam], (0, 0, 0), "SG1_proto", False)
 
     def place(block, layer, point, scale_z, angle, normal):
-        inst = rs.InsertBlock(block, point, (1, 1, scale_z), angle, normal)
+        # Explicit T*R*S: rs.InsertBlock composes its scale AFTER the rotation in world axes
+        # (T*S*R), so a Z-scale never stretches a rotated prototype axis -- the first live gate
+        # caught every rotated beam landing as a 1000mm stub. Scale the prototype along its own
+        # +Z FIRST, then rotate that axis onto the run direction, then translate.
+        xf_t = rs.XformTranslation(point)
+        xf_r = rs.XformRotation2(angle, normal, (0, 0, 0))
+        xf_s = rs.XformScale((1, 1, scale_z), (0, 0, 0))
+        xf = rs.XformMultiply(rs.XformMultiply(xf_t, xf_r), xf_s)
+        inst = rs.InsertBlock2(block, xf)
         rs.ObjectLayer(inst, layer)
         return inst
 
+    # The bay sits AWAY from the origin, like the real model: the extractor treats near-origin
+    # solids as parked prototypes, so a loose brace starting at (0,0) would be silently skipped
+    # instead of PCA'd -- the fixture must not park real members inside the prototype zone.
+    ox, oy = 20000.0, 12000.0
+
     # Four 3000mm columns on a 6000x4000 bay (prototype axis is +Z, so scale only).
-    for corner in [(0, 0, 0), (6000, 0, 0), (6000, 4000, 0), (0, 4000, 0)]:
+    for corner in [(ox, oy, 0), (ox + 6000, oy, 0), (ox + 6000, oy + 4000, 0), (ox, oy + 4000, 0)]:
         place("SC1_proto", "Steel::SC1", corner, 3.0, 0, (0, 0, 1))
 
     # Perimeter beams at z=3000: the prototype +Z axis is rotated onto the run direction.
-    place("SG1_proto", "Steel::SG1", (0, 0, 3000), 6.0, 90, (0, 1, 0))      # +X run
-    place("SG1_proto", "Steel::SG1", (6000, 0, 3000), 4.0, -90, (1, 0, 0))  # +Y run
-    place("SG1_proto", "Steel::SG1", (6000, 4000, 3000), 6.0, -90, (0, 1, 0))  # -X run
-    place("SG1_proto", "Steel::SG1", (0, 4000, 3000), 4.0, 90, (1, 0, 0))   # -Y run
+    place("SG1_proto", "Steel::SG1", (ox, oy, 3000), 6.0, 90, (0, 1, 0))               # +X run
+    place("SG1_proto", "Steel::SG1", (ox + 6000, oy, 3000), 4.0, -90, (1, 0, 0))       # +Y run
+    place("SG1_proto", "Steel::SG1", (ox + 6000, oy + 4000, 3000), 6.0, -90, (0, 1, 0))  # -X run
+    place("SG1_proto", "Steel::SG1", (ox, oy + 4000, 3000), 4.0, 90, (1, 0, 0))        # -Y run
 
     # The ask-back fixture: a beam whose A end lands on a column top and whose B end
-    # (-3000, 4000, 3000) reaches NOTHING -- intended cantilever or mistake, only the
-    # human knows, so extraction must surface exactly this one free end.
-    place("SG1_proto", "Steel::SG1", (0, 4000, 3000), 3.0, -90, (0, 1, 0))
+    # (ox-3000, oy+4000, 3000) reaches NOTHING -- intended cantilever or mistake, only the
+    # human knows. Extraction reports it among the free ends (the two brace-less column
+    # bases also read as free ends pre-solve; the solver's base band absorbs those).
+    place("SG1_proto", "Steel::SG1", (ox, oy + 4000, 3000), 3.0, -90, (0, 1, 0))
 
     # Loose slender solid (no block): plan diagonal brace across the bay, 150x150 section.
     # No prototype pattern applies -- the PCA path must recover the diagonal axis.
     rs.AddLayer("Steel::BR1")
     import math
-    ax, ay = 0.0, 0.0
-    bx, by = 6000.0, 4000.0
+    ax, ay = ox, oy
+    bx, by = ox + 6000.0, oy + 4000.0
     ux, uy = bx - ax, by - ay
     ul = math.sqrt(ux * ux + uy * uy)
     ux, uy = ux / ul, uy / ul

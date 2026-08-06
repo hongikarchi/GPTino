@@ -739,7 +739,18 @@ if (developmentDataDirectory is not null)
         LiveDocumentBackend liveBackend,
         CancellationToken cancellationToken) =>
     {
-        var arguments = JsonSerializer.SerializeToElement(new { layerFilter, prototypeHeight });
+        // Omitted, not null: StructuralExtractRequest's threshold properties are non-nullable
+        // (they carry validated defaults), so a null in the JSON fails deserialization outright.
+        var query = new Dictionary<string, object>();
+        if (!string.IsNullOrWhiteSpace(layerFilter))
+        {
+            query["layerFilter"] = layerFilter;
+        }
+        if (prototypeHeight is > 0)
+        {
+            query["prototypeHeight"] = prototypeHeight.Value;
+        }
+        var arguments = JsonSerializer.SerializeToElement(query);
         return Results.Ok(await liveBackend.ReadStructuralExtractAsync(arguments, cancellationToken));
     });
     // Server-computed document audit, for harnesses that must check a claim WITHOUT asking the
