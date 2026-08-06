@@ -157,6 +157,11 @@ public static class HouseRules
         instead of describing where they are. Never invent ids; keep it to a few markers per message. This
         is the canvas twin of [[focus:...]]: use focus for Rhino objects, ghfocus for GH components.
 
+        Pinned selection: when the turn context says the user PINNED objects, that pinned set is the
+        authoritative target of this message — operate on exactly those ids and do NOT use the live "Current
+        selection" hint to choose the operand (the user pinned, then kept working, so the live selection may
+        differ). Ids fix which objects; resolve their current fingerprints before writing, as always.
+
         Design intent (mandatory):
         - Selected geometry is INPUT, not a parameter to reinvent. When the user says "use the objects I
           selected in Rhino/Grasshopper as input," create a referenceRhinoObjects parameter for those exact

@@ -13,8 +13,10 @@ import type {
   CanvasFocusResult,
   ChatMessage,
   CodexLimits,
+  CurrentSelection,
   FocusMode,
   FocusResult,
+  PinnedSelection,
   GoalCard as GoalCardData,
   GptinoSession,
   GrasshopperDocInfo,
@@ -65,7 +67,11 @@ interface ChatPaneProps {
   /** Bind the session's writes to a GH doc (docKey) or unbind with null. */
   onTarget(grasshopperDoc: string | null): void;
   /** Resolves false when the send failed (the composer restores its draft). */
-  onSend(content: string, attachments?: MessageAttachment[]): Promise<boolean | void> | void;
+  onSend(content: string, attachments?: MessageAttachment[], pinnedSelection?: PinnedSelection): Promise<boolean | void> | void;
+  /** The live Rhino/GH selection (streamed), used to show the composer's pin affordance and counts. */
+  currentSelection?: CurrentSelection | null;
+  /** Captures the COMPLETE current selection (not the 32-id SSE cap) to pin to the next message. */
+  onCaptureSelection?(): Promise<PinnedSelection>;
   /** Resume a paused session (the composer is disabled while paused). */
   onResume(): void;
   /** Soft-delete this session (hidden from the list, recoverable from the trash). */
@@ -323,7 +329,7 @@ function ProblemIndicator({ error, conflicts }: { error?: string | null; conflic
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, error, onModel, onPinModel, onRename, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onFocusCanvas, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, error, currentSelection, onModel, onPinModel, onRename, onTarget, onSend, onCaptureSelection, onResume, onDelete, onStopEdit, onFocus, onFocusCanvas, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   // Inline session rename: the title becomes a text field on click, commits on Enter/blur.
   const [editingTitle, setEditingTitle] = useState(false);
@@ -347,6 +353,51 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [effortOpen, setEffortOpen] = useState(false);
+  // A selection the user pinned to this message (snapshot; survives further clicks in Rhino/GH).
+  const [pinned, setPinned] = useState<PinnedSelection | null>(null);
+  const [pinning, setPinning] = useState(false);
+
+  const pinnedRhinoCount = pinned?.rhinoObjectIds?.length ?? 0;
+  const pinnedGhCount = pinned?.grasshopperObjects?.length ?? 0;
+  const liveRhinoCount = currentSelection?.rhinoObjectCount ?? 0;
+  const liveGhCount = currentSelection?.grasshopperObjectCount ?? 0;
+  const hasLiveSelection = liveRhinoCount + liveGhCount > 0;
+
+  const pinSelection = async () => {
+    if (!onCaptureSelection || pinning) return;
+    setPinning(true);
+    try {
+      const captured = await onCaptureSelection();
+      const rhino = captured.rhinoObjectIds ?? [];
+      const gh = captured.grasshopperObjects ?? [];
+      // Nothing selected at capture time (the live hint went stale between render and click): no-op.
+      if (rhino.length === 0 && gh.length === 0) return;
+      setPinned({
+        ...(rhino.length > 0 ? { rhinoObjectIds: rhino } : {}),
+        ...(gh.length > 0 ? { grasshopperObjects: gh } : {}),
+      });
+    } finally {
+      setPinning(false);
+    }
+  };
+
+  // Click the pinned chip to re-confirm what it holds: select+zoom the Rhino objects and/or frame
+  // the GH components, reusing the focus primitives.
+  const refocusPinned = () => {
+    if (pinnedRhinoCount > 0 && onFocus) {
+      void onFocus(pinned!.rhinoObjectIds!, "select");
+    }
+    if (pinnedGhCount > 0 && onFocusCanvas) {
+      void onFocusCanvas(pinned!.grasshopperObjects!.map((item) => item.id));
+    }
+  };
+
+  const describePin = () => {
+    const parts: string[] = [];
+    if (pinnedGhCount > 0) parts.push(`GH ${pinnedGhCount}`);
+    if (pinnedRhinoCount > 0) parts.push(`Rhino ${pinnedRhinoCount}`);
+    return parts.join(" · ");
+  };
 
   // The slider offers the reasoning-effort levels advertised by the chosen model (pinned, else the
   // catalog default), sorted ascending. Falls back to the full ladder before the catalog loads.
@@ -478,6 +529,9 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
   // closes whenever the selected session changes or disappears.
   useEffect(() => {
     setEffortOpen(false);
+    // A pinned selection belongs to the message being composed in THIS session; switching away
+    // drops it so it can never be sent from the wrong session.
+    setPinned(null);
   }, [session?.id]);
 
   // The effort popover closes like the model dropdown: Esc or a press anywhere
@@ -592,14 +646,17 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
         }
       }
       const savedDraft = draft;
+      const pinnedToSend = pinned ?? undefined;
       setDraft("");
       setAttachmentError(null);
-      const ok = await onSend(content, attachments);
+      const ok = await onSend(content, attachments, pinnedToSend);
       if (ok === false) {
         setDraft(savedDraft);
         return;
       }
       setPending((current) => current.filter((item) => !toSend.some((sent) => sent.id === item.id)));
+      // Pinned selection is per-message, like attachments: clear it once the message is sent.
+      setPinned(null);
     } finally {
       submitGate.current = false;
     }
@@ -986,6 +1043,46 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
           onDragLeave={() => setDragging(false)}
           onDrop={handleDrop}
         >
+          {pinned ? (
+            <div className="selection-strip" aria-label="Pinned selection">
+              <button
+                type="button"
+                className="pinned-chip"
+                onClick={refocusPinned}
+                title="고정된 선택을 뷰포트에서 확인 (Rhino: 선택+줌 / GH: 캔버스 프레임)"
+              >
+                <span aria-hidden="true">📌</span>
+                {describePin()}
+              </button>
+              <button
+                type="button"
+                className="chip-remove"
+                onClick={() => setPinned(null)}
+                disabled={sending}
+                aria-label="고정 해제"
+              >
+                ×
+              </button>
+            </div>
+          ) : hasLiveSelection && onCaptureSelection ? (
+            <div className="selection-strip live" aria-label="Current selection">
+              <span className="selection-live-count">
+                {liveGhCount > 0 ? `GH ${liveGhCount}` : ""}
+                {liveGhCount > 0 && liveRhinoCount > 0 ? " · " : ""}
+                {liveRhinoCount > 0 ? `Rhino ${liveRhinoCount}` : ""}
+                <span className="selection-live-label"> 선택됨</span>
+              </span>
+              <button
+                type="button"
+                className="pin-button"
+                onClick={() => void pinSelection()}
+                disabled={pinning || session.paused}
+                title="현재 선택을 이 메시지에 고정 — 고정 후에는 Rhino/GH에서 다른 걸 클릭해도 됩니다"
+              >
+                <span aria-hidden="true">📌</span> {pinning ? "고정 중…" : "고정"}
+              </button>
+            </div>
+          ) : null}
           {pending.length > 0 ? (
             <div className="attachment-strip" aria-label="Pending attachments">
               {pending.map((item) => (

@@ -149,7 +149,7 @@ public sealed class SessionOrchestrator : IDisposable
                 // not incorporate the mid-turn steer and left the session hung in "queued". Messages sent
                 // while a turn runs queue a fresh turn as before. The SteerTurnAsync client capability is
                 // retained (dormant) for future debugging once codex steer behavior is confirmed.
-                await RunTurnAsync(sessionId, messageContent, attachmentsBlock, imagePaths, _shutdown)
+                await RunTurnAsync(sessionId, messageContent, attachmentsBlock, imagePaths, request.PinnedSelection, _shutdown)
                     .ConfigureAwait(false);
             },
             CancellationToken.None);
@@ -232,6 +232,7 @@ public sealed class SessionOrchestrator : IDisposable
         string content,
         string? attachmentsBlock,
         IReadOnlyList<string>? imagePaths,
+        PinnedSelection? pinnedSelection,
         CancellationToken cancellationToken)
     {
         var sessionGate = _sessionGates.GetOrAdd(sessionId, static _ => new SemaphoreSlim(1, 1));
@@ -336,7 +337,7 @@ public sealed class SessionOrchestrator : IDisposable
                 {
                     turnId = await _codex.StartTurnAsync(
                         threadId,
-                        ComposeTurnInput(latest, content, attachmentsBlock),
+                        ComposeTurnInput(latest, content, attachmentsBlock, pinnedSelection),
                         selection.Model,
                         selection.Effort,
                         imagePaths,
@@ -355,7 +356,7 @@ public sealed class SessionOrchestrator : IDisposable
                         cancellationToken).ConfigureAwait(false);
                     turnId = await _codex.StartTurnAsync(
                         threadId,
-                        ComposeTurnInput(latest, content, attachmentsBlock),
+                        ComposeTurnInput(latest, content, attachmentsBlock, pinnedSelection),
                         selection.Model,
                         selection.Effort,
                         imagePaths,
@@ -636,7 +637,7 @@ public sealed class SessionOrchestrator : IDisposable
 
     private static readonly JsonSerializerOptions GoalJson = new(JsonSerializerDefaults.Web);
 
-    private string ComposeTurnInput(SessionRecord session, string content, string? attachmentsBlock = null)
+    private string ComposeTurnInput(SessionRecord session, string content, string? attachmentsBlock = null, PinnedSelection? pinnedSelection = null)
     {
         if (!string.IsNullOrEmpty(attachmentsBlock))
         {
@@ -659,7 +660,8 @@ public sealed class SessionOrchestrator : IDisposable
             (selection.RhinoObjectIds.Count > 0 ||
              grasshopperObjects is { Count: > 0 } ||
              !string.IsNullOrWhiteSpace(selection.ActiveLayerName));
-        if (!hasSelection && digest is null)
+        var pinnedBlock = ComposePinnedSelectionBlock(pinnedSelection);
+        if (!hasSelection && digest is null && pinnedBlock is null)
         {
             return goalBlock is null ? content : $"{goalBlock}\n{content}";
         }
@@ -669,6 +671,12 @@ public sealed class SessionOrchestrator : IDisposable
             builder.Append(goalBlock).Append('\n');
         }
         builder.Append("<gptino_context>");
+        // The pinned selection is the AUTHORITATIVE operand and leads the block so it is read before
+        // the live-selection hint below (which may differ — the user pins, then keeps working).
+        if (pinnedBlock is not null)
+        {
+            builder.Append(pinnedBlock).Append(' ');
+        }
         if (digest is not null)
         {
             builder.Append("Canvas: ")
@@ -726,6 +734,64 @@ public sealed class SessionOrchestrator : IDisposable
         }
         builder.Append("</gptino_context>").Append('\n');
         builder.Append(content);
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Formats the user's pinned selection as the turn's authoritative operand, or null when nothing
+    /// was pinned. Unlike the live-selection hint, this is what the message is ABOUT: the user
+    /// captured it at send time and then kept working, so the agent must act on exactly these ids and
+    /// not re-read the (possibly changed) live selection. Ids fix identity; current fingerprints are
+    /// still resolved live before any write, as usual.
+    /// </summary>
+    private static string? ComposePinnedSelectionBlock(PinnedSelection? pinned)
+    {
+        if (pinned is null)
+        {
+            return null;
+        }
+        var rhinoIds = (pinned.RhinoObjectIds ?? []).Where(id => id != Guid.Empty).ToArray();
+        var ghObjects = (pinned.GrasshopperObjects ?? [])
+            .Where(item => item.Id != Guid.Empty)
+            .ToArray();
+        if (rhinoIds.Length == 0 && ghObjects.Length == 0)
+        {
+            return null;
+        }
+        var builder = new StringBuilder();
+        builder.Append(
+            "The user PINNED these objects as the target of THIS message — act on exactly these and " +
+            "do NOT substitute the live selection below (the user pinned them, then kept working, so " +
+            "the live selection may differ). Resolve their current fingerprints before writing, as usual. ");
+        if (ghObjects.Length > 0)
+        {
+            builder.Append("Pinned Grasshopper components (")
+                .Append(ghObjects.Length)
+                .Append("): ");
+            builder.AppendJoin(
+                ", ",
+                ghObjects.Take(MaximumContextGrasshopperSelections).Select(item =>
+                    string.IsNullOrWhiteSpace(item.Label)
+                        ? item.Id.ToString("D")
+                        : $"{item.Label} ({item.Id:D})"));
+            if (ghObjects.Length > MaximumContextGrasshopperSelections)
+            {
+                builder.Append(",...");
+            }
+            builder.Append(". ");
+        }
+        if (rhinoIds.Length > 0)
+        {
+            builder.Append("Pinned Rhino objects (")
+                .Append(rhinoIds.Length)
+                .Append("): ");
+            builder.AppendJoin(',', rhinoIds.Take(MaximumContextSelectionIds).Select(id => id.ToString("D")));
+            if (rhinoIds.Length > MaximumContextSelectionIds)
+            {
+                builder.Append(",...");
+            }
+            builder.Append('.');
+        }
         return builder.ToString();
     }
 

@@ -11,6 +11,7 @@ import type {
   FocusMode,
   FocusResult,
   CanvasFocusResult,
+  PinnedSelection,
 } from "../types";
 import { createMockApiClient } from "./mock";
 
@@ -27,6 +28,8 @@ export interface GptinoApiClient {
   focusObjects(objectIds: string[], mode: FocusMode, zoom?: boolean): Promise<FocusResult>;
   /** Select + frame the given Grasshopper components on the GH canvas (the [[ghfocus:…]] chip). */
   focusCanvasObjects(objectIds: string[], zoom?: boolean): Promise<CanvasFocusResult>;
+  /** The complete current Rhino/GH selection, for pinning it to a message (no 32-id SSE cap). */
+  getCurrentSelection(): Promise<PinnedSelection>;
   /** Prose language for GPTino's answers ("ko" | "en"); UI labels stay English either way. */
   getLanguage(): Promise<{ language: string }>;
   setLanguage(language: string): Promise<{ language: string }>;
@@ -230,6 +233,10 @@ class HttpApiClient implements GptinoApiClient {
       method: "POST",
       body: JSON.stringify({ objectIds, zoom }),
     });
+  }
+
+  getCurrentSelection(): Promise<PinnedSelection> {
+    return this.request<PinnedSelection>("/selection/current");
   }
 
   getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail> {

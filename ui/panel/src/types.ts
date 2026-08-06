@@ -362,8 +362,19 @@ export interface MessageAttachment {
   dataBase64: string;
 }
 
+/**
+ * A selection the user pinned in the composer (like an attachment). Travels with the message as its
+ * authoritative operand — the objects to act on — decoupled from the live selection so the user can
+ * pin and keep working. Ids are captured at pin time; the agent resolves fingerprints live.
+ */
+export interface PinnedSelection {
+  rhinoObjectIds?: string[];
+  grasshopperObjects?: { id: string; label?: string }[];
+}
+
 export interface MessageRequest {
   content: string;
   clientMessageId?: string;
   attachments?: MessageAttachment[];
+  pinnedSelection?: PinnedSelection;
 }

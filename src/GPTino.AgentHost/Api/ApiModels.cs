@@ -134,10 +134,24 @@ public sealed record ReorderSessionsRequest(
 public sealed record SendMessageRequest(
     string Content,
     string? ClientMessageId = null,
-    IReadOnlyList<IncomingAttachment>? Attachments = null);
+    IReadOnlyList<IncomingAttachment>? Attachments = null,
+    // A selection the user pinned in the composer at send time (like an attachment). When present it
+    // is the AUTHORITATIVE operand for this turn — the objects to act on — not the live-selection
+    // discovery hint. Lets the user pin, then keep working in Rhino/GH without holding the selection.
+    PinnedSelection? PinnedSelection = null);
 
 /// <summary>A file the panel attached to a message, carried as Base64 over the loopback API.</summary>
 public sealed record IncomingAttachment(string FileName, string MediaType, string DataBase64);
+
+/// <summary>
+/// A user-pinned selection snapshot: exactly the Rhino objects and/or Grasshopper components the
+/// message targets. Ids fix WHICH objects; fingerprints are still resolved live before any write.
+/// </summary>
+public sealed record PinnedSelection(
+    IReadOnlyList<Guid>? RhinoObjectIds = null,
+    IReadOnlyList<PinnedGrasshopperObject>? GrasshopperObjects = null);
+
+public sealed record PinnedGrasshopperObject(Guid Id, string? Label = null);
 
 public sealed record SetPausedRequest(bool Paused);
 

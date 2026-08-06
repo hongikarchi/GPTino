@@ -6,6 +6,7 @@ import type {
   MessageAttachment,
   ModelInfo,
   ModelProfile,
+  PinnedSelection,
   RuntimeState,
 } from "../types";
 
@@ -159,6 +160,7 @@ export function useRuntime() {
     (objectIds: string[]) => clientRef.current!.focusCanvasObjects(objectIds),
     [],
   );
+  const captureSelection = useCallback(() => clientRef.current!.getCurrentSelection(), []);
 
   const getDataFlowDetail = useCallback(
     (docId?: string | null) => clientRef.current!.getDataFlowDetail(docId),
@@ -275,7 +277,12 @@ export function useRuntime() {
           (activeClient) => activeClient.answerGoalCard(sessionId, answer),
         );
       },
-      async sendMessage(sessionId: string, content: string, attachments?: MessageAttachment[]) {
+      async sendMessage(
+        sessionId: string,
+        content: string,
+        attachments?: MessageAttachment[],
+        pinnedSelection?: PinnedSelection,
+      ) {
         const clientMessageId = crypto.randomUUID();
         const createdAt = new Date().toISOString();
         // The backend persists attachments as short "[Attached: name]" lines; the optimistic
@@ -300,6 +307,7 @@ export function useRuntime() {
               content,
               clientMessageId,
               ...(attachments && attachments.length > 0 ? { attachments } : {}),
+              ...(pinnedSelection ? { pinnedSelection } : {}),
             }),
         );
       },
@@ -347,6 +355,7 @@ export function useRuntime() {
       readArchiveMessages,
       focusObjects,
       focusCanvasObjects,
+      captureSelection,
       setLanguage,
       getDataFlowDetail,
       // Import mutates runtime state (a new session appears), so — unlike the read-only archive
@@ -359,7 +368,7 @@ export function useRuntime() {
         );
       },
     }),
-    [focusObjects, focusCanvasObjects, getDataFlowDetail, listArchive, listDeleted, readArchiveMessages, reorder, runAction, setLanguage, shift, updateSession],
+    [focusObjects, focusCanvasObjects, captureSelection, getDataFlowDetail, listArchive, listDeleted, readArchiveMessages, reorder, runAction, setLanguage, shift, updateSession],
   );
 
   return {

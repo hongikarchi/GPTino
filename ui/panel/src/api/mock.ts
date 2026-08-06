@@ -642,6 +642,15 @@ export function createMockApiClient(): GptinoApiClient {
         fingerprint: `canvas-focus-${objectIds.length}-${zoom ? "z" : "n"}`,
       };
     },
+    async getCurrentSelection() {
+      await delay(40);
+      return {
+        rhinoObjectIds: ["11111111-1111-4111-8111-111111111111"],
+        grasshopperObjects: [
+          { id: "22222222-2222-4222-8222-222222222222", label: "Slider" },
+        ],
+      };
+    },
     async getLanguage() {
       await delay(30);
       return { language: demoLanguage };

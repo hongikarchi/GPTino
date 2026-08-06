@@ -1235,6 +1235,65 @@ button.status-chip:hover strong {
   padding: 8px 9px 0;
 }
 
+/* Pinned/live selection strip: sits above the composer like the attachment strip. The live variant
+   is a quiet affordance ("Rhino 3 선택됨 · 고정"); once pinned it becomes a lime chip that reads as
+   a captured operand travelling with the message. */
+.selection-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 9px 0;
+  font-size: var(--fs-meta);
+}
+
+.selection-live-count {
+  color: var(--muted);
+}
+
+.selection-live-label {
+  color: var(--dim);
+}
+
+.pin-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  color: var(--text-soft);
+  background: var(--surface-2);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+.pin-button:hover:not(:disabled) {
+  border-color: var(--lime);
+  color: var(--lime);
+}
+
+.pin-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pinned-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 1px solid var(--lime);
+  border-radius: 10px;
+  color: var(--lime);
+  background: color-mix(in srgb, var(--lime) 8%, transparent);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+.pinned-chip:hover {
+  background: color-mix(in srgb, var(--lime) 18%, transparent);
+}
+
 .attachment-chip {
   min-width: 0;
   display: inline-flex;

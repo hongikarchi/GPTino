@@ -343,6 +343,36 @@ api.MapPost("/canvas/focus", async (
     return Results.Ok(await liveBackend.FocusCanvasObjectsAsync(arguments, cancellationToken));
 });
 
+// The complete current selection (Rhino objects + Grasshopper components) for the composer's "pin
+// selection" affordance. Unlike the streamed runtime state — which caps ids to keep SSE frames slim —
+// this returns every id (up to the plugin's selection cap) so a pinned set is the full selection the
+// user captured, never a silent 32-object truncation. Read-only snapshot at call time.
+api.MapGet("/selection/current", (LiveDocumentBackend liveBackend) =>
+{
+    var selection = liveBackend.CurrentSelection;
+    if (selection is null)
+    {
+        return Results.Ok(new
+        {
+            rhinoObjectIds = Array.Empty<string>(),
+            grasshopperObjects = Array.Empty<object>(),
+            activeLayer = (string?)null,
+        });
+    }
+    return Results.Ok(new
+    {
+        rhinoObjectIds = selection.RhinoObjectIds.Select(id => id.ToString("D")).ToArray(),
+        grasshopperObjects = (selection.GrasshopperObjects ?? [])
+            .Select(item => new
+            {
+                id = item.ObjectId.ToString("D"),
+                label = string.IsNullOrWhiteSpace(item.NickName) ? item.Name : item.NickName,
+            })
+            .ToArray(),
+        activeLayer = selection.ActiveLayerName,
+    });
+});
+
 // Which language GPTino writes its prose in. A project-level preference (not per session):
 // the panel toggles it, and the next thread start/resume composes it into instructions.
 api.MapGet("/language", (ProjectContextStore context) =>

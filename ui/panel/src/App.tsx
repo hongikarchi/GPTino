@@ -497,17 +497,19 @@ export default function App() {
             grasshopperDocs={ghDocs}
             busyActions={busyActions}
             error={error}
+            currentSelection={runtime.currentSelection}
             onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
             onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
             onRename={(title) => selected && void actions.renameSession(selected.id, title)}
             onAnswerGoal={(answer) => selected && void actions.answerGoal(selected.id, answer)}
             onAnswerApproval={(answer) => selected && void actions.answerApproval(selected.id, answer)}
             onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
-            onSend={(content, attachments) => {
+            onSend={(content, attachments, pinnedSelection) => {
               if (!selected) return undefined;
               requestNotifyPermissionOnce();
-              return actions.sendMessage(selected.id, content, attachments);
+              return actions.sendMessage(selected.id, content, attachments, pinnedSelection);
             }}
+            onCaptureSelection={actions.captureSelection}
             onResume={() => selected && void actions.pauseSession(selected.id, false)}
             onDelete={() => {
               if (!selected) return;
