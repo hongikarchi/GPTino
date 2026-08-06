@@ -290,11 +290,15 @@ public sealed partial class ProjectArchiveReader
     {
         await using var connection = await OpenReadOnlyAsync(databasePath, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
+        // Deleted (soft-deleted) sessions are still in the table, parked at deep-negative sort_order.
+        // Surface them with a flag and list them AFTER the live ones so the archive can show the whole
+        // project — the panel renders deleted rows distinctly and offers restore / delete-forever.
         command.CommandText = """
             SELECT s.id, s.name, s.state, s.updated_at,
-                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id),
+                   (s.deleted_at IS NOT NULL)
             FROM sessions s
-            ORDER BY s.sort_order;
+            ORDER BY (s.deleted_at IS NOT NULL), s.sort_order;
             """;
         var sessions = new List<ArchivedSession>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -305,7 +309,8 @@ public sealed partial class ProjectArchiveReader
                 reader.GetString(1),
                 reader.GetString(2),
                 DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture),
-                reader.GetInt32(4)));
+                reader.GetInt32(4),
+                reader.GetInt64(5) != 0));
         }
         return sessions;
     }

@@ -798,6 +798,50 @@ public sealed class SessionStore
     }
 
     /// <summary>
+    /// Renames a session (the display title = the <c>name</c> column). The name is trimmed and must
+    /// be non-empty; length is capped so a runaway paste cannot bloat the row. Follows the
+    /// UpdatePreferencesAsync write-gate pattern.
+    /// </summary>
+    public async Task SetSessionTitleAsync(
+        Guid id,
+        string name,
+        CancellationToken cancellationToken = default)
+    {
+        var trimmed = (name ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            throw new ArgumentException("A session name cannot be empty.", nameof(name));
+        }
+        if (trimmed.Length > 120)
+        {
+            trimmed = trimmed[..120];
+        }
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE sessions
+                SET name=$name,
+                    updated_at=$updated
+                WHERE id=$id;
+                """;
+            command.Parameters.AddWithValue("$name", trimmed);
+            command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$id", id.ToString("D"));
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new KeyNotFoundException($"Session {id:D} was not found.");
+            }
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    /// <summary>
     /// Rewrites every session bound to one Grasshopper docKey to another in a single UPDATE.
     /// Called when a Save As re-registration recomputes a target's path-derived docKey: the
     /// StableTargetKey proves it is the same live document, so bindings follow the rename

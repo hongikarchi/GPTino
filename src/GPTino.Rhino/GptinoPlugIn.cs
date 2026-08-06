@@ -28,6 +28,7 @@ public sealed class GptinoPlugIn : PlugIn
         var runtimeInitializationStarted = false;
         try
         {
+            DisableWebViewOcclusionDetection();
             var panelIcon = TryLoadPanelIcon();
             if (panelIcon is not null)
             {
@@ -171,6 +172,36 @@ public sealed class GptinoPlugIn : PlugIn
                     "selection-events-unsubscribe-failed",
                     exception);
             }
+        }
+    }
+
+    // The panel's WebView (Eto WebView → WebView2 on Windows) goes blank white after the panel is
+    // floated into its own top-level window, covered by another app, then refocused: Chromium's
+    // native-window occlusion tracker marks the window occluded and suspends painting, and on
+    // refocus the surface is not reliably re-presented (a manual resize forces recomposition —
+    // hence the old symptom). Disabling occlusion detection keeps the surface live across defocus.
+    // WebView2 reads this variable only when it first creates its environment, so it must be set
+    // before any WebView is created — here at plugin load, before the panel is ever shown.
+    private static void DisableWebViewOcclusionDetection()
+    {
+        try
+        {
+            const string variable = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+            const string flag = "--disable-features=CalculateNativeWindowOcclusionEnabled";
+            var existing = Environment.GetEnvironmentVariable(variable);
+            if (string.IsNullOrEmpty(existing))
+            {
+                Environment.SetEnvironmentVariable(variable, flag);
+            }
+            else if (!existing.Contains("CalculateNativeWindowOcclusionEnabled", StringComparison.Ordinal))
+            {
+                // Preserve any value another component set; only append our flag.
+                Environment.SetEnvironmentVariable(variable, existing + " " + flag);
+            }
+        }
+        catch (Exception exception)
+        {
+            DevelopmentDiagnosticTrace.TryWriteException("Rhino", "webview-occlusion-flag-failed", exception);
         }
     }
 

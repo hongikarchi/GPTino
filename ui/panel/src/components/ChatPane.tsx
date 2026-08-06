@@ -41,8 +41,12 @@ interface ChatPaneProps {
   /** Registered GH docs; the target selector renders when more than one exists OR the session carries a (possibly stale) binding. */
   grasshopperDocs?: GrasshopperDocInfo[] | null;
   busyActions: Set<string>;
+  /** The latest runtime/connection error, or null. Surfaced as a compact problem chip by the ctx line. */
+  error?: string | null;
   onModel(profile: ModelProfile): void;
   onPinModel(model: string | null): void;
+  /** Rename this session (its display title). */
+  onRename(title: string): void;
   /** Answer the agent's proposed goal card (approve, optionally edited, or reject). */
   onAnswerGoal(answer: {
     status: "confirmed" | "rejected";
@@ -261,10 +265,62 @@ function UsageStatusLine({ usage, limits }: { usage?: SessionUsage; limits?: Cod
   );
 }
 
+// A VS-Code-status-bar-style problem indicator that lives next to the ctx meter: a compact
+// ✕ (errors) / ! (conflicts) count that opens a popover with the details on click and vanishes
+// entirely once nothing is wrong. Replaces the full-width error/conflict banners.
+function ProblemIndicator({ error, conflicts }: { error?: string | null; conflicts: RuntimeConflict[] }) {
+  const [open, setOpen] = useState(false);
+  const errorCount = error ? 1 : 0;
+  const total = errorCount + conflicts.length;
+  // Auto-dismiss the popover the moment the underlying problems clear ("해결되면 사라지도록").
+  useEffect(() => {
+    if (total === 0) setOpen(false);
+  }, [total]);
+  if (total === 0) return null;
+  return (
+    <span className="problem-indicator">
+      {open ? (
+        <div className="problem-popover" role="dialog" aria-label="Issues">
+          {error ? (
+            <div className="problem-item error">
+              <strong>Connection</strong>
+              <p>{error}</p>
+            </div>
+          ) : null}
+          {conflicts.map((conflict) => (
+            <div className="problem-item warn" key={conflict.id}>
+              <strong>{conflict.title}</strong>
+              <p>{conflict.detail}</p>
+              {conflict.resolution ? (
+                <p className="problem-solution">
+                  <b>Solution</b> — {conflict.resolution}
+                </p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        className="problem-chip"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        title={`${total} issue${total === 1 ? "" : "s"} — click for details`}
+      >
+        {errorCount > 0 ? <span className="problem-count error">✕ {errorCount}</span> : null}
+        {conflicts.length > 0 ? <span className="problem-count warn">! {conflicts.length}</span> : null}
+      </button>
+    </span>
+  );
+}
+
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, onModel, onPinModel, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, error, onModel, onPinModel, onRename, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
+  // Inline session rename: the title becomes a text field on click, commits on Enter/blur.
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   // Which proposed alternative the user last asked to see, so the chips show what is on
   // screen right now (the preview itself lives wherever the owner renders it).
   const [activeAlt, setActiveAlt] = useState<string | null>(null);
@@ -554,10 +610,44 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
       <header className="chat-header">
         <div className="chat-title-block">
           <div className="chat-title-row">
-            <h2>{session.title}</h2>
+            {editingTitle ? (
+              <input
+                className="chat-title-input"
+                value={titleDraft}
+                autoFocus
+                aria-label="Session name"
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onFocus={(event) => event.target.select()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    const next = titleDraft.trim();
+                    if (next && next !== session.title) onRename(next);
+                    setEditingTitle(false);
+                  } else if (event.key === "Escape") {
+                    setEditingTitle(false);
+                  }
+                }}
+                onBlur={() => {
+                  const next = titleDraft.trim();
+                  if (next && next !== session.title) onRename(next);
+                  setEditingTitle(false);
+                }}
+              />
+            ) : (
+              <h2
+                className="chat-title"
+                title="Click to rename"
+                onClick={() => {
+                  setTitleDraft(session.title);
+                  setEditingTitle(true);
+                }}
+              >
+                {session.title}
+              </h2>
+            )}
             <StatusBadge status={session.status} />
           </div>
-          <p>{session.summary}</p>
         </div>
         {session.paused ? (
           <button
@@ -950,7 +1040,10 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
           <div className="hint-keys">
             <span>Ctrl ↵ to send</span>
           </div>
-          <UsageStatusLine usage={session.usage} limits={limits} />
+          <span className="hint-status">
+            <ProblemIndicator error={error} conflicts={sessionConflicts} />
+            <UsageStatusLine usage={session.usage} limits={limits} />
+          </span>
         </div>
       </div>
     </section>

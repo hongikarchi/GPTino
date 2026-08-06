@@ -530,8 +530,9 @@ const demoArchive: ArchiveProject[] = [
     current: true,
     available: true,
     sessions: [
-      { id: "arch-cur-1", name: "Facade rationalization", state: "running", updatedAt: minutesAgo(2), messageCount: 3 },
-      { id: "arch-cur-2", name: "Wire cleanup", state: "waiting", updatedAt: minutesAgo(8), messageCount: 2 },
+      { id: "arch-cur-1", name: "Facade rationalization", state: "running", updatedAt: minutesAgo(2), messageCount: 3, deleted: false },
+      { id: "arch-cur-2", name: "Wire cleanup", state: "waiting", updatedAt: minutesAgo(8), messageCount: 2, deleted: false },
+      { id: "arch-cur-3", name: "Old massing study", state: "idle", updatedAt: minutesAgo(40), messageCount: 5, deleted: true },
     ],
   },
   {
@@ -545,8 +546,8 @@ const demoArchive: ArchiveProject[] = [
     current: false,
     available: true,
     sessions: [
-      { id: "arch-old-1", name: "Facade rationalization", state: "failed", updatedAt: daysAgo(1), messageCount: 4 },
-      { id: "arch-old-2", name: "Atrium massing", state: "idle", updatedAt: daysAgo(2), messageCount: 2 },
+      { id: "arch-old-1", name: "Facade rationalization", state: "failed", updatedAt: daysAgo(1), messageCount: 4, deleted: false },
+      { id: "arch-old-2", name: "Atrium massing", state: "idle", updatedAt: daysAgo(2), messageCount: 2, deleted: false },
     ],
   },
   {
@@ -756,6 +757,12 @@ export function createMockApiClient(): GptinoApiClient {
         state.sessions[index].modelProfile = modelProfile;
         state.sessions[index].pinnedModel = model ?? null;
         if (model) state.sessions[index].effectiveModel = model;
+      });
+    },
+    async renameSession(sessionId: string, name: string) {
+      await delay();
+      mutateSession(sessionId, (index) => {
+        state.sessions[index].title = name.trim() || state.sessions[index].title;
       });
     },
     async answerApprovalCard(

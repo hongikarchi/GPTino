@@ -307,6 +307,8 @@ export interface ArchiveSession {
   state: string;
   updatedAt: string;
   messageCount: number;
+  /** Soft-deleted (still recoverable). For the current project these can be restored or purged here. */
+  deleted: boolean;
 }
 
 /** One GPTino project data root on this machine, current or orphaned by a crash/path change. */

@@ -163,17 +163,16 @@ textarea:disabled {
   gap: 14px;
 }
 
-/* Second header row: session-level controls. Graph toggle and + Session on the
-   left, the archive-ish overlays (Deleted trash, Past sessions) on the right. */
+/* Session-level controls, now its own row BELOW the Model/Data switch: Graph toggle and + Session
+   on the left, Past sessions on the right. (No longer nested in the header grid.) */
 .session-toolbar {
-  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 6px 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-soft);
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .toolbar-group {
@@ -498,6 +497,24 @@ button.status-chip:hover strong {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Click the title to rename it in place. */
+.chat-title { cursor: text; border-radius: 5px; padding: 0 2px; }
+.chat-title:hover { background: rgb(255 255 255 / 0.05); }
+
+.chat-title-input {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-3, #1c2021);
+  color: #f2f3f2;
+  font-size: var(--fs-title);
+  letter-spacing: -0.02em;
+}
+
+.chat-title-input:focus { outline: none; border-color: var(--lime); }
 
 .chat-title-block > p {
   margin: 4px 0 0;
@@ -1391,6 +1408,59 @@ button.status-chip:hover strong {
   gap: 14px;
 }
 
+/* Right cluster of the composer hint: the problem chip sits immediately LEFT of the ctx meter. */
+.hint-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* VS-Code-status-bar-style problem chip: a compact ✕/! count that opens a details popover and is
+   absent entirely when nothing is wrong. */
+.problem-indicator { position: relative; display: inline-flex; }
+
+.problem-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--fs-micro);
+  line-height: 1.4;
+}
+
+.problem-chip:hover { background: rgb(255 255 255 / 0.05); }
+.problem-count { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; }
+.problem-count.error { color: var(--red); }
+.problem-count.warn { color: var(--amber); }
+
+.problem-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  width: max-content;
+  max-width: 320px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2, #171a1b);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.45);
+}
+
+.problem-item { display: flex; flex-direction: column; gap: 2px; }
+.problem-item strong { font-size: var(--fs-meta); }
+.problem-item.error strong { color: var(--red); }
+.problem-item.warn strong { color: var(--amber); }
+.problem-item p { margin: 0; color: var(--muted); font-size: var(--fs-micro); white-space: normal; }
+.problem-solution { color: var(--dim) !important; }
+
 .secondary-button,
 .danger-button {
   min-height: 30px;
@@ -2199,6 +2269,10 @@ button.status-chip:hover strong {
   background: var(--surface-3);
 }
 
+/* Deleted sessions of the current project appear in-line here, dimmed with a ✕ marker. */
+.archive-session.deleted .archive-session-name { color: var(--dim); text-decoration: line-through; }
+.archive-session-x { margin-right: 5px; color: var(--red); font-weight: 700; text-decoration: none; display: inline-block; }
+
 .archive-session-name {
   flex: 1;
   min-width: 0;
@@ -2302,6 +2376,10 @@ button.status-chip:hover strong {
   width: 13px;
   height: 13px;
 }
+
+/* Actions for a current-project session in the archive: restore/delete-forever (deleted) or a note. */
+.archive-transcript-actions { display: inline-flex; gap: 8px; flex: 0 0 auto; }
+.archive-transcript-note { flex: 0 0 auto; color: var(--dim); font-size: var(--fs-meta); }
 
 .archive-transcript-header strong {
   display: block;

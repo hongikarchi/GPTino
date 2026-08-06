@@ -460,6 +460,17 @@ api.MapPut("/sessions/{id:guid}/target", async (
     return Results.NoContent();
 });
 
+api.MapPut("/sessions/{id:guid}/title", async (
+    Guid id,
+    RenameSessionRequest request,
+    SessionStore sessionStore,
+    CancellationToken cancellationToken) =>
+{
+    await sessionStore.SetSessionTitleAsync(id, request.Name, cancellationToken);
+    events.Publish();
+    return Results.NoContent();
+});
+
 api.MapPut("/sessions/{id:guid}/model", async (
     Guid id,
     SetModelRequest request,

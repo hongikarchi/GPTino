@@ -35,6 +35,8 @@ export interface GptinoApiClient {
   /** Bind (docKey) or unbind (null) the GH document this session's writes target. */
   setSessionTarget(sessionId: string, grasshopperDoc: string | null): Promise<void>;
   setSessionModel(sessionId: string, modelProfile: ModelProfile, model?: string | null): Promise<void>;
+  /** Rename a session (its display title). */
+  renameSession(sessionId: string, name: string): Promise<void>;
   /** Toggle the session's native Codex thread goal (objective + budget) on/off. */
   /** Answer a proposed approval card: grant the ticked items (mints one bound grant) or reject. */
   answerApprovalCard(
@@ -251,6 +253,13 @@ class HttpApiClient implements GptinoApiClient {
     return this.request(`/sessions/${encodeURIComponent(sessionId)}/model`, {
       method: "PUT",
       body: JSON.stringify({ modelProfile, model: model ?? null }),
+    });
+  }
+
+  renameSession(sessionId: string, name: string): Promise<void> {
+    return this.request(`/sessions/${encodeURIComponent(sessionId)}/title`, {
+      method: "PUT",
+      body: JSON.stringify({ name }),
     });
   }
 

@@ -140,6 +140,9 @@ public sealed record SetPausedRequest(bool Paused);
 
 public sealed record SetModelRequest(string ModelProfile, string? Model = null);
 
+/// <summary>Rename a session; the name becomes its display title.</summary>
+public sealed record RenameSessionRequest(string Name);
+
 /// <summary>
 /// The user's answer to a proposed goal card. Status is "confirmed" or "rejected"; the optional
 /// edits let the user correct the objective/criteria before approving (approve-what-you-saw:
@@ -181,7 +184,8 @@ public sealed record ArchivedSession(
     string Name,
     string State,
     DateTimeOffset UpdatedAt,
-    int MessageCount);
+    int MessageCount,
+    bool Deleted);
 
 public sealed record ArchivedProject(
     string Fingerprint,

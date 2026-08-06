@@ -8,6 +8,10 @@ interface ArchiveBrowserProps {
   readMessages(fingerprint: string, sessionId: string, limit?: number): Promise<ArchiveMessage[]>;
   /** Fork the selected archived session into the current project. Resolves true on success. */
   importSession(fingerprint: string, sessionId: string): Promise<boolean>;
+  /** Restore a soft-deleted session of the CURRENT project (foreign projects are read-only). */
+  onRestore(sessionId: string): Promise<boolean | void> | void;
+  /** Permanently delete a session of the CURRENT project. */
+  onPurge(sessionId: string): Promise<boolean | void> | void;
 }
 
 interface SelectedSession {
@@ -15,6 +19,10 @@ interface SelectedSession {
   sessionId: string;
   sessionName: string;
   projectName: string;
+  /** True when this session belongs to the live/current project (restore & purge apply). */
+  current: boolean;
+  /** True when this session is soft-deleted. */
+  deleted: boolean;
 }
 
 const shortFile = (path?: string | null) => (path ? (path.split(/[\\/]/).pop() ?? path) : null);
@@ -54,7 +62,7 @@ const roleLabel = (role: string) =>
 const projectLabel = (project: ArchiveProject) =>
   project.projectName ?? shortFile(project.rhinoFile) ?? project.fingerprint;
 
-export function ArchiveBrowser({ onClose, listArchive, readMessages, importSession }: ArchiveBrowserProps) {
+export function ArchiveBrowser({ onClose, listArchive, readMessages, importSession, onRestore, onPurge }: ArchiveBrowserProps) {
   const [projects, setProjects] = useState<ArchiveProject[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [listAttempt, setListAttempt] = useState(0);
@@ -64,6 +72,7 @@ export function ArchiveBrowser({ onClose, listArchive, readMessages, importSessi
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [managing, setManaging] = useState(false);
 
   const handleImport = async () => {
     if (!selected || importing) return;
@@ -76,6 +85,33 @@ export function ArchiveBrowser({ onClose, listArchive, readMessages, importSessi
     }
     setImporting(false);
     setImportError("Could not import this session into the current project.");
+  };
+
+  // Restore / permanently-delete a soft-deleted session of the CURRENT project. Both re-read the
+  // archive so the row's state (or absence) reflects the change, and clear the selection.
+  const handleRestore = async () => {
+    if (!selected || managing) return;
+    setManaging(true);
+    try {
+      await onRestore(selected.sessionId);
+      setSelected(null);
+      setListAttempt((attempt) => attempt + 1);
+    } finally {
+      setManaging(false);
+    }
+  };
+
+  const handlePurge = async () => {
+    if (!selected || managing) return;
+    if (!window.confirm(`Permanently delete "${selected.sessionName}"? This cannot be undone.`)) return;
+    setManaging(true);
+    try {
+      await onPurge(selected.sessionId);
+      setSelected(null);
+      setListAttempt((attempt) => attempt + 1);
+    } finally {
+      setManaging(false);
+    }
   };
 
   useEffect(() => {
@@ -195,7 +231,7 @@ export function ArchiveBrowser({ onClose, listArchive, readMessages, importSessi
                         <button
                           type="button"
                           key={session.id}
-                          className={`archive-session ${
+                          className={`archive-session ${session.deleted ? "deleted" : ""} ${
                             selected?.fingerprint === project.fingerprint && selected.sessionId === session.id
                               ? "selected"
                               : ""
@@ -206,10 +242,19 @@ export function ArchiveBrowser({ onClose, listArchive, readMessages, importSessi
                               sessionId: session.id,
                               sessionName: session.name,
                               projectName: projectLabel(project),
+                              current: project.current,
+                              deleted: session.deleted,
                             })
                           }
                         >
-                          <span className="archive-session-name">{session.name}</span>
+                          <span className="archive-session-name">
+                            {session.deleted ? (
+                              <span className="archive-session-x" title="Deleted" aria-label="Deleted">
+                                ✕
+                              </span>
+                            ) : null}
+                            {session.name}
+                          </span>
                           <span className="archive-session-meta">
                             {session.messageCount} msg · {relativeTime(session.updatedAt)}
                           </span>
@@ -235,18 +280,50 @@ export function ArchiveBrowser({ onClose, listArchive, readMessages, importSessi
               <header className="archive-transcript-header">
                 <div className="archive-transcript-title">
                   <strong>{selected.sessionName}</strong>
-                  <span>{selected.projectName} · read-only</span>
+                  <span>
+                    {selected.projectName}
+                    {selected.current ? (selected.deleted ? " · deleted" : " · current") : " · read-only"}
+                  </span>
                 </div>
-                <button
-                  type="button"
-                  className="archive-import-button"
-                  onClick={() => void handleImport()}
-                  disabled={importing}
-                  title="Create a new session in the current project seeded with this conversation. Its component ids and geometry are stale and will be re-discovered before any change."
-                >
-                  <Icon name="history" />
-                  {importing ? "Importing…" : "Import into current project"}
-                </button>
+                {selected.current ? (
+                  selected.deleted ? (
+                    // A deleted session of THIS project: restore it back to the live rail, or remove it for good.
+                    <div className="archive-transcript-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => void handleRestore()}
+                        disabled={managing}
+                        title="Restore this session to the active list"
+                      >
+                        {managing ? "Working…" : "Restore"}
+                      </button>
+                      <button
+                        type="button"
+                        className="danger-button"
+                        onClick={() => void handlePurge()}
+                        disabled={managing}
+                        title="Permanently delete this session and its transcript"
+                      >
+                        Delete forever
+                      </button>
+                    </div>
+                  ) : (
+                    // A live session already in this project — nothing to import or purge here.
+                    <span className="archive-transcript-note">Live in this project</span>
+                  )
+                ) : (
+                  <button
+                    type="button"
+                    className="archive-import-button"
+                    onClick={() => void handleImport()}
+                    disabled={importing}
+                    title="Create a new session in the current project seeded with this conversation. Its component ids and geometry are stale and will be re-discovered before any change."
+                  >
+                    <Icon name="history" />
+                    {importing ? "Importing…" : "Import into current project"}
+                  </button>
+                )}
               </header>
               {importError !== null ? (
                 <div className="archive-error" role="alert">

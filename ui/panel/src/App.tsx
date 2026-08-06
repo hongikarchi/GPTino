@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArchiveBrowser } from "./components/ArchiveBrowser";
 import { ChatPane } from "./components/ChatPane";
 import { DataView } from "./components/DataView";
-import { DeletedSessions } from "./components/DeletedSessions";
 import { Icon } from "./components/Icons";
 import { NoGrasshopper } from "./components/NoGrasshopper";
 import { SessionCanvas } from "./components/SessionCanvas";
@@ -144,9 +143,7 @@ export default function App() {
   const openSessionRef = useRef<(id: string) => void>(() => {});
   const openSessionStable = useCallback((id: string) => openSessionRef.current(id), []);
   const completion = useSessionCompletion(serverRuntime, selectedId, openSessionStable);
-  const [conflictsOpen, setConflictsOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
-  const [trashOpen, setTrashOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [canvasCollapsed, setCanvasCollapsed] = useState(() => {
     try {
@@ -333,74 +330,7 @@ export default function App() {
           />
         </div>
 
-        <div className="session-toolbar">
-          <div className="toolbar-group">
-            {/* Graph/+Session act on the Model tab's canvas and rail; showing them on another
-                tab would mutate invisible state. Deleted/Past sessions stay global. */}
-            {tab === "model" && hasGrasshopper ? (
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={toggleCanvas}
-              aria-expanded={!canvasCollapsed}
-              title={canvasCollapsed ? "Show the session graph" : "Collapse the session graph"}
-            >
-              {canvasCollapsed ? `▸ Graph (${modelSessions.length})` : "▾ Graph"}
-            </button>
-            ) : null}
-            <div className="new-session-anchor" ref={newSessionAnchorRef} hidden={tab !== "model"}>
-              <button
-                type="button"
-                className="new-session-button"
-                onClick={() => setNewSessionOpen((open) => !open)}
-                disabled={busyActions.has("create-session")}
-                aria-expanded={newSessionOpen}
-              >
-                <span>+</span> Session
-              </button>
-              {newSessionOpen ? (
-                <NewSessionPopover
-                  suggestedName={`Session ${modelSessions.length + 1}`}
-                  docs={ghDocs ?? []}
-                  defaultDocId={selected?.boundGrasshopperDocId ?? undefined}
-                  busy={busyActions.has("create-session")}
-                  onCreate={(name, grasshopperDoc) => {
-                    setNewSessionOpen(false);
-                    void actions.createSession(name, grasshopperDoc);
-                  }}
-                />
-              ) : null}
-            </div>
-          </div>
-          <div className="toolbar-group">
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setTrashOpen(true)}
-              title="Restore or permanently remove deleted sessions"
-            >
-              Deleted
-            </button>
-            <button
-              type="button"
-              className="history-button"
-              onClick={() => setArchiveOpen(true)}
-              title="Browse what earlier GPTino sessions did — every project data root on this machine, read-only"
-            >
-              <Icon name="history" />
-              Past sessions
-            </button>
-          </div>
-        </div>
       </header>
-
-      {error ? (
-        <div className="error-banner" role="status">
-          <Icon name="warning" />
-          <span>{error}</span>
-          <button type="button" onClick={() => window.location.reload()}>Reconnect</button>
-        </div>
-      ) : null}
 
       {runtime.paused ? (
         <div className="pause-banner" role="status">
@@ -410,52 +340,9 @@ export default function App() {
         </div>
       ) : null}
 
-      {runtime.conflicts.length > 0 ? (
-        <>
-          <button
-            type="button"
-            className="conflict-banner"
-            role="alert"
-            aria-expanded={conflictsOpen}
-            onClick={() => setConflictsOpen((open) => !open)}
-            title={conflictsOpen ? "Hide conflict details" : "Show conflict details"}
-          >
-            <Icon name="warning" />
-            <span>
-              {runtime.conflicts.length} resource conflict{runtime.conflicts.length > 1 ? "s" : ""} — {runtime.conflicts[0].title}
-            </span>
-            <Icon name="chevron" className={`banner-caret ${conflictsOpen ? "open" : ""}`} width={13} height={13} />
-          </button>
-          {conflictsOpen ? (
-            <div className="conflict-drawer">
-              {runtime.conflicts.map((conflict) => {
-                const sessionTitles = conflict.sessionIds
-                  .map((id) => runtime.sessions.find((session) => session.id === id)?.title ?? id)
-                  .join(" ↔ ");
-                return (
-                  <div className="conflict-card" key={conflict.id}>
-                    <div className="conflict-icon"><Icon name="warning" /></div>
-                    <div>
-                      <strong>{conflict.title}</strong>
-                      <p className="conflict-problem">{conflict.detail}</p>
-                      {conflict.resolution ? (
-                        <p className="conflict-solution"><b>Solution</b> — {conflict.resolution}</p>
-                      ) : null}
-                      <div className="conflict-meta">
-                        {conflict.resource ? <span>{conflict.resource}</span> : null}
-                        {sessionTitles ? <span>{sessionTitles}</span> : null}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-        </>
-      ) : null}
-
       {/* Model = the sessions you talk to, Data = what flows between the documents. Two views of
-          the same runtime; neither is a mode, and neither gates what a session may do. */}
+          the same runtime; neither is a mode, and neither gates what a session may do. Placed ABOVE
+          the session toolbar: the view is the higher-level choice; Graph/+Session act within it. */}
       <nav className="tab-bar" aria-label="Panel view">
         <div className="segmented view-tabs">
           <button
@@ -482,6 +369,59 @@ export default function App() {
           </button>
         </div>
       </nav>
+
+      {/* Session actions for the active view — below the Model/Data switch it belongs to. */}
+      <div className="session-toolbar">
+        <div className="toolbar-group">
+          {/* Graph/+Session act on the Model tab's canvas and rail; showing them on another
+              tab would mutate invisible state. Past sessions stays global. */}
+          {tab === "model" && hasGrasshopper ? (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={toggleCanvas}
+              aria-expanded={!canvasCollapsed}
+              title={canvasCollapsed ? "Show the session graph" : "Collapse the session graph"}
+            >
+              {canvasCollapsed ? `▸ Graph (${modelSessions.length})` : "▾ Graph"}
+            </button>
+          ) : null}
+          <div className="new-session-anchor" ref={newSessionAnchorRef} hidden={tab !== "model"}>
+            <button
+              type="button"
+              className="new-session-button"
+              onClick={() => setNewSessionOpen((open) => !open)}
+              disabled={busyActions.has("create-session")}
+              aria-expanded={newSessionOpen}
+            >
+              <span>+</span> Session
+            </button>
+            {newSessionOpen ? (
+              <NewSessionPopover
+                suggestedName={`Session ${modelSessions.length + 1}`}
+                docs={ghDocs ?? []}
+                defaultDocId={selected?.boundGrasshopperDocId ?? undefined}
+                busy={busyActions.has("create-session")}
+                onCreate={(name, grasshopperDoc) => {
+                  setNewSessionOpen(false);
+                  void actions.createSession(name, grasshopperDoc);
+                }}
+              />
+            ) : null}
+          </div>
+        </div>
+        <div className="toolbar-group">
+          <button
+            type="button"
+            className="history-button"
+            onClick={() => setArchiveOpen(true)}
+            title="Browse and restore past sessions — every project on this machine, plus this project's deleted sessions"
+          >
+            <Icon name="history" />
+            Past sessions
+          </button>
+        </div>
+      </div>
 
       {tab === "model" && hasGrasshopper && !canvasCollapsed ? (
         <section className="canvas-row" aria-label="Session graph">
@@ -530,8 +470,10 @@ export default function App() {
             limits={runtime.codexLimits ?? null}
             grasshopperDocs={ghDocs}
             busyActions={busyActions}
+            error={error}
             onModel={(profile) => selected && void actions.setModel(selected.id, profile, selected.pinnedModel ?? null)}
             onPinModel={(model) => selected && void actions.setModel(selected.id, selected.modelProfile, model)}
+            onRename={(title) => selected && void actions.renameSession(selected.id, title)}
             onAnswerGoal={(answer) => selected && void actions.answerGoal(selected.id, answer)}
             onAnswerApproval={(answer) => selected && void actions.answerApproval(selected.id, answer)}
             onTarget={(grasshopperDoc) => selected && void actions.setSessionTarget(selected.id, grasshopperDoc)}
@@ -558,13 +500,6 @@ export default function App() {
           listArchive={actions.listArchive}
           readMessages={actions.readArchiveMessages}
           importSession={actions.importArchiveSession}
-        />
-      ) : null}
-
-      {trashOpen ? (
-        <DeletedSessions
-          onClose={() => setTrashOpen(false)}
-          list={actions.listDeleted}
           onRestore={actions.restoreSession}
           onPurge={actions.purgeSession}
         />

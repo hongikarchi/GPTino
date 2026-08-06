@@ -239,6 +239,13 @@ export function useRuntime() {
           (activeClient) => activeClient.setSessionModel(sessionId, modelProfile, model),
         );
       },
+      renameSession(sessionId: string, name: string) {
+        return runAction(
+          `rename:${sessionId}`,
+          updateSession(sessionId, (session) => ({ ...session, title: name })),
+          (activeClient) => activeClient.renameSession(sessionId, name),
+        );
+      },
       // Granting mints a server-side grant bound to the ticked items; no optimistic patch, for the
       // same reason as goals — the server's answer is the only truthful one.
       answerApproval(
