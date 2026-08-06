@@ -117,8 +117,9 @@ per-message routing and the fast/standard/deep capability profiles were removed
 pinned model (or the catalog default) and uses the session's stored reasoning
 effort directly, clamped only to the effort set that model advertises; there is
 no per-request classification, no capability floor, and no recovery escalation.
-If the pinned model is absent from the catalog, the turn fails closed with the
-available choices.
+If the pinned model is absent from the catalog, the turn falls back to the
+catalog default (or first available) model, and the selection rationale records
+the substitution.
 
 Model choice decides who plans; typed operations, fingerprints, the broker, and
 verification still decide what may mutate the documents.

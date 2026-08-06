@@ -1,20 +1,5 @@
 namespace GPTino.Contracts;
 
-public enum CollaborationMode
-{
-    Plan,
-    Auto,
-}
-
-public enum QualityPolicy
-{
-    Auto,
-    Fast,
-    Standard,
-    Deep,
-    Pinned,
-}
-
 public enum SessionRunState
 {
     Idle,
@@ -27,18 +12,6 @@ public enum SessionRunState
     Completed,
     Failed,
 }
-
-public sealed record SessionDescriptor(
-    Guid SessionId,
-    Guid ProjectId,
-    string Title,
-    string ThreadId,
-    CollaborationMode Mode,
-    QualityPolicy QualityPolicy,
-    string? PreferredModel,
-    ReasoningEffort? PreferredReasoning,
-    SessionRunState State,
-    DateTimeOffset CreatedAt);
 
 public sealed record SessionOrderSnapshot(
     Guid ProjectId,

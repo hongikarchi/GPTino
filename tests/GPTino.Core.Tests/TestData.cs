@@ -61,22 +61,4 @@ internal static class TestData
             sequence,
             DateTimeOffset.UnixEpoch.AddSeconds(sequence),
             recovery);
-
-    public static RoutingRequest RoutingRequest(
-        IReadOnlyList<TypedOperation> operations,
-        QualityPolicy quality = QualityPolicy.Auto,
-        RiskFlags risks = RiskFlags.None,
-        bool exact = true,
-        int resourceCount = 1,
-        bool recovery = false,
-        string? pinnedModel = null) =>
-        new(
-            Guid.NewGuid(),
-            quality,
-            recovery,
-            exact,
-            resourceCount,
-            operations,
-            risks,
-            pinnedModel);
 }
