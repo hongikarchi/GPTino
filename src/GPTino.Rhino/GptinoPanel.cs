@@ -1,5 +1,6 @@
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Security;
 using Eto.Drawing;
 using Eto.Forms;
 
@@ -10,6 +11,34 @@ namespace GPTino.Rhino;
 public sealed class GptinoPanel : Panel
 {
     private const string OpenGrasshopperScheme = "gptino";
+
+    // WebView2 suspends rendering while it computes the native window as occluded; that tracker can
+    // stick after another application fully covered the (floated or docked) panel, leaving a white
+    // surface after the user returns — the well-known CalculateNativeWindowOcclusion bug. The loader
+    // reads this environment variable when the browser environment is created, so disabling the
+    // feature BEFORE the first WebView instantiates prevents the stuck state at the source. The
+    // repaint watchdog below stays as the recovery path for an already-running browser process.
+    static GptinoPanel()
+    {
+        const string variable = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+        const string feature = "--disable-features=CalculateNativeWindowOcclusion";
+        try
+        {
+            var existing = Environment.GetEnvironmentVariable(variable);
+            if (string.IsNullOrWhiteSpace(existing))
+            {
+                Environment.SetEnvironmentVariable(variable, feature);
+            }
+            else if (!existing.Contains("CalculateNativeWindowOcclusion", StringComparison.OrdinalIgnoreCase))
+            {
+                Environment.SetEnvironmentVariable(variable, $"{existing} {feature}");
+            }
+        }
+        catch (SecurityException)
+        {
+            // Best effort: without the flag the foreground-edge recomposite below still recovers.
+        }
+    }
 
     private readonly uint _documentSerial;
     private readonly WebView _webView;
@@ -43,12 +72,17 @@ public sealed class GptinoPanel : Panel
         // Returning to Rhino and moving the pointer over the panel is the most reliable
         // "the user is looking at it now" signal Eto exposes for whole-app occlusion.
         MouseEnter += (_, _) => { if (_navigated) NudgeRepaint(); };
+        // Load/UnLoad fire on every re-parent — including floating the panel out of the dock and
+        // docking it back — not just on create/close. The watchdog timer must therefore ALWAYS
+        // restart on Load: the earlier "start only while not yet navigated" logic silently killed
+        // the repaint watchdog the moment a navigated panel was floated, which is exactly when
+        // cross-app occlusion (the white-panel case) needs it most. Navigation itself is left to
+        // the tick: it navigates when not yet navigated and re-navigates on an endpoint change,
+        // and never reloads an already-live page (re-parenting must not lose in-page state).
         Load += (_, _) =>
         {
-            if (!TryNavigateToAgentHost())
-            {
-                _readyTimer.Start();
-            }
+            _readyTimer.Start();
+            _wasForeground = IsOwnProcessForeground();
         };
         UnLoad += (_, _) => _readyTimer.Stop();
         _readyTimer.Start();
@@ -105,10 +139,23 @@ public sealed class GptinoPanel : Panel
             var foreground = IsOwnProcessForeground();
             if (foreground && !_wasForeground)
             {
-                NudgeRepaint();
+                ForceRecomposite();
             }
             _wasForeground = foreground;
         }
+    }
+
+    /// <summary>
+    /// Strong recovery for the cross-app occlusion white-out: toggling the WebView's visibility
+    /// drives the underlying WebView2 controller's IsVisible false→true, which resumes a renderer
+    /// that a stuck occlusion tracker suspended — the case a bare 1px resize does not always cure.
+    /// Used only on the foreground-regained edge, so the blink is at most one per app switch.
+    /// </summary>
+    private void ForceRecomposite()
+    {
+        _webView.Visible = false;
+        _webView.Visible = true;
+        NudgeRepaint();
     }
 
     [DllImport("user32.dll")]
