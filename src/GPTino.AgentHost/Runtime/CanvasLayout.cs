@@ -25,7 +25,7 @@ internal static class CanvasLayout
         float GroupGap = 26f,      // extra vertical clearance between different groups in the same column
         float MoveEpsilon = 1.5f,  // pivots that move less than this are left untouched (avoids churn)
         int BarycenterSweeps = 4,  // crossing-reduction passes (down/up alternating)
-        int CoordinateSweeps = 8)  // wire-straightening passes for the vertical coordinate assignment
+        int CoordinateSweeps = 9)  // wire-straightening passes (odd -> the last pass is downward)
     {
         internal static readonly Options Default = new();
     }
@@ -392,6 +392,8 @@ internal static class CanvasLayout
     {
         for (var sweep = 0; sweep < options.CoordinateSweeps; sweep++)
         {
+            // Even sweeps go downward, odd upward; with an odd CoordinateSweeps the LAST pass is downward,
+            // so every node finishes aligned to its producers (outputs follow inputs, left-to-right).
             var downward = sweep % 2 == 0;
             // Downward sweeps read the already-settled left neighbours (incoming); upward reads the right
             // neighbours (outgoing). Visit layers in the matching direction so the reference side is fixed.

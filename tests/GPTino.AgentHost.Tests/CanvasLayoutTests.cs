@@ -182,6 +182,56 @@ public sealed class CanvasLayoutTests
     }
 
     [Fact]
+    public void StraightensAMergeNodeOntoTheMeanOfItsInputs()
+    {
+        // t1,t2 feed m; t3 feeds m2; m and m2 both feed out — one cluster, so t3 shares the input column but
+        // is NOT wired to m. Pure column-centering would park m at the shared band center (mean of all three
+        // t's); wire-straightening must instead sit m on the mean of ONLY its two real inputs.
+        var t1 = Guid.NewGuid();
+        var t2 = Guid.NewGuid();
+        var t3 = Guid.NewGuid();
+        var m = Guid.NewGuid();
+        var m2 = Guid.NewGuid();
+        var output = Guid.NewGuid();
+        var canvas = Snapshot(
+            [Obj(t1, 0, 0), Obj(t2, 0, 0), Obj(t3, 0, 0), Obj(m, 0, 0), Obj(m2, 0, 0), Obj(output, 0, 0)],
+            [Wire(t1, m), Wire(t2, m), Wire(t3, m2), Wire(m, output), Wire(m2, output)]);
+
+        var moves = CanvasLayout.Arrange(canvas, new[] { m });
+
+        var meanOfInputs = (Pos(canvas, moves, t1).Y + Pos(canvas, moves, t2).Y) / 2f;
+        Assert.True(Math.Abs(Pos(canvas, moves, m).Y - meanOfInputs) < 1.0f,
+            "merge node must align to the mean Y of exactly its two inputs");
+        // ... and therefore not simply share the band center with the unrelated m2 (fed by t3 alone).
+        Assert.True(Math.Abs(Pos(canvas, moves, m).Y - Pos(canvas, moves, m2).Y) > 1.0f);
+    }
+
+    [Fact]
+    public void SeparatesDifferentGroupsInAColumnByTheGroupGap()
+    {
+        // Two groups of two sliders all feed one script: all four share layer 0. Members of a group sit one
+        // RowGap apart; the boundary between the two groups gets an extra GroupGap of clearance.
+        var a1 = Guid.NewGuid();
+        var a2 = Guid.NewGuid();
+        var b1 = Guid.NewGuid();
+        var b2 = Guid.NewGuid();
+        var script = Guid.NewGuid();
+        var canvas = Snapshot(
+            [Obj(a1, 0, 0), Obj(a2, 0, 0), Obj(b1, 0, 0), Obj(b2, 0, 0), Obj(script, 0, 0)],
+            [Wire(a1, script), Wire(a2, script), Wire(b1, script), Wire(b2, script)],
+            [new GroupState(Guid.NewGuid(), "A", new[] { a1, a2 }, 0),
+             new GroupState(Guid.NewGuid(), "B", new[] { b1, b2 }, 0)]);
+
+        var moves = CanvasLayout.Arrange(canvas, new[] { script });
+
+        var ys = new[] { a1, a2, b1, b2 }.Select(id => Pos(canvas, moves, id).Y).OrderBy(y => y).ToArray();
+        var gaps = new[] { ys[1] - ys[0], ys[2] - ys[1], ys[3] - ys[2] };
+        // The group boundary is the single widest gap; it exceeds the within-group gaps by exactly GroupGap.
+        Assert.True(gaps.Max() - gaps.Min() > 20f, "the between-group gap must exceed the within-group gap");
+        Assert.True(Math.Abs((gaps.Max() - gaps.Min()) - 26f) < 2f, "the extra clearance equals GroupGap (26)");
+    }
+
+    [Fact]
     public void EmptySeedSetProducesNoMoves()
     {
         var canvas = Snapshot([Obj(Guid.NewGuid(), 0, 0)]);
