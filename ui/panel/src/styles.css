@@ -1277,6 +1277,18 @@ button.status-chip:hover strong {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+/* Grasshopper-canvas focus chip: same shape, GH's lime instead of Rhino's blue, so the two
+   "jump to it" affordances read as different targets (Rhino viewport vs GH canvas) at a glance. */
+.focus-chip.gh {
+  border-color: var(--lime);
+  color: var(--lime);
+  background: color-mix(in srgb, var(--lime) 8%, transparent);
+}
+
+.focus-chip.gh:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--lime) 18%, transparent);
+}
+
 .focus-chip:disabled {
   opacity: 0.55;
   cursor: default;

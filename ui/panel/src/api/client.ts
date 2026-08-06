@@ -10,6 +10,7 @@ import type {
   SessionOrderRequest,
   FocusMode,
   FocusResult,
+  CanvasFocusResult,
 } from "../types";
 import { createMockApiClient } from "./mock";
 
@@ -24,6 +25,8 @@ export interface GptinoApiClient {
   createSession(name: string, grasshopperDoc?: string): Promise<void>;
   /** On-demand Rhino<->GH data-flow detail for one GH doc (omit docId when only one is open). */
   focusObjects(objectIds: string[], mode: FocusMode, zoom?: boolean): Promise<FocusResult>;
+  /** Select + frame the given Grasshopper components on the GH canvas (the [[ghfocus:…]] chip). */
+  focusCanvasObjects(objectIds: string[], zoom?: boolean): Promise<CanvasFocusResult>;
   /** Prose language for GPTino's answers ("ko" | "en"); UI labels stay English either way. */
   getLanguage(): Promise<{ language: string }>;
   setLanguage(language: string): Promise<{ language: string }>;
@@ -219,6 +222,13 @@ class HttpApiClient implements GptinoApiClient {
     return this.request<FocusResult>("/focus", {
       method: "POST",
       body: JSON.stringify({ objectIds, mode, zoom }),
+    });
+  }
+
+  focusCanvasObjects(objectIds: string[], zoom = true): Promise<CanvasFocusResult> {
+    return this.request<CanvasFocusResult>("/canvas/focus", {
+      method: "POST",
+      body: JSON.stringify({ objectIds, zoom }),
     });
   }
 

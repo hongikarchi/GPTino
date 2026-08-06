@@ -26,6 +26,20 @@ describe("parseMessageSegments", () => {
     expect(out[0]).toEqual({ kind: "focus", objectIds: [A, B], label: "둘" });
   });
 
+  it("parses a ghfocus marker into a canvas segment, distinct from focus", () => {
+    const out = parseMessageSegments(`컴포넌트 [[ghfocus:${A},${B}|그리드]] 완료`);
+    expect(out).toEqual([
+      { kind: "text", text: "컴포넌트 " },
+      { kind: "ghfocus", objectIds: [A, B], label: "그리드" },
+      { kind: "text", text: " 완료" },
+    ]);
+  });
+
+  it("keeps a malformed ghfocus marker as raw text", () => {
+    const raw = "본문 [[ghfocus:not-a-guid|나쁨]] 끝";
+    expect(parseMessageSegments(raw)).toEqual([{ kind: "text", text: raw }]);
+  });
+
   it("keeps malformed GUIDs as raw text instead of making a dead chip", () => {
     const raw = "본문 [[focus:not-a-guid|나쁨]] 끝";
     expect(parseMessageSegments(raw)).toEqual([{ kind: "text", text: raw }]);

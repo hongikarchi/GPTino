@@ -683,6 +683,20 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             arguments,
             cancellationToken);
 
+    /// <summary>
+    /// Points the Grasshopper canvas at components for the panel's [[ghfocus:…]] chip: selects and
+    /// frames them so the user can see what GPTino built. The canvas mirror of
+    /// <see cref="FocusRhinoObjectsAsync"/> — panel-only, a read (never queued behind the writer),
+    /// and absent from the agent's tool schema.
+    /// </summary>
+    public Task<object> FocusCanvasObjectsAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        ReadBridgeQueryAsync(
+            RequireDefaultTargetState(),
+            BridgeAdapterOwner.CordycepsCanvas,
+            "canvas.focusObjects",
+            arguments,
+            cancellationToken);
+
     public Task<object> ReadRhinoLayersAsync(CancellationToken cancellationToken)
     {
         using var empty = JsonDocument.Parse("{}");

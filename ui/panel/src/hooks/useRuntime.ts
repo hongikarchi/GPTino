@@ -155,6 +155,10 @@ export function useRuntime() {
     (objectIds: string[], mode: FocusMode) => clientRef.current!.focusObjects(objectIds, mode),
     [],
   );
+  const focusCanvasObjects = useCallback(
+    (objectIds: string[]) => clientRef.current!.focusCanvasObjects(objectIds),
+    [],
+  );
 
   const getDataFlowDetail = useCallback(
     (docId?: string | null) => clientRef.current!.getDataFlowDetail(docId),
@@ -342,6 +346,7 @@ export function useRuntime() {
       listArchive,
       readArchiveMessages,
       focusObjects,
+      focusCanvasObjects,
       setLanguage,
       getDataFlowDetail,
       // Import mutates runtime state (a new session appears), so — unlike the read-only archive
@@ -354,7 +359,7 @@ export function useRuntime() {
         );
       },
     }),
-    [focusObjects, getDataFlowDetail, listArchive, listDeleted, readArchiveMessages, reorder, runAction, setLanguage, shift, updateSession],
+    [focusObjects, focusCanvasObjects, getDataFlowDetail, listArchive, listDeleted, readArchiveMessages, reorder, runAction, setLanguage, shift, updateSession],
   );
 
   return {

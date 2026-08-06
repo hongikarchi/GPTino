@@ -21,6 +21,18 @@ export interface FocusSegment {
 }
 
 /**
+ * The Grasshopper-canvas twin of FocusSegment. Agents write `[[ghfocus:<guid>[,<guid>...]|<label>]]`
+ * with component INSTANCE guids (the ids every canvas mutation returns); the panel renders a chip
+ * that drives POST /canvas/focus — select + frame those components on the GH canvas. Same all-ids-
+ * must-be-GUID safety rule as focus, so a malformed marker never becomes a dead chip.
+ */
+export interface GhFocusSegment {
+  kind: "ghfocus";
+  objectIds: string[];
+  label: string;
+}
+
+/**
  * An alternative the agent is proposing (a solution variant, a design option). Clicking it
  * asks the owner to show that variant. When the marker carries objectIds
  * (`[[alt:id@guid,…|label]]` — the alt's baked preview geometry), the chip can drive the
@@ -34,9 +46,10 @@ export interface AltSegment {
   objectIds?: string[];
 }
 
-export type MessageSegment = TextSegment | FocusSegment | AltSegment;
+export type MessageSegment = TextSegment | FocusSegment | GhFocusSegment | AltSegment;
 
 const MARKER = /\[\[focus:([^\]|]+)\|([^\]|]*)\]\]/g;
+const GH_MARKER = /\[\[ghfocus:([^\]|]+)\|([^\]|]*)\]\]/g;
 const ALT_MARKER = /\[\[alt:([A-Za-z0-9._-]{1,64})(?:@([^\]|]+))?\|([^\]|]*)\]\]/g;
 const GUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const MAX_IDS = 200;
@@ -45,7 +58,7 @@ const MAX_LABEL = 120;
 export function parseMessageSegments(content: string): MessageSegment[] {
   // Collect every valid marker of either kind first, then stitch text around them in
   // document order — that keeps the two syntaxes independent and order-agnostic.
-  const hits: { start: number; end: number; segment: FocusSegment | AltSegment }[] = [];
+  const hits: { start: number; end: number; segment: FocusSegment | GhFocusSegment | AltSegment }[] = [];
 
   MARKER.lastIndex = 0;
   for (let match = MARKER.exec(content); match !== null; match = MARKER.exec(content)) {
@@ -59,6 +72,22 @@ export function parseMessageSegments(content: string): MessageSegment[] {
         kind: "focus",
         objectIds: ids,
         label: match[2].trim().slice(0, MAX_LABEL) || `${ids.length}개 객체`,
+      },
+    });
+  }
+
+  GH_MARKER.lastIndex = 0;
+  for (let match = GH_MARKER.exec(content); match !== null; match = GH_MARKER.exec(content)) {
+    const ids = match[1].split(",").map((id) => id.trim()).filter((id) => id.length > 0);
+    const valid = ids.length > 0 && ids.length <= MAX_IDS && ids.every((id) => GUID.test(id));
+    if (!valid) continue; // same dead-chip guard as focus
+    hits.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      segment: {
+        kind: "ghfocus",
+        objectIds: ids,
+        label: match[2].trim().slice(0, MAX_LABEL) || `${ids.length}개 컴포넌트`,
       },
     });
   }

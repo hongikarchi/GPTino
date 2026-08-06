@@ -165,6 +165,14 @@ export interface FocusResult {
   fingerprint: string;
 }
 
+/** POST /canvas/focus result: select + frame Grasshopper components (no isolate/lock/restore). */
+export interface CanvasFocusResult {
+  selectedCount: number;
+  /** Chat can reference a component that was since deleted — reported, never silently dropped. */
+  missingCount: number;
+  fingerprint: string;
+}
+
 /** On-demand GET /data-flow payload; writerActive=true means retry after the queue drains. */
 export interface DataFlowDetail {
   docId?: string;

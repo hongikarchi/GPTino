@@ -78,7 +78,27 @@ public interface ICordycepsCanvasAdapter
     Task<ReferencedRhinoIdsResult> ListReferencedRhinoIdsAsync(
         DocumentTarget target,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Selects (and optionally frames) the given components on the Grasshopper canvas so a human can
+    /// see what GPTino built — the canvas mirror of the Rhino-scene FocusObjects primitive. Changes
+    /// no document content: only selection and viewport, both ephemeral UI state driven by a panel
+    /// click. Panel-only; absent from the agent's tool schema.
+    /// </summary>
+    Task<CanvasFocusResult> FocusObjectsAsync(
+        DocumentTarget target,
+        CanvasFocusRequest request,
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Point the canvas at <see cref="ObjectIds"/>: select exactly those components (clearing any other
+/// selection) and, when <see cref="Zoom"/>, frame them in the viewport. Ids that no longer exist in
+/// the document are ignored and reported as missing rather than failing the call.
+/// </summary>
+public sealed record CanvasFocusRequest(IReadOnlyList<Guid> ObjectIds, bool Zoom = true);
+
+public sealed record CanvasFocusResult(int SelectedCount, int MissingCount, string Fingerprint);
 
 public sealed record ReferencedRhinoObjectState(
     Guid RhinoObjectId,

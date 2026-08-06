@@ -140,6 +140,36 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
         Assert.Equal("outputs-v1", response.AfterFingerprint);
     }
 
+    [Fact]
+    public async Task FocusObjects_IsReadOnlyAndRoutesExactPayload()
+    {
+        var ids = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var adapter = new FakeCanvasAdapter
+        {
+            CatalogResult = new ComponentCatalogSearchResult(Guid.NewGuid(), string.Empty, 1, []),
+            FocusResult = new CanvasFocusResult(SelectedCount: 2, MissingCount: 0, "focus-v1")
+        };
+        var handler = new CordycepsCanvasBridgeOperationHandler(adapter);
+        var requestPayload = new CanvasFocusRequest(ids, Zoom: true);
+        var request = BridgeOperationRequest.Create(
+            "canvas-focus",
+            BridgeAdapterOwner.CordycepsCanvas,
+            "canvas.focusObjects",
+            BridgeOperationAccess.Read,
+            2,
+            requestPayload);
+
+        var response = await handler.HandleAsync(DocumentTargetTests.CreateTarget(), request);
+        var result = response.Result.Deserialize<CanvasFocusResult>(BridgeProtocol.JsonOptions);
+
+        Assert.False(response.Changed);
+        Assert.NotNull(adapter.LastFocusRequest);
+        Assert.Equal(ids, adapter.LastFocusRequest!.ObjectIds);
+        Assert.True(adapter.LastFocusRequest.Zoom);
+        Assert.Equal(2, Assert.IsType<CanvasFocusResult>(result).SelectedCount);
+        Assert.Equal("focus-v1", response.AfterFingerprint);
+    }
+
     private sealed class FakeCanvasAdapter : ICordycepsCanvasAdapter
     {
         public required ComponentCatalogSearchResult CatalogResult { get; init; }
@@ -201,5 +231,15 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
 
         public Task<ReferencedRhinoIdsResult> ListReferencedRhinoIdsAsync(DocumentTarget target, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public CanvasFocusResult? FocusResult { get; init; }
+
+        public CanvasFocusRequest? LastFocusRequest { get; private set; }
+
+        public Task<CanvasFocusResult> FocusObjectsAsync(DocumentTarget target, CanvasFocusRequest request, CancellationToken cancellationToken = default)
+        {
+            LastFocusRequest = request;
+            return Task.FromResult(FocusResult ?? throw new NotSupportedException());
+        }
     }
 }

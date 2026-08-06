@@ -121,6 +121,9 @@ public sealed record ApprovalGrantItem(Guid ObjectId, string Fingerprint);
 /// <summary>Panel viewport focus: mode is select | isolate | lock | restore.</summary>
 public sealed record FocusRequest(IReadOnlyList<Guid>? ObjectIds, string? Mode, bool? Zoom);
 
+/// <summary>Panel canvas focus: select + frame the given Grasshopper components (no mode; view-only).</summary>
+public sealed record CanvasFocusEndpointRequest(IReadOnlyList<Guid>? ObjectIds, bool? Zoom);
+
 /// <summary>Prose language for GPTino's answers: "ko" or "en" (anything else reads as "en").</summary>
 public sealed record LanguageSetting(string Language);
 

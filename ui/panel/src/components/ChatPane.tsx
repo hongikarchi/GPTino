@@ -10,6 +10,7 @@ import {
 } from "react";
 import type {
   ApprovalCard as ApprovalCardData,
+  CanvasFocusResult,
   ChatMessage,
   CodexLimits,
   FocusMode,
@@ -27,6 +28,7 @@ import type {
 import { Icon } from "./Icons";
 import { StatusBadge } from "./StatusBadge";
 import { FocusChip } from "./FocusChip";
+import { GhFocusChip } from "./GhFocusChip";
 import { AltChip } from "./AltChip";
 import { GoalCard } from "./GoalCard";
 import { ApprovalCard } from "./ApprovalCard";
@@ -76,6 +78,11 @@ interface ChatPaneProps {
    * Optional — without it markers degrade to their plain-text labels.
    */
   onFocus?(objectIds: string[], mode: FocusMode): Promise<FocusResult>;
+  /**
+   * Drive the Grasshopper canvas onto a set of components ([[ghfocus:guids|label]] markers render
+   * as chips that call this). Optional — without it ghfocus markers degrade to plain-text labels.
+   */
+  onFocusCanvas?(objectIds: string[]): Promise<CanvasFocusResult>;
   /**
    * Show a proposed alternative ([[alt:id|label]] markers). Optional — without it alt
    * markers degrade to their labels, exactly like focus markers without a viewport.
@@ -316,7 +323,7 @@ function ProblemIndicator({ error, conflicts }: { error?: string | null; conflic
 
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, error, onModel, onPinModel, onRename, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, error, onModel, onPinModel, onRename, onTarget, onSend, onResume, onDelete, onStopEdit, onFocus, onFocusCanvas, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   // Inline session rename: the title becomes a text field on click, commits on Enter/blur.
   const [editingTitle, setEditingTitle] = useState(false);
@@ -739,6 +746,19 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
                         }}
                       />
                     ) : (
+                      <span key={index}>{segment.label}</span>
+                    );
+                  }
+                  if (segment.kind === "ghfocus") {
+                    return onFocusCanvas ? (
+                      <GhFocusChip
+                        key={index}
+                        objectIds={segment.objectIds}
+                        label={segment.label}
+                        onFocusCanvas={onFocusCanvas}
+                      />
+                    ) : (
+                      // No canvas focus wired in: degrade to the label, like focus without a viewport.
                       <span key={index}>{segment.label}</span>
                     );
                   }

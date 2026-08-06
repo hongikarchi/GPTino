@@ -517,6 +517,7 @@ export default function App() {
             }}
             onStopEdit={() => (selected ? actions.retractLast(selected.id) : Promise.resolve(null))}
             onFocus={actions.focusObjects}
+            onFocusCanvas={actions.focusCanvasObjects}
           />
       </main>
 

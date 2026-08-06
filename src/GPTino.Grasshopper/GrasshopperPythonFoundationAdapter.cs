@@ -4,6 +4,7 @@
 using System.Collections;
 using System.Reflection;
 using System.Text;
+using GPTino.BridgeContract;
 using GPTino.WireifyAdapter;
 using Grasshopper.Kernel;
 
@@ -30,6 +31,10 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
     private const string Python3Directive = "#! python 3";
     private const string CSharpDirective = "// #! csharp";
     private const string ScriptComponentInterface = "RhinoCodePlatform.GH.IScriptComponent";
+    // Bridge failure code for a fingerprint/precondition refusal raised BEFORE any document mutation.
+    // Must match the executor's recognized refusal codes (LiveDocumentBackend.PreconditionRefusedFailureCode)
+    // so a clean refusal classifies as a deterministic Failed, not RecoveryRequired.
+    private const string PreconditionRefusedCode = "precondition_refused";
     private const string ScriptParameterInterface = "RhinoCodePlatform.GH.IScriptParameter";
 
     public GrasshopperPythonFoundationAdapter(ExplicitGrasshopperDocumentResolver resolver)
@@ -70,7 +75,13 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         if (!autoSource &&
             !string.Equals(before.SourceSha256, request.ExpectedSourceSha256, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException(
+            // A clean pre-write refusal: nothing has been touched. Surface it as precondition_refused
+            // (not a bare InvalidOperationException, which crosses the bridge as the generic
+            // bridge_operation_failed code) so the executor classifies it as a deterministic, retryable
+            // Failed — NOT RecoveryRequired. A stale source hash means "resubmit with the current value
+            // (or gptino:auto)", never "review the document / the bridge dropped".
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
                 "Python source changed after the request snapshot. The current source sha256 is " +
                 $"'{before.SourceSha256}' — resubmit with that exact value, or use " +
                 "expectedSourceSha256:\"gptino:auto\" (the component fingerprint chain still " +

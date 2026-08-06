@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
+using GPTino.BridgeContract;
 using GPTino.CordycepsAdapter;
 using Grasshopper.Kernel;
 using Grasshopper.Kernel.Data;
@@ -20,6 +21,12 @@ namespace GPTino.Grasshopper;
 /// </summary>
 public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdapter<GH_Document>
 {
+    // Bridge failure code for a fingerprint CAS refusal raised BEFORE any document mutation (delete
+    // structure, move layout, slider value). Must match the executor's recognized refusal codes
+    // (LiveDocumentBackend.PreconditionRefusedFailureCode) so a clean "nothing changed, resubmit with
+    // the current fingerprint" refusal classifies as a deterministic Failed, not RecoveryRequired.
+    private const string PreconditionRefusedCode = "precondition_refused";
+
     public GrasshopperCanvasFoundationAdapter(ExplicitGrasshopperDocumentResolver resolver)
         : base(resolver)
     {
@@ -545,6 +552,130 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         return (IReadOnlyList<Guid>?)ids ?? Array.Empty<Guid>();
     }
 
+    // Panel-only viewport primitive (mirrors the Rhino-scene FocusObjects): selects exactly the
+    // requested components — clearing any prior selection — and frames them so the user can see what
+    // GPTino built. Changes no document content, records no undo, and is absent from the agent's tool
+    // schema; a human clicked a chip. Ids the chat referenced that no longer exist are counted as
+    // missing rather than failing the whole call.
+    protected override Task<CanvasFocusResult> FocusObjectsCoreAsync(
+        GH_Document document,
+        CanvasFocusRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        var requestedIds = (request.ObjectIds ?? Array.Empty<Guid>())
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+
+        var targets = new List<IGH_DocumentObject>(requestedIds.Length);
+        foreach (var id in requestedIds)
+        {
+            if (document.FindObject(id, true) is { } found)
+            {
+                targets.Add(found);
+            }
+        }
+
+        // Set selection on EVERY object (select the targets, deselect the rest) so the result is a
+        // clean "these and only these are highlighted". Attribute-less objects cannot draw selected,
+        // so they are simply skipped.
+        foreach (var documentObject in document.Objects)
+        {
+            if (documentObject.Attributes is { } attributes)
+            {
+                attributes.Selected = targets.Contains(documentObject);
+            }
+        }
+
+        FrameCanvasOnObjects(document, targets, request.Zoom);
+
+        var fingerprint = HashHex(
+            $"canvasFocus|{document.DocumentID:N}|{request.Zoom}|" +
+            string.Join(',', targets.Select(item => item.InstanceGuid.ToString("N")).OrderBy(value => value)));
+        return Task.FromResult(new CanvasFocusResult(
+            targets.Count,
+            requestedIds.Length - targets.Count,
+            fingerprint));
+    }
+
+    // Frames the given objects in the live canvas viewport. Best-effort and non-fatal: if the
+    // Grasshopper editor is not up, or is showing a different document, the selection set above still
+    // stands and simply becomes visible when the user opens/returns to this definition. Viewport and
+    // control mutation must run on the canvas UI thread, so it is marshaled when required.
+    private static void FrameCanvasOnObjects(
+        GH_Document document,
+        IReadOnlyList<IGH_DocumentObject> targets,
+        bool zoom)
+    {
+        var canvas = global::Grasshopper.Instances.ActiveCanvas;
+        if (canvas is null)
+        {
+            return;
+        }
+
+        System.Drawing.RectangleF box = System.Drawing.RectangleF.Empty;
+        var haveBox = false;
+        foreach (var target in targets)
+        {
+            if (target.Attributes is not { } attributes)
+            {
+                continue;
+            }
+            box = haveBox ? System.Drawing.RectangleF.Union(box, attributes.Bounds) : attributes.Bounds;
+            haveBox = true;
+        }
+
+        void Apply()
+        {
+            try
+            {
+                // Only frame when the canvas is actually showing THIS document; reframing a view the
+                // user is not looking at (a different open GH definition) would be disorienting.
+                if (canvas.Document is null || canvas.Document.DocumentID != document.DocumentID)
+                {
+                    canvas.Refresh();
+                    return;
+                }
+                global::Grasshopper.Instances.DocumentEditor?.Show();
+                if (zoom && haveBox)
+                {
+                    var viewport = canvas.Viewport;
+                    var padX = box.Width * 0.15f + 40f;
+                    var padY = box.Height * 0.15f + 40f;
+                    var frameWidth = box.Width + padX * 2f;
+                    var frameHeight = box.Height + padY * 2f;
+                    var clientWidth = Math.Max(1, canvas.Width);
+                    var clientHeight = Math.Max(1, canvas.Height);
+                    // Zoom is drawn pixels per document unit; take the axis-limiting fit and clamp to
+                    // the viewport's own bounds so one tiny or huge component cannot blow past them.
+                    var fit = Math.Min(clientWidth / frameWidth, clientHeight / frameHeight);
+                    viewport.Zoom = Math.Max(
+                        global::Grasshopper.GUI.Canvas.GH_Viewport.ZoomMinimum,
+                        Math.Min(global::Grasshopper.GUI.Canvas.GH_Viewport.ZoomMaximum, fit));
+                    viewport.MidPoint = new System.Drawing.PointF(
+                        box.X + box.Width / 2f,
+                        box.Y + box.Height / 2f);
+                }
+                canvas.Refresh();
+            }
+            catch
+            {
+                // A view nudge must never surface as an operation failure.
+            }
+        }
+
+        if (canvas.InvokeRequired)
+        {
+            canvas.BeginInvoke((Action)Apply);
+        }
+        else
+        {
+            Apply();
+        }
+    }
+
     protected override Task<CanvasMutationResult> DeleteObjectCoreAsync(
         GH_Document document,
         DeleteCanvasObjectRequest request,
@@ -564,7 +695,8 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         var before = beforeState.StructureFingerprint;
         if (!string.Equals(before, request.ExpectedFingerprint, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException(
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
                 "Canvas object structure changed after the request snapshot. Current structure " +
                 $"fingerprint: {before}. Resubmit with this value.");
         }
@@ -620,7 +752,8 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
                 if (string.IsNullOrWhiteSpace(expected) ||
                     !string.Equals(state.LayoutFingerprint, expected, StringComparison.Ordinal))
                 {
-                    throw new InvalidOperationException(
+                    throw new BridgeProtocolException(
+                        PreconditionRefusedCode,
                         $"Canvas object {pair.Key:D} layout changed after the request snapshot. " +
                         $"Current layout fingerprint: {state.LayoutFingerprint}. Resubmit with this value.");
                 }
@@ -709,7 +842,8 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         // does not conflict with setting its value.
         if (!string.Equals(beforeState.ValueFingerprint, request.ExpectedFingerprint, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException(
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
                 "The Number Slider value changed after the request snapshot. Current value " +
                 $"fingerprint: {beforeState.ValueFingerprint}. Resubmit with this value.");
         }

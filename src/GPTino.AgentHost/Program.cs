@@ -327,6 +327,22 @@ api.MapPost("/focus", async (
     return Results.Ok(await liveBackend.FocusRhinoObjectsAsync(arguments, cancellationToken));
 });
 
+// Canvas focus for the panel's [[ghfocus:…]] chip: select + frame the Grasshopper components the
+// conversation is pointing at, the canvas mirror of POST /focus. View-only (selection + viewport),
+// never a ChangeSet step, and absent from the agent's tool schema.
+api.MapPost("/canvas/focus", async (
+    CanvasFocusEndpointRequest request,
+    LiveDocumentBackend liveBackend,
+    CancellationToken cancellationToken) =>
+{
+    var arguments = JsonSerializer.SerializeToElement(new
+    {
+        objectIds = request.ObjectIds ?? Array.Empty<Guid>(),
+        zoom = request.Zoom ?? true,
+    });
+    return Results.Ok(await liveBackend.FocusCanvasObjectsAsync(arguments, cancellationToken));
+});
+
 // Which language GPTino writes its prose in. A project-level preference (not per session):
 // the panel toggles it, and the next thread start/resume composes it into instructions.
 api.MapGet("/language", (ProjectContextStore context) =>

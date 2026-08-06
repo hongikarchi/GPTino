@@ -64,6 +64,9 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
         // RhinoDoc.ActiveDoc.
         ListReferencedRhinoIdsCoreAsync(Resolve(target), target.RhinoDocumentSerial, cancellationToken);
 
+    public Task<CanvasFocusResult> FocusObjectsAsync(DocumentTarget target, CanvasFocusRequest request, CancellationToken cancellationToken = default) =>
+        FocusObjectsCoreAsync(Resolve(target), request, cancellationToken);
+
     protected abstract Task<CanvasSnapshot> CaptureSnapshotCoreAsync(TDocument document, CancellationToken cancellationToken);
     protected abstract Task<CanvasObjectState> InspectObjectCoreAsync(TDocument document, Guid objectId, CancellationToken cancellationToken);
     protected abstract Task<CanvasOutputInspection> InspectOutputsCoreAsync(TDocument document, InspectCanvasOutputsRequest request, CancellationToken cancellationToken);
@@ -76,6 +79,7 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
     protected abstract Task<CanvasMutationResult> SetGroupCoreAsync(TDocument document, SetGroupRequest request, CancellationToken cancellationToken);
     protected abstract Task<CanvasMutationResult> ReferenceRhinoObjectsCoreAsync(TDocument document, uint rhinoDocumentSerial, ReferenceRhinoObjectsRequest request, CancellationToken cancellationToken);
     protected abstract Task<ReferencedRhinoIdsResult> ListReferencedRhinoIdsCoreAsync(TDocument document, uint rhinoDocumentSerial, CancellationToken cancellationToken);
+    protected abstract Task<CanvasFocusResult> FocusObjectsCoreAsync(TDocument document, CanvasFocusRequest request, CancellationToken cancellationToken);
 
     private TDocument Resolve(DocumentTarget target)
     {

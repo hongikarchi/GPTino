@@ -149,6 +149,14 @@ public static class HouseRules
         clicking isolates that preview, so naming variants inline ("보강안 A") stays clickable; the same
         only-real-ids rule applies.
 
+        Canvas references (chat): to point at Grasshopper COMPONENTS you built or changed (not Rhino
+        geometry), wrap them as [[ghfocus:<instanceId>[,<instanceId>...]|<short label>]] using ONLY the
+        component instance ids a canvas tool actually returned (canvas_create / canvas_wire / etc. report
+        the affected object ids). The panel renders a chip the user clicks to select + frame those
+        components on the GH canvas — so after wiring up a definition, point at the components you added
+        instead of describing where they are. Never invent ids; keep it to a few markers per message. This
+        is the canvas twin of [[focus:...]]: use focus for Rhino objects, ghfocus for GH components.
+
         Design intent (mandatory):
         - Selected geometry is INPUT, not a parameter to reinvent. When the user says "use the objects I
           selected in Rhino/Grasshopper as input," create a referenceRhinoObjects parameter for those exact

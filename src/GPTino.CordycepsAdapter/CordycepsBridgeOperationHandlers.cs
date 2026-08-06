@@ -33,6 +33,7 @@ public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHand
             "canvas.setGroup" => await MutationAsync<SetGroupRequest>(target, request, _adapter.SetGroupAsync, cancellationToken).ConfigureAwait(false),
             "canvas.referenceRhinoObjects" => await MutationAsync<ReferenceRhinoObjectsRequest>(target, request, _adapter.ReferenceRhinoObjectsAsync, cancellationToken).ConfigureAwait(false),
             "canvas.listReferencedRhinoIds" => await ListReferencedRhinoIdsAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "canvas.focusObjects" => await FocusObjectsAsync(target, request, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
                 "unknown_cordyceps_canvas_operation",
                 $"Unknown Cordyceps canvas operation '{request.Operation}'."),
@@ -46,6 +47,27 @@ public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHand
     {
         RequireAccess(request, BridgeOperationAccess.Read);
         var result = await _adapter.ListReferencedRhinoIdsAsync(target, cancellationToken).ConfigureAwait(false);
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: false,
+            result,
+            afterFingerprint: result.Fingerprint);
+    }
+
+    private async Task<BridgeOperationResponse> FocusObjectsAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        // Read access on purpose: this only changes canvas selection and viewport (ephemeral UI
+        // state), never document content. It is a human pressing a chip to go look at what GPTino
+        // built — routing it through the writer lease would let a running job block the user from
+        // inspecting the very thing it is arguing about. Panel-only, self-contained, no undo.
+        RequireAccess(request, BridgeOperationAccess.Read);
+        var result = await _adapter.FocusObjectsAsync(
+            target,
+            request.DeserializeArguments<CanvasFocusRequest>(),
+            cancellationToken).ConfigureAwait(false);
         return BridgeOperationResponse.Create(
             request.OperationId,
             changed: false,

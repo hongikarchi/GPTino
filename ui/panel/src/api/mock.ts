@@ -634,6 +634,14 @@ export function createMockApiClient(): GptinoApiClient {
         fingerprint: `focus-${mode}-${objectIds.length}-${zoom ? "z" : "n"}`,
       };
     },
+    async focusCanvasObjects(objectIds: string[], zoom = true) {
+      await delay(60);
+      return {
+        selectedCount: objectIds.length,
+        missingCount: 0,
+        fingerprint: `canvas-focus-${objectIds.length}-${zoom ? "z" : "n"}`,
+      };
+    },
     async getLanguage() {
       await delay(30);
       return { language: demoLanguage };
