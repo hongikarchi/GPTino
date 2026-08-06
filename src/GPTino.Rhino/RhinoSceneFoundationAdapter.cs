@@ -346,6 +346,55 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             }
         }
 
+        // Pass 1b — definition-parked prototypes. In the production convention the prototype solid
+        // usually lives INSIDE the block definition (delete-original AddBlock leaves no top-level
+        // copy), and document.Objects' enumerator never yields definition members — the real-model
+        // live gate caught pass 1 finding 0 of the 29 prototypes the file-table scan had proven.
+        // So the authoritative source is each in-scope instance's own definition: measure its
+        // members' combined box, and accept it as this mark's prototype when it matches the unit
+        // height. Keyed by the INSTANCE's layer (the mark layer); pass 1's top-level copies win on
+        // conflict since they are the visibly-parked originals.
+        var measuredDefinitions = new Dictionary<Guid, (double OuterX, double OuterY, bool UnitHeight)>();
+        foreach (var candidate in scoped)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (candidate.Geometry is not InstanceReferenceGeometry instanceGeometry)
+            {
+                continue;
+            }
+            var layerPath = LayerPath(candidate);
+            if (prototypes.ContainsKey(layerPath))
+            {
+                continue;
+            }
+            if (!measuredDefinitions.TryGetValue(instanceGeometry.ParentIdefId, out var measured))
+            {
+                var definition = document.InstanceDefinitions.FindId(instanceGeometry.ParentIdefId);
+                var union = BoundingBox.Empty;
+                foreach (var member in definition?.GetObjects() ?? [])
+                {
+                    if (member?.Geometry is Brep or Extrusion)
+                    {
+                        union.Union(member.Geometry.GetBoundingBox(accurate: true));
+                    }
+                }
+                measured = union.IsValid
+                    ? (Math.Round(union.Max.X - union.Min.X, 1),
+                       Math.Round(union.Max.Y - union.Min.Y, 1),
+                       Math.Abs(union.Max.Z - union.Min.Z - prototypeHeight) <= prototypeHeight * 0.01)
+                    : (0, 0, false);
+                measuredDefinitions[instanceGeometry.ParentIdefId] = measured;
+            }
+            if (measured.UnitHeight)
+            {
+                prototypes[layerPath] = new StructuralPrototype(
+                    layerPath,
+                    StructuralAxisMath.MarkPrefix(LayerLeaf(layerPath)),
+                    measured.OuterX,
+                    measured.OuterY);
+            }
+        }
+
         // Pass 2 — axes.
         var axes = new List<StructuralAxisMath.Axis>();
         var raw = new List<(string Mark, string Layer, StructuralAxisMath.Vec3 A, StructuralAxisMath.Vec3 B,

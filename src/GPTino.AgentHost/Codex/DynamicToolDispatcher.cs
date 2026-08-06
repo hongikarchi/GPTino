@@ -437,9 +437,12 @@ public sealed class DynamicToolDispatcher
             JsonDefaults.Options);
         var result = wrapped.GetProperty("result");
 
-        // Section identity: prototype outer dims are KS nominal × 1.02 (validated on the real
-        // model). Matching happens HERE, not in the Rhino adapter, because the catalog is shipped
-        // AgentHost data — the adapter reports geometry facts only.
+        // Section identity: matching happens HERE, not in the Rhino adapter, because the catalog
+        // is shipped AgentHost data — the adapter reports geometry facts only. Prototype solids
+        // are drawn either at EXACT nominal dims or at nominal × 1.02 (both conventions exist in
+        // the same production file: the parked display copies were ×1.02 while the definition
+        // geometry is exact, and a fixed ÷1.02 misidentified the two column marks whose catalog
+        // neighbors sit ~2% apart). Try both hypotheses and keep whichever fits better.
         var guesses = new SortedDictionary<string, object>(StringComparer.Ordinal);
         if (_data is not null && result.TryGetProperty("prototypes", out var prototypes))
         {
@@ -449,15 +452,18 @@ public sealed class DynamicToolDispatcher
                 var mark = prototype.GetProperty("mark").GetString() ?? string.Empty;
                 var outerX = prototype.GetProperty("outerX").GetDouble();
                 var outerY = prototype.GetProperty("outerY").GetDouble();
-                var depth = Math.Max(outerX, outerY) / 1.02;
-                var width = Math.Min(outerX, outerY) / 1.02;
                 (string Name, double Error)? best = null;
-                foreach (var (name, h, b) in catalog)
+                foreach (var scale in new[] { 1.0, 1.02 })
                 {
-                    var error = Math.Abs(h - depth) + Math.Abs(b - width);
-                    if (best is null || error < best.Value.Error)
+                    var depth = Math.Max(outerX, outerY) / scale;
+                    var width = Math.Min(outerX, outerY) / scale;
+                    foreach (var (name, h, b) in catalog)
                     {
-                        best = (name, error);
+                        var error = Math.Abs(h - depth) + Math.Abs(b - width);
+                        if (best is null || error < best.Value.Error)
+                        {
+                            best = (name, error);
+                        }
                     }
                 }
                 if (best is { } match && !guesses.ContainsKey(mark))
@@ -587,7 +593,7 @@ public sealed class DynamicToolDispatcher
         }
 
         // Mark → section: the extraction's geometric guesses, overridable per mark by the answers
-        // (the user may know the schedule better than the ×1.02 heuristic).
+        // (the user may know the schedule better than the geometric heuristic).
         var markSections = new SortedDictionary<string, string>(StringComparer.Ordinal);
         if (artifact.RootElement.TryGetProperty("sectionGuesses", out var guesses))
         {
@@ -598,6 +604,22 @@ public sealed class DynamicToolDispatcher
                 {
                     markSections[guess.Name] = name;
                 }
+            }
+        }
+        // Variant marks resolve by PREFIX: members on "SC5 (Bracing)" ARE SC5s, and without this
+        // alias they silently fell to the default section — the real-model gate showed 38 bracing
+        // members solving 90% too heavy against the validated baseline.
+        foreach (var member in extraction.GetProperty("members").EnumerateArray())
+        {
+            var mark = member.GetProperty("mark").GetString() ?? string.Empty;
+            if (markSections.ContainsKey(mark))
+            {
+                continue;
+            }
+            var space = mark.IndexOf(' ');
+            if (space > 0 && markSections.TryGetValue(mark[..space], out var prefixSection))
+            {
+                markSections[mark] = prefixSection;
             }
         }
         var answers = call.Arguments.TryGetProperty("answers", out var answersElement) &&

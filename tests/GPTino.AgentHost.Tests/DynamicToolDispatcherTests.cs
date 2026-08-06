@@ -284,6 +284,8 @@ public sealed class DynamicToolDispatcherTests
             """
             {"sections":[
               {"name":"H-300x300x10x15","H":300,"B":300},
+              {"name":"H-400x400x13x21","H":400,"B":408},
+              {"name":"H-414x405x18x28","H":414,"B":405},
               {"name":"H-400x200x8x13","H":400,"B":200}
             ]}
             """);
@@ -303,6 +305,11 @@ public sealed class DynamicToolDispatcherTests
         var guess = root.GetProperty("sectionGuesses").GetProperty("SC1");
         Assert.Equal("H-300x300x10x15", guess.GetProperty("section").GetString());
         Assert.Equal(0.0, guess.GetProperty("errorMm").GetDouble());
+        // 405×414 is H-414x405 at EXACT dims: the scale-1.0 hypothesis must win over the
+        // ÷1.02 reading that lands on the neighboring H-400x400.
+        var exact = root.GetProperty("sectionGuesses").GetProperty("SC6");
+        Assert.Equal("H-414x405x18x28", exact.GetProperty("section").GetString());
+        Assert.Equal(0.0, exact.GetProperty("errorMm").GetDouble());
         // The free end arrives with its source object id — the ask-back needs a focusable target.
         var freeEnd = Assert.Single(root.GetProperty("freeEnds").EnumerateArray().ToArray());
         Assert.Equal(
@@ -431,7 +438,11 @@ public sealed class DynamicToolDispatcherTests
                     },
                     prototypes = new object[]
                     {
+                        // Both drawing conventions from the real file: SC1 at nominal × 1.02,
+                        // SC6 at EXACT nominal dims of a section whose catalog neighbor sits ~2%
+                        // away (a fixed ÷1.02 read SC6 as H-400x400 — the live gate caught it).
                         new { layer = "철골::SC1", mark = "SC1", outerX = 306.0, outerY = 306.0 },
+                        new { layer = "철골::SC6", mark = "SC6", outerX = 405.0, outerY = 414.0 },
                     },
                     freeEnds = new object[]
                     {
