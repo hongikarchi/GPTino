@@ -16,6 +16,7 @@ public sealed class GptinoPanel : Panel
     private readonly UITimer _readyTimer;
     private bool _navigated;
     private bool _wasVisible;
+    private bool _wasForeground;
     private Uri? _navigatedBaseUri;
     private string? _waitingKey;
 
@@ -92,6 +93,43 @@ public sealed class GptinoPanel : Panel
             NudgeRepaint();
         }
         _wasVisible = visible;
+
+        // Cross-app occlusion (another program's window fully covering a floated panel) never flips
+        // Eto's Visible, so the hidden→visible edge above misses it entirely — that is exactly the
+        // "reply in KakaoTalk, come back, panel is white" case. Key off the OS foreground state
+        // instead: when a window of THIS process becomes foreground again (returning to Rhino or to
+        // the floated panel itself, from any other app), force the same recomposition. This is the
+        // only signal that reliably fires for whole-window occlusion by a foreign application.
+        if (visible)
+        {
+            var foreground = IsOwnProcessForeground();
+            if (foreground && !_wasForeground)
+            {
+                NudgeRepaint();
+            }
+            _wasForeground = foreground;
+        }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    /// <summary>
+    /// True when the current foreground window belongs to this process — i.e. the user just
+    /// switched back to Rhino (or the floated panel) from another application.
+    /// </summary>
+    private static bool IsOwnProcessForeground()
+    {
+        var foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero)
+        {
+            return false;
+        }
+        _ = GetWindowThreadProcessId(foreground, out var owningProcessId);
+        return owningProcessId == (uint)Environment.ProcessId;
     }
 
     private bool TryNavigateToAgentHost()
