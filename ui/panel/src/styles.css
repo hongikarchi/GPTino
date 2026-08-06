@@ -106,6 +106,98 @@
   background: var(--bg);
 }
 
+/* Light theme: overrides only the color tokens (everything else is shared). Because every color in
+   the panel now flows through these tokens, this block is the whole light theme. Toggled by the
+   panel's theme button, which stamps data-theme="light" on <html>. */
+:root[data-theme="light"] {
+  /* Surfaces */
+  --bg: #f4f5f4;
+  --surface: #ffffff;
+  --surface-2: #eceeed;
+  --surface-3: #e2e5e3;
+  --surface-raised: #ffffff;
+  --surface-user: #eef1ef;
+
+  /* Borders */
+  --border: #d3d8d5;
+  --border-soft: #e5e8e6;
+  --border-strong: #bfc5c1;
+  --border-hover: #9aa29d;
+  --border-muted: #c9cfcb;
+  --border-faint: #dbdfdc;
+
+  /* Text */
+  --text: #1b1f1d;
+  --text-hi: #000000;
+  --text-strong: #0a0d0c;
+  --fg: #1b1f1d;
+  --text-soft: #3a3f3c;
+  --muted: #5a615d;
+  --dim: #7c837f;
+  --placeholder: #9aa19d;
+
+  /* Accents — hues kept, values darkened for contrast on a light background */
+  --lime: #587f1d;
+  --lime-strong: #6b9a2a;
+  --cyan: #178578;
+  --amber: #9c6c14;
+  --red: #cf4436;
+  --violet: #6247bf;
+  --accent: #1667d6;
+  --info: #1876d6;
+  --warn: #97690f;
+  --ok: #3d9128;
+  --danger: #c22a1f;
+  --red-delete: #bd3325;
+
+  /* Ink on accent fills — the fills are mid-dark in light mode, so ink goes white */
+  --ink-lime: #ffffff;
+  --ink-red: #ffffff;
+  --ink-amber: #ffffff;
+  --ink-warm: #2a1f06;
+
+  /* Accent edges (borders/strokes) — light accent tints */
+  --lime-edge: #9cbb63;
+  --lime-edge-2: #b0c97f;
+  --lime-edge-3: #a8c473;
+  --lime-edge-4: #bcd191;
+  --lime-edge-5: #9cbb63;
+  --amber-edge: #d8b877;
+  --red-edge: #e7b3a9;
+  --red-edge-2: #edc0b7;
+
+  /* Tinted banner text — dark, saturated on light banners */
+  --text-lime: #47661b;
+  --text-amber: #7a5610;
+  --text-amber-2: #6e4e0f;
+  --text-amber-3: #7f5c12;
+  --text-red: #9a4034;
+  --text-red-2: #b23829;
+  --text-red-3: #b23829;
+  --text-red-4: #a83e30;
+  --text-red-5: #a83e30;
+  --text-red-6: #b23829;
+  --text-red-7: #9a4034;
+  --text-red-8: #b23829;
+
+  /* Canvas (node graph) */
+  --canvas-grid: #d6dad8;
+  --canvas-node: #ffffff;
+  --canvas-node-2: #f3f5f4;
+  --canvas-node-sel: #eef5e2;
+  --wire-idle: #b6beb9;
+  --wire-commit: #97a59f;
+  --wire-bake: #b1a9dd;
+  --wire-queued: #8bbcb3;
+  --wire-port: #c6cdc9;
+  --wire-port-strong: #a7afaa;
+  --wire-under: #e6e9e7;
+
+  /* Overlay flips to black so hover/elevation tints darken on light; shadow stays dark */
+  --overlay: #000000;
+  --shadow: #000000;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -1405,7 +1497,8 @@ button.status-chip:hover strong {
   gap: 4px;
 }
 
-.language-toggle {
+.language-toggle,
+.theme-toggle {
   min-width: 34px;
   padding: 2px 7px;
   border: 1px solid var(--border);
@@ -1417,7 +1510,14 @@ button.status-chip:hover strong {
   cursor: pointer;
 }
 
-.language-toggle:hover {
+.theme-toggle {
+  min-width: 28px;
+  font-size: var(--fs-sec);
+  line-height: 1;
+}
+
+.language-toggle:hover,
+.theme-toggle:hover {
   color: var(--text);
 }
 

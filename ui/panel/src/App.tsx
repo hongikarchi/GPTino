@@ -180,6 +180,23 @@ export default function App() {
       // localStorage may be unavailable; the switch still works for this session.
     }
   };
+  // Panel-only light/dark theme. Pure presentation (all colors are CSS tokens), so it lives in
+  // localStorage + a data-theme stamp on <html> — no server round-trip, like the tab preference.
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    try {
+      return localStorage.getItem("gptino.theme") === "light" ? "light" : "dark";
+    } catch {
+      return "dark";
+    }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem("gptino.theme", theme);
+    } catch {
+      // localStorage may be unavailable; the theme still applies for this session.
+    }
+  }, [theme]);
   const newSessionAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // Esc or a press outside the + Session button / popover closes it. Capture
@@ -288,6 +305,15 @@ export default function App() {
         </div>
 
         <div className="runtime-summary">
+          <button
+            type="button"
+            className="theme-toggle"
+            title={theme === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환"}
+            aria-label="Toggle light or dark theme"
+            onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+          >
+            {theme === "dark" ? "☾" : "☀"}
+          </button>
           {/* Prose language for GPTino's answers. UI labels (Effort, Plan/Auto, tool names)
               stay English on purpose — they are vocabulary, not prose. */}
           <button
