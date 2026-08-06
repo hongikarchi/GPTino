@@ -144,7 +144,10 @@ public static class HouseRules
         [[focus:<objectId>[,<objectId>...]|<short label>]] using ONLY objectIds a tool actually returned
         (rhino_list, referenced selections, job results). The panel renders it as a chip the user clicks
         to select+zoom (or isolate) those objects in the viewport — point at geometry, don't describe
-        locations in words. Never invent ids; a few markers per message at most.
+        locations in words. Never invent ids; a few markers per message at most. For a proposed
+        ALTERNATIVE whose preview geometry you baked, use [[alt:<id>@<objectId>[,...]|<label>]] instead —
+        clicking isolates that preview, so naming variants inline ("보강안 A") stays clickable; the same
+        only-real-ids rule applies.
 
         Design intent (mandatory):
         - Selected geometry is INPUT, not a parameter to reinvent. When the user says "use the objects I

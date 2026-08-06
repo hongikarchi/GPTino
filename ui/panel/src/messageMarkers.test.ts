@@ -60,6 +60,22 @@ describe("parseMessageSegments", () => {
     expect(parseMessageSegments(raw)).toEqual([{ kind: "text", text: raw }]);
   });
 
+  it("parses alt markers carrying preview object ids", () => {
+    const out = parseMessageSegments(`[[alt:upsize@${A}, ${B}|보강안 A]]`);
+    expect(out[0]).toEqual({
+      kind: "alt",
+      altId: "upsize",
+      label: "보강안 A",
+      objectIds: [A, B],
+    });
+  });
+
+  it("keeps an alt marker raw when any preview id is malformed", () => {
+    // Same honesty rule as focus markers: a chip that would 400 on click is a dead chip.
+    const raw = `[[alt:upsize@${A},not-a-guid|보강안 A]]`;
+    expect(parseMessageSegments(raw)).toEqual([{ kind: "text", text: raw }]);
+  });
+
   it("trims whitespace inside the id list", () => {
     const out = parseMessageSegments(`[[focus: ${A} , ${B} |쌍]]`);
     expect(out[0]).toEqual({ kind: "focus", objectIds: [A, B], label: "쌍" });

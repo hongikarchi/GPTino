@@ -631,15 +631,21 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
                 {parseMessageSegments(block.message.content).map((segment, index) => {
                   if (segment.kind === "text") return <span key={index}>{segment.text}</span>;
                   if (segment.kind === "alt") {
-                    return onSelectAlt ? (
+                    // A chip renders when SOMETHING can respond to it: id-carrying alts drive
+                    // the viewport through onFocus; opaque alts need an external preview owner.
+                    const altHasViewport = segment.objectIds !== undefined && onFocus !== undefined;
+                    return onSelectAlt || altHasViewport ? (
                       <AltChip
                         key={index}
                         altId={segment.altId}
                         label={segment.label}
                         active={activeAlt === segment.altId}
+                        objectIds={segment.objectIds}
+                        onFocus={onFocus}
+                        onIsolated={setFocusIsolating}
                         onSelect={(altId) => {
                           setActiveAlt(altId);
-                          onSelectAlt(altId);
+                          onSelectAlt?.(altId);
                         }}
                       />
                     ) : (

@@ -22,20 +22,22 @@ export interface FocusSegment {
 
 /**
  * An alternative the agent is proposing (a solution variant, a design option). Clicking it
- * asks the owner to show that variant — for structural work that means switching the
- * viewport preview to the alt's visualization. `altId` is opaque to the panel: the agent
- * and whatever renders the variant agree on its meaning.
+ * asks the owner to show that variant. When the marker carries objectIds
+ * (`[[alt:id@guid,…|label]]` — the alt's baked preview geometry), the chip can drive the
+ * viewport directly (isolate those objects); without them `altId` stays opaque to the
+ * panel and the owner switches whatever preview the task uses.
  */
 export interface AltSegment {
   kind: "alt";
   altId: string;
   label: string;
+  objectIds?: string[];
 }
 
 export type MessageSegment = TextSegment | FocusSegment | AltSegment;
 
 const MARKER = /\[\[focus:([^\]|]+)\|([^\]|]*)\]\]/g;
-const ALT_MARKER = /\[\[alt:([A-Za-z0-9._-]{1,64})\|([^\]|]*)\]\]/g;
+const ALT_MARKER = /\[\[alt:([A-Za-z0-9._-]{1,64})(?:@([^\]|]+))?\|([^\]|]*)\]\]/g;
 const GUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const MAX_IDS = 200;
 const MAX_LABEL = 120;
@@ -63,13 +65,23 @@ export function parseMessageSegments(content: string): MessageSegment[] {
 
   ALT_MARKER.lastIndex = 0;
   for (let match = ALT_MARKER.exec(content); match !== null; match = ALT_MARKER.exec(content)) {
+    // The optional @ids part follows the focus rule exactly: EVERY id must be a well-formed
+    // GUID or the whole marker stays raw text — a chip that would 400 on click is a dead chip.
+    let objectIds: string[] | undefined;
+    if (match[2] !== undefined) {
+      const ids = match[2].split(",").map((id) => id.trim()).filter((id) => id.length > 0);
+      const valid = ids.length > 0 && ids.length <= MAX_IDS && ids.every((id) => GUID.test(id));
+      if (!valid) continue;
+      objectIds = ids;
+    }
     hits.push({
       start: match.index,
       end: match.index + match[0].length,
       segment: {
         kind: "alt",
         altId: match[1],
-        label: match[2].trim().slice(0, MAX_LABEL) || match[1],
+        label: match[3].trim().slice(0, MAX_LABEL) || match[1],
+        ...(objectIds ? { objectIds } : {}),
       },
     });
   }
