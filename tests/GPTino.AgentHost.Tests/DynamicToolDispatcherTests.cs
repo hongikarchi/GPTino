@@ -166,14 +166,67 @@ public sealed class DynamicToolDispatcherTests
     }
 
     private static async Task<(DynamicToolDispatcher Dispatcher, SessionStore Store, FakeLiveDocumentBackend Backend)>
-        CreateDispatcherAsync(TestDirectory directory)
+        CreateDispatcherAsync(TestDirectory directory, DataLibrary? data = null)
     {
         var store = new SessionStore(directory.GetPath("state.db"));
         await store.InitializeAsync();
         var backend = new FakeLiveDocumentBackend();
         var options = new AgentHostOptions { DataDirectory = directory.GetPath("data") };
         var problems = new ProblemLog(options, NullLogger<ProblemLog>.Instance);
-        return (new DynamicToolDispatcher(store, backend, options, problems: problems), store, backend);
+        return (new DynamicToolDispatcher(store, backend, options, problems: problems, data: data), store, backend);
+    }
+
+    /// <summary>
+    /// structural_extract composes the model-facing SUMMARY: full member list to a session
+    /// artifact (never the tool result), section identity matched dispatcher-side against the
+    /// shipped KS catalog (÷1.02 of the prototype outer dims), and free ends carried WITH their
+    /// source object ids because they are the ask-back items.
+    /// </summary>
+    [Fact]
+    public async Task StructuralExtractSummarizesMatchesSectionsAndWritesTheMembersArtifact()
+    {
+        using var directory = new TestDirectory();
+        var dataRoot = directory.GetPath("shipped-data");
+        Directory.CreateDirectory(Path.Combine(dataRoot, "structural"));
+        await File.WriteAllTextAsync(
+            Path.Combine(dataRoot, "structural", "sections-ks.json"),
+            """
+            {"sections":[
+              {"name":"H-300x300x10x15","H":300,"B":300},
+              {"name":"H-400x200x8x13","H":400,"B":200}
+            ]}
+            """);
+        var (dispatcher, store, _) = await CreateDispatcherAsync(directory, new DataLibrary(dataRoot));
+        var session = await BindSessionAsync(store, "structural-thread");
+
+        var result = await dispatcher.DispatchAsync(
+            Call("structural_extract", """{"layerFilter":"철골"}""", threadId: "structural-thread"),
+            CancellationToken.None);
+
+        Assert.True(result.Success, result.Text);
+        using var payload = JsonDocument.Parse(result.Text);
+        var root = payload.RootElement;
+        Assert.Equal(1, root.GetProperty("memberCount").GetInt32());
+        Assert.Equal(2, root.GetProperty("mergedDuplicateAxes").GetInt32());
+        // 306 / 1.02 = 300 exactly → the H-300x300 row wins with zero error.
+        var guess = root.GetProperty("sectionGuesses").GetProperty("SC1");
+        Assert.Equal("H-300x300x10x15", guess.GetProperty("section").GetString());
+        Assert.Equal(0.0, guess.GetProperty("errorMm").GetDouble());
+        // The free end arrives with its source object id — the ask-back needs a focusable target.
+        var freeEnd = Assert.Single(root.GetProperty("freeEnds").EnumerateArray().ToArray());
+        Assert.Equal(
+            "a0b1c2d3-0001-4e4e-9f9f-000000000001",
+            freeEnd.GetProperty("sourceObjectIds")[0].GetString());
+        // The artifact holds the FULL extraction; the summary only points at it.
+        var artifactPath = root.GetProperty("membersArtifact").GetString();
+        Assert.Equal("structural/members.json", artifactPath);
+        var stored = await File.ReadAllTextAsync(
+            directory.GetPath($"data/artifacts/{session.Id:N}/structural/members.json"));
+        using var artifact = JsonDocument.Parse(stored);
+        Assert.Equal(
+            "SC1",
+            artifact.RootElement.GetProperty("extraction").GetProperty("members")[0].GetProperty("mark").GetString());
+        Assert.DoesNotContain("\"members\":", result.Text.Replace(" ", ""));
     }
 
     private static async Task<SessionRecord> BindSessionAsync(SessionStore store, string threadId)
@@ -260,6 +313,54 @@ public sealed class DynamicToolDispatcherTests
 
         public Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken) =>
             Task.FromResult<object>(new { kind = "purgeCandidates", findings = Array.Empty<object>() });
+
+        // Mirrors the backend's { result, fingerprint, diagnostics } bridge-read wrapper with one
+        // instance member whose prototype dims are KS nominal × 1.02 (H-300x300 → 306) and one
+        // free end, so the dispatcher's section matching and summary composition are exercised.
+        public Task<object> ReadStructuralExtractAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+            Task.FromResult<object>(new
+            {
+                result = new
+                {
+                    docUnits = "Millimeters",
+                    scannedObjects = 3,
+                    members = new object[]
+                    {
+                        new
+                        {
+                            mark = "SC1",
+                            layer = "철골::SC1",
+                            a = new { x = 0.0, y = 0.0, z = 0.0 },
+                            b = new { x = 0.0, y = 0.0, z = 3000.0 },
+                            length = 3000.0,
+                            kind = "instance",
+                            sourceObjectIds = new[] { "a0b1c2d3-0001-4e4e-9f9f-000000000001" },
+                            fingerprints = new[] { "fp-sc1" },
+                        },
+                    },
+                    prototypes = new object[]
+                    {
+                        new { layer = "철골::SC1", mark = "SC1", outerX = 306.0, outerY = 306.0 },
+                    },
+                    freeEnds = new object[]
+                    {
+                        new
+                        {
+                            memberIndex = 0,
+                            end = 1,
+                            point = new { x = 0.0, y = 0.0, z = 3000.0 },
+                            sourceObjectIds = new[] { "a0b1c2d3-0001-4e4e-9f9f-000000000001" },
+                        },
+                    },
+                    mergedDuplicateAxes = 2,
+                    obliqueExactAxes = 0,
+                    skippedByReason = new Dictionary<string, int> { ["skipped:Mesh"] = 1 },
+                    truncated = false,
+                    fingerprint = "extract-fp",
+                },
+                fingerprint = "extract-fp",
+                diagnostics = Array.Empty<object>(),
+            });
 
         public Task<object> ReadRhinoLayersAsync(CancellationToken cancellationToken) =>
             Task.FromResult<object>(new { layers = Array.Empty<object>(), namedLayerStates = Array.Empty<string>() });

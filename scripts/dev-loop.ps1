@@ -17,9 +17,10 @@
 param(
     [string]$RunId = (Get-Date -Format 'yyyyMMddTHHmmssZ') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8)),
     # Scene fixture kind: 'paneling' (default, original fixture), 'structural'
-    # (column axes + perimeter beams + isolated test beam for Karamba benchmarks), or
-    # 'hygiene' (deliberate endpoint gaps + near-duplicates for the audit/approval gate).
-    [ValidateSet('paneling', 'structural', 'hygiene')]
+    # (column axes + perimeter beams + isolated test beam for Karamba benchmarks),
+    # 'hygiene' (deliberate endpoint gaps + near-duplicates for the audit/approval gate), or
+    # 'structural-solids' (unit-block instances + PCA brace + free end for structural_extract).
+    [ValidateSet('paneling', 'structural', 'hygiene', 'structural-solids')]
     [string]$SceneKind = 'paneling',
     [switch]$RegenerateScene,
     # Launch WITHOUT opening Grasshopper, to exercise the Rhino-only target.

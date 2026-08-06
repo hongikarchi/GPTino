@@ -296,6 +296,22 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
         public TransformRhinoObjectRequest? LastTransformRequest { get; private set; }
         public UpsertRhinoObjectRequest? LastValidationRequest { get; private set; }
 
+        public Task<StructuralExtractResult> ExtractStructuralAxesAsync(
+            DocumentTarget target,
+            StructuralExtractRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new StructuralExtractResult(
+                "Millimeters",
+                0,
+                Array.Empty<StructuralMember>(),
+                Array.Empty<StructuralPrototype>(),
+                Array.Empty<StructuralFreeEnd>(),
+                0,
+                0,
+                new Dictionary<string, int>(),
+                Truncated: false,
+                "empty"));
+
         public Task<RhinoSceneListResult> ListObjectsAsync(
             DocumentTarget target,
             RhinoListObjectsRequest request,

@@ -45,6 +45,8 @@ public interface ILiveDocumentBackend
 
     Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken);
 
+    Task<object> ReadStructuralExtractAsync(JsonElement arguments, CancellationToken cancellationToken);
+
     Task<object> ReadRhinoLayersAsync(CancellationToken cancellationToken);
 
     Task StopCurrentAsync(CancellationToken cancellationToken);
@@ -94,6 +96,9 @@ public sealed class DisconnectedDocumentBackend : ILiveDocumentBackend
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
+
+    public Task<object> ReadStructuralExtractAsync(JsonElement arguments, CancellationToken cancellationToken) =>
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ReadRhinoLayersAsync(CancellationToken cancellationToken) =>
@@ -159,6 +164,8 @@ public sealed class DynamicToolDispatcher
                     await ReadDataFlowAsync(call, cancellationToken).ConfigureAwait(false)),
                 "rhino_audit" => DynamicToolResult.Ok(
                     await _backend.ReadRhinoAuditAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
+                "structural_extract" => DynamicToolResult.Ok(
+                    await ExtractStructuralAsync(call, cancellationToken).ConfigureAwait(false)),
                 "rhino_layers" => DynamicToolResult.Ok(
                     await _backend.ReadRhinoLayersAsync(cancellationToken).ConfigureAwait(false)),
                 "artifact_read" => DynamicToolResult.Ok(await ReadArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
@@ -272,6 +279,7 @@ public sealed class DynamicToolDispatcher
         "rhino_list" => "Listing Rhino objects",
         "data_flow_read" => "Reading the Rhino-GH data-flow ledger",
         "rhino_audit" => "Auditing the Rhino document",
+        "structural_extract" => "Extracting structural member axes",
         "rhino_layers" => "Reading the Rhino layer table",
         "inspect_outputs" => "Inspecting component outputs",
         "artifact_read" => $"Reading draft {TryString(call.Arguments, "path")}",
@@ -408,6 +416,154 @@ public sealed class DynamicToolDispatcher
         CancellationToken cancellationToken) =>
         await _store.FindSessionByThreadAsync(threadId, cancellationToken).ConfigureAwait(false)
         ?? throw new InvalidOperationException("The calling Codex thread is not bound to a GPTino session.");
+
+    /// <summary>
+    /// structural_extract: server-computed member axes from the bridge, section identity matched
+    /// against the shipped KS catalog, full member list persisted as a session artifact, and only
+    /// the SUMMARY returned to the model. 1,199 members in the tool result would be pure context
+    /// waste; structural_solve and artifact_read take the artifact path instead.
+    /// </summary>
+    private async Task<object> ExtractStructuralAsync(DynamicToolCall call, CancellationToken cancellationToken)
+    {
+        var session = await RequireCallingSessionAsync(call.ThreadId, cancellationToken).ConfigureAwait(false);
+        var wrapped = JsonSerializer.SerializeToElement(
+            await _backend.ReadStructuralExtractAsync(call.Arguments, cancellationToken).ConfigureAwait(false),
+            JsonDefaults.Options);
+        var result = wrapped.GetProperty("result");
+
+        // Section identity: prototype outer dims are KS nominal × 1.02 (validated on the real
+        // model). Matching happens HERE, not in the Rhino adapter, because the catalog is shipped
+        // AgentHost data — the adapter reports geometry facts only.
+        var guesses = new SortedDictionary<string, object>(StringComparer.Ordinal);
+        if (_data is not null && result.TryGetProperty("prototypes", out var prototypes))
+        {
+            var catalog = LoadSectionCatalog();
+            foreach (var prototype in prototypes.EnumerateArray())
+            {
+                var mark = prototype.GetProperty("mark").GetString() ?? string.Empty;
+                var outerX = prototype.GetProperty("outerX").GetDouble();
+                var outerY = prototype.GetProperty("outerY").GetDouble();
+                var depth = Math.Max(outerX, outerY) / 1.02;
+                var width = Math.Min(outerX, outerY) / 1.02;
+                (string Name, double Error)? best = null;
+                foreach (var (name, h, b) in catalog)
+                {
+                    var error = Math.Abs(h - depth) + Math.Abs(b - width);
+                    if (best is null || error < best.Value.Error)
+                    {
+                        best = (name, error);
+                    }
+                }
+                if (best is { } match && !guesses.ContainsKey(mark))
+                {
+                    guesses[mark] = new { section = match.Name, errorMm = Math.Round(match.Error, 1) };
+                }
+            }
+        }
+
+        const string artifactPath = "structural/members.json";
+        var artifact = JsonSerializer.Serialize(
+            new { extraction = result, sectionGuesses = guesses },
+            JsonDefaults.Options);
+        await WriteManagedArtifactAsync(session.Id, artifactPath, artifact, cancellationToken).ConfigureAwait(false);
+
+        var members = result.GetProperty("members");
+        var freeEnds = result.GetProperty("freeEnds");
+        var byMark = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        var byKind = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        foreach (var member in members.EnumerateArray())
+        {
+            var mark = member.GetProperty("mark").GetString() ?? string.Empty;
+            var kind = member.GetProperty("kind").GetString() ?? string.Empty;
+            byMark[mark] = byMark.GetValueOrDefault(mark) + 1;
+            byKind[kind] = byKind.GetValueOrDefault(kind) + 1;
+        }
+        // Free ends ride the summary WITH their source object ids: they are the ask-back items,
+        // and the agent needs real ids to point at them with focus chips before solving.
+        var freeEndSummaries = freeEnds.EnumerateArray()
+            .Take(20)
+            .Select(free => new
+            {
+                point = free.GetProperty("point"),
+                sourceObjectIds = free.GetProperty("sourceObjectIds"),
+            })
+            .ToArray();
+        return new
+        {
+            docUnits = result.GetProperty("docUnits").GetString(),
+            scannedObjects = result.GetProperty("scannedObjects").GetInt32(),
+            memberCount = members.GetArrayLength(),
+            byMark,
+            byKind,
+            mergedDuplicateAxes = result.GetProperty("mergedDuplicateAxes").GetInt32(),
+            obliqueExactAxes = result.GetProperty("obliqueExactAxes").GetInt32(),
+            skippedByReason = result.GetProperty("skippedByReason"),
+            freeEndCount = freeEnds.GetArrayLength(),
+            freeEnds = freeEndSummaries,
+            sectionGuesses = guesses,
+            truncated = result.GetProperty("truncated").GetBoolean(),
+            fingerprint = wrapped.GetProperty("fingerprint"),
+            membersArtifact = artifactPath,
+        };
+    }
+
+    /// <summary>(name, H, B) rows of the KS section catalog, tolerant of a missing/foreign file.</summary>
+    private List<(string Name, double H, double B)> LoadSectionCatalog()
+    {
+        var rows = new List<(string, double, double)>();
+        try
+        {
+            var payload = JsonSerializer.SerializeToElement(_data!.Read("structural/sections-ks.json"), JsonDefaults.Options);
+            var content = payload.GetProperty("content").GetString() ?? "{}";
+            using var parsed = JsonDocument.Parse(content);
+            foreach (var section in parsed.RootElement.GetProperty("sections").EnumerateArray())
+            {
+                rows.Add((
+                    section.GetProperty("name").GetString() ?? string.Empty,
+                    section.GetProperty("H").GetDouble(),
+                    section.GetProperty("B").GetDouble()));
+            }
+        }
+        catch (Exception)
+        {
+            // No catalog, no guesses — the extraction is still fully usable; the summary simply
+            // carries no sectionGuesses and the agent can consult data_read itself.
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// Writes a server-produced artifact into the session's managed storage with the same atomic
+    /// pattern as artifact_write. Unlike artifact_write this may exceed the draft cap — the member
+    /// list of a large model is server output, not a model-typed draft.
+    /// </summary>
+    private async Task WriteManagedArtifactAsync(
+        Guid sessionId,
+        string relativePath,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        var sessionRoot = SessionArtifactRoot(sessionId);
+        var path = ResolveArtifact(sessionId, relativePath);
+        ReservedArtifactStorage.RejectUserPath(sessionRoot, path);
+        var parent = Path.GetDirectoryName(path)!;
+        Directory.CreateDirectory(parent);
+        ConstrainedPath.RejectExistingReparsePoints(sessionRoot, parent, "Artifact");
+        var temporary = Path.Combine(parent, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.gptino-tmp");
+        try
+        {
+            await File.WriteAllTextAsync(temporary, content, new UTF8Encoding(false), cancellationToken)
+                .ConfigureAwait(false);
+            File.Move(temporary, path, true);
+        }
+        finally
+        {
+            if (File.Exists(temporary))
+            {
+                File.Delete(temporary);
+            }
+        }
+    }
 
     /// <summary>
     /// Stores the agent's proposed goal card and hands the turn back to the user. Nothing about

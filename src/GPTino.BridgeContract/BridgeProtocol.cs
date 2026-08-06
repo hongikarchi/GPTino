@@ -19,7 +19,10 @@ public static class BridgeProtocol
     // v11: DocumentRuntime's Grasshopper half is nullable — a saved Rhino document with no .gh open
     //      is a complete target (document work needs no canvas). rhinoLayerTable resources are now
     //      addressed by the Rhino-scoped ProjectId instead of the bound Grasshopper document id.
-    public const int Version = 11;
+    // v12: rhino.structuralExtract read operation (structural member axis extraction). Purely
+    //      additive, but a new host calling an old plugin would fail mid-feature with an unknown
+    //      operation instead of at connect — the bump keeps mixed installs failing loudly.
+    public const int Version = 12;
 
     public const int DefaultMaximumFrameBytes = 8 * 1024 * 1024;
 

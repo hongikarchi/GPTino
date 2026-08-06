@@ -38,6 +38,20 @@ public interface ICordycepsRhinoSceneAdapter
         RhinoAuditRequest request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Extracts structural member axes from the document: curves pass through as axes,
+    /// InstanceReferences of unit-prototype blocks recover the EXACT axis by pushing the prototype
+    /// axis through the instance transform, and loose slender solids get a PCA-approximated axis
+    /// (flagged). Read-only and deterministic — the extraction IS the safety claim ("these lines
+    /// are where the members are"), so it is server code with a built-in quality report (free
+    /// ends, oblique share, dedupe count), never model eyeballing. Meshes are counted as skipped,
+    /// not guessed at.
+    /// </summary>
+    Task<StructuralExtractResult> ExtractStructuralAxesAsync(
+        DocumentTarget target,
+        StructuralExtractRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<RhinoSceneMutationResult> CreatePrimitiveAsync(
         DocumentTarget target,
         CreateRhinoPrimitiveRequest request,
@@ -394,6 +408,60 @@ public sealed record RhinoAuditResult(
     double? BandUsed,
     int ScannedObjects,
     IReadOnlyList<RhinoAuditFinding> Findings,
+    bool Truncated,
+    string Fingerprint);
+
+/// <summary>
+/// Extraction scope and thresholds. LayerFilter is a case-insensitive substring of the layer
+/// FullPath (null = whole document). PrototypeHeight names the unit-block convention (a prototype
+/// solid of exactly this height at the origin, instanced with a scaling transform); thresholds
+/// default to the values validated on the 1,199-member real model.
+/// </summary>
+public sealed record StructuralExtractRequest(
+    string? LayerFilter = null,
+    bool SelectedOnly = false,
+    double PrototypeHeight = 1000.0,
+    double JoinSnapDistance = 350.0,
+    double DedupeAngleDegrees = 3.0,
+    double DedupeMidpointDistance = 250.0,
+    int Limit = 4000);
+
+/// <summary>
+/// One extracted member axis. Kind: curve | instance | pca (pca axes are approximations).
+/// SourceObjectIds/Fingerprints pin the axis to the real document objects, so a finding about
+/// this member can be pointed at in the viewport and any follow-up fix is CAS-pinned.
+/// </summary>
+public sealed record StructuralMember(
+    string Mark,
+    string Layer,
+    RhinoPoint3d A,
+    RhinoPoint3d B,
+    double Length,
+    string Kind,
+    IReadOnlyList<Guid> SourceObjectIds,
+    IReadOnlyList<string> Fingerprints);
+
+/// <summary>Outer dimensions of one unit-prototype solid (section identity comes from these).</summary>
+public sealed record StructuralPrototype(string Layer, string Mark, double OuterX, double OuterY);
+
+/// <summary>An unconnected member endpoint (End: 0=A, 1=B) — intended cantilever or modeling error.</summary>
+public sealed record StructuralFreeEnd(
+    int MemberIndex,
+    int End,
+    RhinoPoint3d Point,
+    IReadOnlyList<Guid> SourceObjectIds);
+
+public sealed record StructuralExtractResult(
+    string DocUnits,
+    int ScannedObjects,
+    IReadOnlyList<StructuralMember> Members,
+    IReadOnlyList<StructuralPrototype> Prototypes,
+    IReadOnlyList<StructuralFreeEnd> FreeEnds,
+    int MergedDuplicateAxes,
+    // Exact (non-PCA) axes aligned to no world axis — the quality signal: a high count here means
+    // the extraction is skewed, not the building.
+    int ObliqueExactAxes,
+    IReadOnlyDictionary<string, int> SkippedByReason,
     bool Truncated,
     string Fingerprint);
 

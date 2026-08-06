@@ -158,6 +158,32 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "structural_extract",
+                    "Extract structural member AXES from the Rhino document — server-computed, never " +
+                    "eyeballed. Three source kinds: curves pass through as axes; unit-prototype block " +
+                    "instances recover the EXACT axis from the instance transform; loose slender solids " +
+                    "get a PCA-approximated axis (kind 'pca'). Meshes are skipped and counted, not guessed. " +
+                    "Returns a SUMMARY (member counts, section guesses from the KS catalog, quality signals) " +
+                    "and writes the full member list to the session artifact named in membersArtifact — pass " +
+                    "that to structural_solve; do not re-list members in chat. freeEnds are the ask-back " +
+                    "items: each carries real objectIds, so point at them with [[focus:...]] chips and ask " +
+                    "the user whether they are intended cantilevers BEFORE solving. A high obliqueExactAxes " +
+                    "count means the extraction is skewed (buildings are orthogonal grids plus deliberate " +
+                    "diagonals) — say so instead of analyzing bad axes. Read-only and parallel-safe.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            layerFilter = new { type = "string", description = "Case-insensitive substring of layer FullPath (e.g. '철골'); omit for the whole document." },
+                            selectedOnly = new { type = "boolean", description = "Only currently selected objects." },
+                            prototypeHeight = new { type = "number", description = "Unit-prototype height in document units; default 1000." },
+                            joinSnapDistance = new { type = "number", description = "Endpoint join tolerance for free-end detection; default 350." },
+                            limit = new { type = "integer", minimum = 1, maximum = 10000, description = "Member cap; default 4000." }
+                        },
+                        additionalProperties = false
+                    }),
+                Function(
                     "rhino_layers",
                     "Read the bound Rhino document's full layer table (path, parent, color, visibility, lock, " +
                     "object count including hidden and block members, whether it has children, per-layer " +

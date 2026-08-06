@@ -655,6 +655,18 @@ public sealed class LiveDocumentBackend : BackgroundService, ILiveDocumentBacken
             cancellationToken);
 
     /// <summary>
+    /// Structural member axis extraction (structural_extract tool). Rhino-scene read like the
+    /// audit — document-agnostic, default-target resolution, detection is adapter code.
+    /// </summary>
+    public Task<object> ReadStructuralExtractAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        ReadBridgeQueryAsync(
+            RequireDefaultTargetState(),
+            BridgeAdapterOwner.CordycepsRhino,
+            "rhino.structuralExtract",
+            arguments,
+            cancellationToken);
+
+    /// <summary>
     /// Full layer table + named layer states (rhino_layers tool + GET /layers). Deterministic
     /// layer inspection: every layer carries a fingerprint and the table carries one, so presence
     /// AND absence are provable — the precondition layer mutation was gated on.

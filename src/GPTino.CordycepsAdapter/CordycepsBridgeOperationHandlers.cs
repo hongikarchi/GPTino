@@ -184,6 +184,7 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
             "rhino.list" => await ListAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.listStampedObjects" => await ListStampedObjectsAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.audit" => await AuditAsync(target, request, cancellationToken).ConfigureAwait(false),
+            "rhino.structuralExtract" => await StructuralExtractAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.inspect" => await InspectAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.validateUpsert" => await ValidateUpsertAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.createPrimitive" => await MutationAsync<CreateRhinoPrimitiveRequest>(target, request, _adapter.CreatePrimitiveAsync, cancellationToken).ConfigureAwait(false),
@@ -334,6 +335,33 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
             result,
             afterFingerprint: result.Fingerprint,
             diagnostics: result.Diagnostics);
+    }
+
+    private async Task<BridgeOperationResponse> StructuralExtractAsync(
+        DocumentTarget target,
+        BridgeOperationRequest request,
+        CancellationToken cancellationToken)
+    {
+        RequireAccess(request, BridgeOperationAccess.Read);
+        var result = await _adapter.ExtractStructuralAxesAsync(
+            target,
+            request.DeserializeArguments<StructuralExtractRequest>(),
+            cancellationToken).ConfigureAwait(false);
+        var diagnostics = result.Truncated
+            ? new[]
+            {
+                new BridgeDiagnostic(
+                    BridgeDiagnosticSeverity.Warning,
+                    "structural_extract_truncated",
+                    "The extraction hit its member cap; axes cover part of the document."),
+            }
+            : Array.Empty<BridgeDiagnostic>();
+        return BridgeOperationResponse.Create(
+            request.OperationId,
+            changed: false,
+            result,
+            afterFingerprint: result.Fingerprint,
+            diagnostics: diagnostics);
     }
 
     private async Task<BridgeOperationResponse> AuditAsync(

@@ -672,6 +672,17 @@ if (developmentDataDirectory is not null)
         var arguments = JsonSerializer.SerializeToElement(new { limit = 500 });
         return Results.Ok(await liveBackend.ListRhinoObjectsAsync(arguments, cancellationToken));
     });
+    // Same rationale as /dev/audit: the structural-extract live gate needs the extraction result
+    // with no model in the loop. Product surface is the structural_extract tool.
+    api.MapGet("/dev/structural-extract", async (
+        string? layerFilter,
+        double? prototypeHeight,
+        LiveDocumentBackend liveBackend,
+        CancellationToken cancellationToken) =>
+    {
+        var arguments = JsonSerializer.SerializeToElement(new { layerFilter, prototypeHeight });
+        return Results.Ok(await liveBackend.ReadStructuralExtractAsync(arguments, cancellationToken));
+    });
     // Server-computed document audit, for harnesses that must check a claim WITHOUT asking the
     // agent whether it is true. The product surface for this is the rhino_audit tool; this is the
     // same backend call with no model in the loop, which is what a live gate needs to grade one.

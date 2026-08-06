@@ -269,6 +269,227 @@ public sealed class RhinoSceneFoundationAdapter : DocumentBoundRhinoSceneAdapter
             fingerprint));
     }
 
+    /// <summary>
+    /// Structural axis extraction (rhino.structuralExtract). Three source kinds, in honesty order:
+    /// curves ARE axes; InstanceReferences of unit-prototype blocks yield EXACT axes (prototype
+    /// axis pushed through the instance transform — no skeletonization, validated on a 1,199-member
+    /// production model); loose slender solids get a PCA axis flagged "pca". Meshes and stocky
+    /// solids are counted in SkippedByReason, never guessed at. The quality report (free ends,
+    /// oblique exact axes, dedupe count) ships in the result because "the lines are where the
+    /// members are" is a safety claim — it must be graded by server code, not by the model.
+    /// </summary>
+    protected override Task<StructuralExtractResult> ExtractStructuralAxesCoreAsync(
+        global::Rhino.RhinoDoc document,
+        StructuralExtractRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var limit = Math.Clamp(request.Limit, 1, 10_000);
+        var prototypeHeight = request.PrototypeHeight > 0 ? request.PrototypeHeight : 1000.0;
+        var units = document.ModelUnitSystem.ToString();
+
+        bool InScope(RhinoObject candidate)
+        {
+            if (request.SelectedOnly && candidate.IsSelected(checkSubObjects: false) == 0)
+            {
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(request.LayerFilter))
+            {
+                return true;
+            }
+            var layer = candidate.Attributes.LayerIndex >= 0 && candidate.Attributes.LayerIndex < document.Layers.Count
+                ? document.Layers[candidate.Attributes.LayerIndex]
+                : null;
+            return layer is not null &&
+                layer.FullPath.Contains(request.LayerFilter, StringComparison.OrdinalIgnoreCase);
+        }
+
+        string LayerPath(RhinoObject candidate) =>
+            candidate.Attributes.LayerIndex >= 0 && candidate.Attributes.LayerIndex < document.Layers.Count
+                ? document.Layers[candidate.Attributes.LayerIndex].FullPath
+                : string.Empty;
+
+        var scoped = document.Objects.GetObjectList(AuditEnumerator())
+            .Where(InScope)
+            .OrderBy(item => item.Id.ToString("D"), StringComparer.Ordinal)
+            .ToList();
+        var scanned = scoped.Count;
+        var skipped = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        void Skip(string reason)
+        {
+            skipped[reason] = skipped.GetValueOrDefault(reason) + 1;
+        }
+
+        // Pass 1 — unit prototypes: one solid per section-mark layer, parked at the origin at
+        // exactly the prototype height. Its outer dims are the section identity (nominal × 1.02
+        // in the validated real model); its axis (origin → +Z·height) is what instances transform.
+        var prototypes = new Dictionary<string, StructuralPrototype>(StringComparer.Ordinal);
+        foreach (var candidate in scoped)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (candidate.Geometry is not (Brep or Extrusion))
+            {
+                continue;
+            }
+            var box = candidate.Geometry.GetBoundingBox(accurate: true);
+            var nearOrigin = Math.Abs(box.Min.X) < 5000 && Math.Abs(box.Min.Y) < 5000 && Math.Abs(box.Min.Z) < 100;
+            var height = box.Max.Z - box.Min.Z;
+            if (nearOrigin && Math.Abs(height - prototypeHeight) <= prototypeHeight * 0.01)
+            {
+                var layerPath = LayerPath(candidate);
+                prototypes[layerPath] = new StructuralPrototype(
+                    layerPath,
+                    StructuralAxisMath.MarkPrefix(LayerLeaf(layerPath)),
+                    Math.Round(box.Max.X - box.Min.X, 1),
+                    Math.Round(box.Max.Y - box.Min.Y, 1));
+            }
+        }
+
+        // Pass 2 — axes.
+        var axes = new List<StructuralAxisMath.Axis>();
+        var raw = new List<(string Mark, string Layer, StructuralAxisMath.Vec3 A, StructuralAxisMath.Vec3 B,
+            string Kind, Guid ObjectId, string Fingerprint)>();
+        var truncated = false;
+        foreach (var candidate in scoped)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (raw.Count >= limit)
+            {
+                truncated = true;
+                break;
+            }
+            var layerPath = LayerPath(candidate);
+            var mark = LayerLeaf(layerPath);
+            switch (candidate.Geometry)
+            {
+                case Curve curve:
+                {
+                    var a = ToVec(curve.PointAtStart);
+                    var b = ToVec(curve.PointAtEnd);
+                    if ((a - b).Length < 50.0)
+                    {
+                        Skip("curve:degenerate-or-closed");
+                        break;
+                    }
+                    raw.Add((mark, layerPath, a, b, "curve", candidate.Id, ToState(candidate).Fingerprint));
+                    break;
+                }
+                case InstanceReferenceGeometry instance:
+                {
+                    var transform = instance.Xform;
+                    var matrix = new double[]
+                    {
+                        transform.M00, transform.M01, transform.M02, transform.M03,
+                        transform.M10, transform.M11, transform.M12, transform.M13,
+                        transform.M20, transform.M21, transform.M22, transform.M23,
+                        transform.M30, transform.M31, transform.M32, transform.M33,
+                    };
+                    var a = StructuralAxisMath.TransformPoint(matrix, new StructuralAxisMath.Vec3(0, 0, 0));
+                    var b = StructuralAxisMath.TransformPoint(matrix, new StructuralAxisMath.Vec3(0, 0, prototypeHeight));
+                    raw.Add((mark, layerPath, a, b, "instance", candidate.Id, ToState(candidate).Fingerprint));
+                    break;
+                }
+                case Brep or Extrusion:
+                {
+                    var box = candidate.Geometry.GetBoundingBox(accurate: true);
+                    if (Math.Abs(box.Min.X) < 5000 && Math.Abs(box.Min.Y) < 5000)
+                    {
+                        Skip("prototype:" + candidate.Geometry.ObjectType);
+                        break;
+                    }
+                    var brep = candidate.Geometry as Brep ?? (candidate.Geometry as Extrusion)?.ToBrep();
+                    var vertices = brep?.Vertices
+                        .Select(vertex => ToVec(vertex.Location))
+                        .ToArray() ?? [];
+                    var principal = StructuralAxisMath.PrincipalAxisEndpoints(vertices, minimumSpan: 300.0);
+                    if (principal is not { } axis)
+                    {
+                        Skip(vertices.Length < 4 ? "loose:no-vertices" : "loose:too-short");
+                        break;
+                    }
+                    raw.Add((mark, layerPath, axis.A, axis.B, "pca", candidate.Id, ToState(candidate).Fingerprint));
+                    break;
+                }
+                default:
+                    Skip("skipped:" + (candidate.Geometry?.ObjectType.ToString() ?? "null"));
+                    break;
+            }
+        }
+
+        foreach (var item in raw)
+        {
+            axes.Add(new StructuralAxisMath.Axis(
+                StructuralAxisMath.MarkPrefix(item.Mark),
+                item.A,
+                item.B,
+                (item.B - item.A).Length,
+                Approximate: item.Kind == "pca"));
+        }
+        var (keptIndices, mergedAway) = StructuralAxisMath.DedupeAxes(
+            axes,
+            request.DedupeAngleDegrees,
+            request.DedupeMidpointDistance);
+
+        var members = new List<StructuralMember>(keptIndices.Count);
+        foreach (var index in keptIndices)
+        {
+            var item = raw[index];
+            members.Add(new StructuralMember(
+                item.Mark,
+                item.Layer,
+                ToPoint(item.A),
+                ToPoint(item.B),
+                Math.Round((item.B - item.A).Length, 1),
+                item.Kind,
+                [item.ObjectId],
+                [item.Fingerprint]));
+        }
+
+        var segments = members
+            .Select(member => (ToVecFromRecord(member.A), ToVecFromRecord(member.B)))
+            .ToArray();
+        var freeEnds = StructuralAxisMath.FindFreeEnds(segments, request.JoinSnapDistance)
+            .Select(free => new StructuralFreeEnd(
+                free.MemberIndex,
+                free.End,
+                ToPoint(free.Point),
+                members[free.MemberIndex].SourceObjectIds))
+            .ToArray();
+        var exactSegments = members
+            .Where(member => member.Kind != "pca")
+            .Select(member => (ToVecFromRecord(member.A), ToVecFromRecord(member.B)))
+            .ToArray();
+        var oblique = StructuralAxisMath.CountObliqueAxes(exactSegments);
+
+        var fingerprint = Hash(
+            $"structuralExtract|{units}|{request.LayerFilter}|{request.SelectedOnly}|" +
+            string.Join("\n", members.Select(member =>
+                $"{member.SourceObjectIds[0]:D}|{member.Kind}|{member.A.X:R},{member.A.Y:R},{member.A.Z:R}|" +
+                $"{member.B.X:R},{member.B.Y:R},{member.B.Z:R}")));
+        return Task.FromResult(new StructuralExtractResult(
+            units,
+            scanned,
+            members,
+            prototypes.Values.OrderBy(prototype => prototype.Layer, StringComparer.Ordinal).ToArray(),
+            freeEnds,
+            mergedAway,
+            oblique,
+            skipped,
+            truncated,
+            fingerprint));
+
+        static StructuralAxisMath.Vec3 ToVec(Point3d point) => new(point.X, point.Y, point.Z);
+        static StructuralAxisMath.Vec3 ToVecFromRecord(RhinoPoint3d point) => new(point.X, point.Y, point.Z);
+        static RhinoPoint3d ToPoint(StructuralAxisMath.Vec3 vec) =>
+            new(Math.Round(vec.X, 1), Math.Round(vec.Y, 1), Math.Round(vec.Z, 1));
+        static string LayerLeaf(string path)
+        {
+            var separator = path.LastIndexOf("::", StringComparison.Ordinal);
+            return separator < 0 ? path : path[(separator + 2)..];
+        }
+    }
+
     private static ObjectEnumeratorSettings AuditEnumerator(ObjectType? typeFilter = null) => new()
     {
         // Audits count what exists, not what is visible — hidden and locked included. Block

@@ -8,6 +8,8 @@
 #   paneling   (default) warped surface + boundary + reveal curves + attractor points
 #   structural column axis lines + perimeter beam lines + isolated test beam (Karamba)
 #   hygiene    geometry with DELIBERATE audit defects (endpoint gaps, near-duplicates)
+#   structural-solids  unit-prototype block instances + loose PCA brace + one deliberate
+#                      free end + a mesh distractor (structural_extract live gate)
 # Run via:  Rhino  /runscript="_-RunPythonScript ""scripts\dev-scene.py"" _-Exit"
 # The output path is passed through the GPTINO_SCENE_3DM environment variable
 # (RunPythonScript takes no CLI args). A '.scene-ok' marker is written on success;
@@ -93,6 +95,81 @@ def build_hygiene():
     rs.AddBlock([_marker], (0, 0, 0), "GPTinoUnusedFixture", True)
 
 
+def build_structural_solids():
+    # structural_extract fixture mirroring the real structural-company model's conventions:
+    # each section-mark layer holds ONE unit prototype solid at the origin (exactly 1000mm
+    # tall, outer dims = KS nominal x 1.02) plus InstanceReferences whose transform places,
+    # rotates and stretches it. Adds a loose slender solid (PCA path), a member with one
+    # DELIBERATELY unconnected end (the ask-back fixture), and a mesh (must be skipped and
+    # counted, never guessed at). A defect-free fixture would let the gate pass without
+    # exercising the paths it claims to prove.
+    rs.UnitSystem(2, False, True)  # millimeters
+    rs.UnitAbsoluteTolerance(0.001, True)
+
+    # --- SC1 column prototype: 306x306 outer (H-300x300 nominal x 1.02), 1000 tall -------
+    rs.AddLayer("Steel")
+    rs.AddLayer("Steel::SC1")
+    proto_col = rs.AddBox([
+        (-153, -153, 0), (153, -153, 0), (153, 153, 0), (-153, 153, 0),
+        (-153, -153, 1000), (153, -153, 1000), (153, 153, 1000), (-153, 153, 1000)])
+    rs.ObjectLayer(proto_col, "Steel::SC1")
+    rs.AddBlock([proto_col], (0, 0, 0), "SC1_proto", False)
+
+    # --- SG1 beam prototype: 204x408 outer (H-400x200 nominal x 1.02) --------------------
+    rs.AddLayer("Steel::SG1")
+    proto_beam = rs.AddBox([
+        (-102, -204, 0), (102, -204, 0), (102, 204, 0), (-102, 204, 0),
+        (-102, -204, 1000), (102, -204, 1000), (102, 204, 1000), (-102, 204, 1000)])
+    rs.ObjectLayer(proto_beam, "Steel::SG1")
+    rs.AddBlock([proto_beam], (0, 0, 0), "SG1_proto", False)
+
+    def place(block, layer, point, scale_z, angle, normal):
+        inst = rs.InsertBlock(block, point, (1, 1, scale_z), angle, normal)
+        rs.ObjectLayer(inst, layer)
+        return inst
+
+    # Four 3000mm columns on a 6000x4000 bay (prototype axis is +Z, so scale only).
+    for corner in [(0, 0, 0), (6000, 0, 0), (6000, 4000, 0), (0, 4000, 0)]:
+        place("SC1_proto", "Steel::SC1", corner, 3.0, 0, (0, 0, 1))
+
+    # Perimeter beams at z=3000: the prototype +Z axis is rotated onto the run direction.
+    place("SG1_proto", "Steel::SG1", (0, 0, 3000), 6.0, 90, (0, 1, 0))      # +X run
+    place("SG1_proto", "Steel::SG1", (6000, 0, 3000), 4.0, -90, (1, 0, 0))  # +Y run
+    place("SG1_proto", "Steel::SG1", (6000, 4000, 3000), 6.0, -90, (0, 1, 0))  # -X run
+    place("SG1_proto", "Steel::SG1", (0, 4000, 3000), 4.0, 90, (1, 0, 0))   # -Y run
+
+    # The ask-back fixture: a beam whose A end lands on a column top and whose B end
+    # (-3000, 4000, 3000) reaches NOTHING -- intended cantilever or mistake, only the
+    # human knows, so extraction must surface exactly this one free end.
+    place("SG1_proto", "Steel::SG1", (0, 4000, 3000), 3.0, -90, (0, 1, 0))
+
+    # Loose slender solid (no block): plan diagonal brace across the bay, 150x150 section.
+    # No prototype pattern applies -- the PCA path must recover the diagonal axis.
+    rs.AddLayer("Steel::BR1")
+    import math
+    ax, ay = 0.0, 0.0
+    bx, by = 6000.0, 4000.0
+    ux, uy = bx - ax, by - ay
+    ul = math.sqrt(ux * ux + uy * uy)
+    ux, uy = ux / ul, uy / ul
+    px, py = -uy, ux  # in-plane perpendicular
+    h = 75.0
+    corners = []
+    for ex, ey in ((ax, ay), (bx, by)):
+        corners.extend([
+            (ex - px * h, ey - py * h, -h), (ex + px * h, ey + py * h, -h),
+            (ex + px * h, ey + py * h, h), (ex - px * h, ey - py * h, h)])
+    brace = rs.AddBox(corners)
+    rs.ObjectLayer(brace, "Steel::BR1")
+
+    # Mesh distractor: extraction must count it as skipped, never fabricate an axis.
+    rs.AddLayer("Steel::MISC")
+    mesh = rs.AddMesh(
+        [(10000, 10000, 0), (11000, 10000, 0), (11000, 11000, 0), (10000, 11000, 0)],
+        [(0, 1, 2, 3)])
+    rs.ObjectLayer(mesh, "Steel::MISC")
+
+
 def build_paneling():
     # A gently warped NURBS surface to panelize (10 m x 8 m, mm units), plus its
     # boundary and a couple of freeform reveal curves and attractor points. This gives
@@ -134,6 +211,8 @@ try:
         build_structural()
     elif kind == "hygiene":
         build_hygiene()
+    elif kind == "structural-solids":
+        build_structural_solids()
     else:
         build_paneling()
 

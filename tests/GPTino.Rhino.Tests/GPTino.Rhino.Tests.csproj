@@ -22,6 +22,8 @@
   <ItemGroup>
     <Compile Include="../../src/GPTino.Rhino/AutomaticRestartPolicy.cs"
              Link="Production/AutomaticRestartPolicy.cs" />
+    <Compile Include="../../src/GPTino.Rhino/StructuralAxisMath.cs"
+             Link="Production/StructuralAxisMath.cs" />
     <Compile Include="../../src/GPTino.Rhino/RhinoUiThreadDispatcher.cs"
              Link="Production/RhinoUiThreadDispatcher.cs" />
     <Compile Include="../../tools/GPTino.LiveE2E/RhinoLaunchArguments.cs"

@@ -110,6 +110,9 @@ public abstract class DocumentBoundRhinoSceneAdapter<TRhinoDocument> : ICordycep
     public Task<RhinoAuditResult> AuditAsync(DocumentTarget target, RhinoAuditRequest request, CancellationToken cancellationToken = default) =>
         AuditCoreAsync(Resolve(target), request, cancellationToken);
 
+    public Task<StructuralExtractResult> ExtractStructuralAxesAsync(DocumentTarget target, StructuralExtractRequest request, CancellationToken cancellationToken = default) =>
+        ExtractStructuralAxesCoreAsync(Resolve(target), request, cancellationToken);
+
     public Task<RhinoSceneMutationResult> CreatePrimitiveAsync(DocumentTarget target, CreateRhinoPrimitiveRequest request, CancellationToken cancellationToken = default) =>
         CreatePrimitiveCoreAsync(Resolve(target), request, cancellationToken);
 
@@ -156,6 +159,7 @@ public abstract class DocumentBoundRhinoSceneAdapter<TRhinoDocument> : ICordycep
     protected abstract Task<RhinoSceneObjectState> InspectObjectCoreAsync(TRhinoDocument document, Guid objectId, CancellationToken cancellationToken);
     protected abstract Task<StampedObjectsResult> ListStampedObjectsCoreAsync(TRhinoDocument document, CancellationToken cancellationToken);
     protected abstract Task<RhinoAuditResult> AuditCoreAsync(TRhinoDocument document, RhinoAuditRequest request, CancellationToken cancellationToken);
+    protected abstract Task<StructuralExtractResult> ExtractStructuralAxesCoreAsync(TRhinoDocument document, StructuralExtractRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoSceneMutationResult> CreatePrimitiveCoreAsync(TRhinoDocument document, CreateRhinoPrimitiveRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoSceneMutationResult> UpsertObjectCoreAsync(TRhinoDocument document, UpsertRhinoObjectRequest request, CancellationToken cancellationToken);
     protected abstract Task<RhinoUpsertValidationResult> ValidateUpsertObjectCoreAsync(TRhinoDocument document, UpsertRhinoObjectRequest request, CancellationToken cancellationToken);
