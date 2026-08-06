@@ -81,6 +81,8 @@ builder.Services.AddSingleton(new ProjectArchiveReader(
     options.ResolveDataDirectory()));
 builder.Services.AddSingleton<SkillLibrary>();
 builder.Services.AddSingleton<DataLibrary>();
+builder.Services.AddSingleton<IStructuralSolver>(services =>
+    new PythonStructuralSolver(services.GetRequiredService<DataLibrary>()));
 builder.Services.AddSingleton<SessionActivityLog>();
 builder.Services.AddSingleton<IThreadInstructionComposer, InstructionAssembler>();
 builder.Services.AddSingleton<RuntimeControl>();

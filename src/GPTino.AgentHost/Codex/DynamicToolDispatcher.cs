@@ -118,6 +118,7 @@ public sealed class DynamicToolDispatcher
     private readonly SessionActivityLog? _activity;
     private readonly ProjectContextStore? _context;
     private readonly ProblemLog? _problems;
+    private readonly IStructuralSolver? _structuralSolver;
 
     public DynamicToolDispatcher(
         SessionStore store,
@@ -127,7 +128,8 @@ public sealed class DynamicToolDispatcher
         SessionActivityLog? activity = null,
         ProjectContextStore? context = null,
         ProblemLog? problems = null,
-        DataLibrary? data = null)
+        DataLibrary? data = null,
+        IStructuralSolver? structuralSolver = null)
     {
         _store = store;
         _backend = backend;
@@ -136,6 +138,7 @@ public sealed class DynamicToolDispatcher
         _activity = activity;
         _context = context;
         _problems = problems;
+        _structuralSolver = structuralSolver;
         _artifactRoot = Path.Combine(options.ResolveDataDirectory(), "artifacts");
         Directory.CreateDirectory(_artifactRoot);
     }
@@ -166,6 +169,8 @@ public sealed class DynamicToolDispatcher
                     await _backend.ReadRhinoAuditAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
                 "structural_extract" => DynamicToolResult.Ok(
                     await ExtractStructuralAsync(call, cancellationToken).ConfigureAwait(false)),
+                "structural_solve" => DynamicToolResult.Ok(
+                    await SolveStructuralAsync(call, cancellationToken).ConfigureAwait(false)),
                 "rhino_layers" => DynamicToolResult.Ok(
                     await _backend.ReadRhinoLayersAsync(cancellationToken).ConfigureAwait(false)),
                 "artifact_read" => DynamicToolResult.Ok(await ReadArtifactAsync(call, cancellationToken).ConfigureAwait(false)),
@@ -280,6 +285,7 @@ public sealed class DynamicToolDispatcher
         "data_flow_read" => "Reading the Rhino-GH data-flow ledger",
         "rhino_audit" => "Auditing the Rhino document",
         "structural_extract" => "Extracting structural member axes",
+        "structural_solve" => "Solving the structural model (PyNite)",
         "rhino_layers" => "Reading the Rhino layer table",
         "inspect_outputs" => "Inspecting component outputs",
         "artifact_read" => $"Reading draft {TryString(call.Arguments, "path")}",
@@ -506,6 +512,177 @@ public sealed class DynamicToolDispatcher
             membersArtifact = artifactPath,
         };
     }
+
+    /// <summary>
+    /// structural_solve: composes the solver input from the extraction artifact + the shipped KS
+    /// catalog + the user's ask-back answers, runs the SHIPPED out-of-process PyNite solver, and
+    /// returns the verdict summary. Failed members ride the summary WITH source object ids so the
+    /// agent can point at the real solids; the full report (every check, viz nodes) goes to the
+    /// structural/results.json artifact.
+    /// </summary>
+    private async Task<object> SolveStructuralAsync(DynamicToolCall call, CancellationToken cancellationToken)
+    {
+        if (_structuralSolver is null)
+        {
+            throw new InvalidOperationException("The structural solver is not available on this host.");
+        }
+        var session = await RequireCallingSessionAsync(call.ThreadId, cancellationToken).ConfigureAwait(false);
+        var membersArtifact = TryString(call.Arguments, "membersArtifact") ?? "structural/members.json";
+        var artifactFile = ResolveArtifact(session.Id, membersArtifact);
+        if (!File.Exists(artifactFile))
+        {
+            throw new InvalidOperationException(
+                $"Extraction artifact '{membersArtifact}' was not found — run structural_extract first.");
+        }
+        using var artifact = JsonDocument.Parse(
+            await File.ReadAllTextAsync(artifactFile, cancellationToken).ConfigureAwait(false));
+        var extraction = artifact.RootElement.GetProperty("extraction");
+
+        // Members: extraction stores endpoints as {x,y,z}; the solver contract is arrays.
+        var members = new List<object>();
+        foreach (var member in extraction.GetProperty("members").EnumerateArray())
+        {
+            var a = member.GetProperty("a");
+            var b = member.GetProperty("b");
+            members.Add(new
+            {
+                mark = member.GetProperty("mark").GetString(),
+                a = new[] { a.GetProperty("x").GetDouble(), a.GetProperty("y").GetDouble(), a.GetProperty("z").GetDouble() },
+                b = new[] { b.GetProperty("x").GetDouble(), b.GetProperty("y").GetDouble(), b.GetProperty("z").GetDouble() },
+                kind = member.GetProperty("kind").GetString(),
+                sourceObjectIds = member.GetProperty("sourceObjectIds"),
+            });
+        }
+        if (members.Count == 0)
+        {
+            throw new InvalidOperationException("The extraction artifact holds no members to solve.");
+        }
+
+        // Sections: the FULL catalog rows are injected — the Python side never touches host paths.
+        var sections = new SortedDictionary<string, object>(StringComparer.Ordinal);
+        string? defaultSection = null;
+        var catalogPayload = JsonSerializer.SerializeToElement(
+            RequireData().Read("structural/sections-ks.json"), JsonDefaults.Options);
+        using (var catalog = JsonDocument.Parse(catalogPayload.GetProperty("content").GetString() ?? "{}"))
+        {
+            foreach (var section in catalog.RootElement.GetProperty("sections").EnumerateArray())
+            {
+                var name = section.GetProperty("name").GetString() ?? string.Empty;
+                sections[name] = new
+                {
+                    H = section.GetProperty("H").GetDouble(),
+                    B = section.GetProperty("B").GetDouble(),
+                    tw = section.GetProperty("tw").GetDouble(),
+                    tf = section.GetProperty("tf").GetDouble(),
+                    A = section.GetProperty("A").GetDouble(),
+                    Ix = section.GetProperty("Ix").GetDouble(),
+                    Iy = section.GetProperty("Iy").GetDouble(),
+                };
+                defaultSection ??= name;
+                if (name == "H-300x300x10x15")
+                {
+                    defaultSection = name;
+                }
+            }
+        }
+
+        // Mark → section: the extraction's geometric guesses, overridable per mark by the answers
+        // (the user may know the schedule better than the ×1.02 heuristic).
+        var markSections = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        if (artifact.RootElement.TryGetProperty("sectionGuesses", out var guesses))
+        {
+            foreach (var guess in guesses.EnumerateObject())
+            {
+                var name = guess.Value.GetProperty("section").GetString();
+                if (name is not null)
+                {
+                    markSections[guess.Name] = name;
+                }
+            }
+        }
+        var answers = call.Arguments.TryGetProperty("answers", out var answersElement) &&
+            answersElement.ValueKind == JsonValueKind.Object
+                ? answersElement
+                : default;
+        if (answers.ValueKind == JsonValueKind.Object &&
+            answers.TryGetProperty("markSections", out var overrides) &&
+            overrides.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var item in overrides.EnumerateObject())
+            {
+                if (item.Value.ValueKind == JsonValueKind.String)
+                {
+                    markSections[item.Name] = item.Value.GetString()!;
+                }
+            }
+        }
+
+        var options = new Dictionary<string, object?>(StringComparer.Ordinal);
+        if (answers.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var name in new[]
+                     {
+                         "repairFreeEnds", "cantileverPoints", "extraDistributedKnPerM",
+                         "deflectionLimitRatio", "columnMarkPrefixes", "snapMm", "gridMm", "repairSnapMm",
+                     })
+            {
+                if (answers.TryGetProperty(name, out var value))
+                {
+                    options[name] = value.Clone();
+                }
+            }
+        }
+
+        // NO naming policy here: the solver contract uses the catalog's exact field casing
+        // ("H", "Ix"), and the Web default would silently camelCase them into KeyErrors.
+        var input = JsonSerializer.Serialize(
+            new { members, sections, markSections, defaultSection, options },
+            SolverInputJson);
+        var reportJson = await _structuralSolver.SolveAsync(input, cancellationToken).ConfigureAwait(false);
+        // Clone detaches the element from its document: pieces of this report ride the returned
+        // summary, which is serialized AFTER this method's scope would have disposed the document.
+        JsonElement root;
+        using (var report = JsonDocument.Parse(reportJson))
+        {
+            root = report.RootElement.Clone();
+        }
+        if (root.TryGetProperty("error", out var error))
+        {
+            throw new InvalidOperationException($"The structural solver refused the model: {error.GetString()}");
+        }
+
+        const string resultsArtifact = "structural/results.json";
+        await WriteManagedArtifactAsync(session.Id, resultsArtifact, reportJson, cancellationToken)
+            .ConfigureAwait(false);
+
+        var failed = root.GetProperty("failedMembers");
+        return new
+        {
+            solveSeconds = root.GetProperty("solveSeconds").GetDouble(),
+            edgesSolved = root.GetProperty("edgesSolved").GetInt32(),
+            nodes = root.GetProperty("nodes").GetInt32(),
+            supports = root.GetProperty("supports").GetInt32(),
+            islandEdgesDropped = root.GetProperty("islandEdgesDropped").GetInt32(),
+            islandMembers = root.GetProperty("islandMembers"),
+            snappedFreeEnds = root.GetProperty("snappedFreeEnds").GetInt32(),
+            tJunctionSplits = root.GetProperty("tJunctionSplits").GetInt32(),
+            repairedFreeEnds = root.GetProperty("repairedFreeEnds").GetInt32(),
+            freeEndsRemaining = root.GetProperty("freeEndsRemaining"),
+            totalLoadKn = root.GetProperty("totalLoadKn").GetDouble(),
+            sumReactionsFzKn = root.GetProperty("sumReactionsFzKn").GetDouble(),
+            equilibriumErrorPercent = root.GetProperty("equilibriumErrorPercent").GetDouble(),
+            maxDisplacementMm = root.GetProperty("maxDisplacementMm").GetDouble(),
+            maxDisplacementXyzMm = root.GetProperty("maxDisplacementXyzMm"),
+            deflectionLimit = root.GetProperty("deflectionLimit").GetString(),
+            memberChecks = root.GetProperty("memberChecks"),
+            // Top failures only, WITH ids — the agent points, the artifact holds the rest.
+            worstMembers = failed.EnumerateArray().Take(5).ToArray(),
+            missingSectionMarks = root.GetProperty("missingSectionMarks"),
+            resultsArtifact,
+        };
+    }
+
+    private static readonly JsonSerializerOptions SolverInputJson = new();
 
     /// <summary>(name, H, B) rows of the KS section catalog, tolerant of a missing/foreign file.</summary>
     private List<(string Name, double H, double B)> LoadSectionCatalog()

@@ -184,6 +184,59 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "structural_solve",
+                    "Solve the extracted frame with the SHIPPED PyNite solver (out of process, " +
+                    "deterministic — you call it, you never re-implement it in a script). Reads the " +
+                    "structural_extract artifact, merges node grid, snaps drawn-to-face joints, splits " +
+                    "T-junctions, auto-detects base supports, applies self-weight (+ any line loads the " +
+                    "user gave), and checks every member's deflection against L/limit. BEFORE calling: " +
+                    "resolve the free ends structural_extract reported — ask the user (focus chips!) " +
+                    "which are intended cantilevers (pass them as answers.cantileverPoints) and whether " +
+                    "to snap-repair the rest (answers.repairFreeEnds). The summary returns verdicts and " +
+                    "the WORST members with their source object ids — point at them, don't recite " +
+                    "coordinates. Full per-member checks and displacement field land in the " +
+                    "structural/results.json artifact. Supports are a stated ASSUMPTION (fixed bases " +
+                    "detected from geometry) — name it in your report; podium/boundary details need " +
+                    "drawings the model does not carry.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            membersArtifact = new { type = "string", description = "Extraction artifact path; default structural/members.json." },
+                            answers = new
+                            {
+                                type = "object",
+                                description = "The user's ask-back answers.",
+                                properties = new
+                                {
+                                    repairFreeEnds = new { type = "boolean", description = "User approved wide-radius snap repair of unconfirmed free ends." },
+                                    cantileverPoints = new
+                                    {
+                                        type = "array",
+                                        description = "User-confirmed intended cantilever endpoints [x,y,z] (never repaired).",
+                                        items = new { type = "array", items = new { type = "number" }, minItems = 3, maxItems = 3 },
+                                    },
+                                    extraDistributedKnPerM = new
+                                    {
+                                        type = "object",
+                                        description = "Additional line load per mark in kN/m (user-supplied dead+live, lumped).",
+                                        additionalProperties = new { type = "number" },
+                                    },
+                                    markSections = new
+                                    {
+                                        type = "object",
+                                        description = "Section override per mark when the user knows the schedule (e.g. {\"SG1\":\"H-400x200x8x13\"}).",
+                                        additionalProperties = new { type = "string" },
+                                    },
+                                    deflectionLimitRatio = new { type = "number", description = "Member check limit L/ratio; default 250." },
+                                },
+                                additionalProperties = false,
+                            },
+                        },
+                        additionalProperties = false
+                    }),
+                Function(
                     "rhino_layers",
                     "Read the bound Rhino document's full layer table (path, parent, color, visibility, lock, " +
                     "object count including hidden and block members, whether it has children, per-layer " +

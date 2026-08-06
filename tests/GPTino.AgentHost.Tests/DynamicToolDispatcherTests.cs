@@ -166,14 +166,105 @@ public sealed class DynamicToolDispatcherTests
     }
 
     private static async Task<(DynamicToolDispatcher Dispatcher, SessionStore Store, FakeLiveDocumentBackend Backend)>
-        CreateDispatcherAsync(TestDirectory directory, DataLibrary? data = null)
+        CreateDispatcherAsync(TestDirectory directory, DataLibrary? data = null, IStructuralSolver? solver = null)
     {
         var store = new SessionStore(directory.GetPath("state.db"));
         await store.InitializeAsync();
         var backend = new FakeLiveDocumentBackend();
         var options = new AgentHostOptions { DataDirectory = directory.GetPath("data") };
         var problems = new ProblemLog(options, NullLogger<ProblemLog>.Instance);
-        return (new DynamicToolDispatcher(store, backend, options, problems: problems, data: data), store, backend);
+        return (
+            new DynamicToolDispatcher(
+                store, backend, options, problems: problems, data: data, structuralSolver: solver),
+            store,
+            backend);
+    }
+
+    private sealed class FakeStructuralSolver : IStructuralSolver
+    {
+        public string? LastInputJson { get; private set; }
+
+        public Task<string> SolveAsync(string inputJson, CancellationToken cancellationToken)
+        {
+            LastInputJson = inputJson;
+            return Task.FromResult("""
+                {
+                  "solveSeconds": 0.1, "membersIn": 1, "edgesSolved": 1, "islandEdgesDropped": 0,
+                  "islandMembers": [], "nodes": 2, "supports": 2, "snappedFreeEnds": 0,
+                  "tJunctionSplits": 0, "repairedFreeEnds": 0, "freeEndsRemaining": [],
+                  "missingSectionMarks": {}, "totalLoadKn": 2.8, "sumReactionsFzKn": 2.8,
+                  "equilibriumErrorPercent": 0.0, "maxDisplacementMm": 0.2,
+                  "maxDisplacementXyzMm": [1500.0, 0.0, 3000.0], "deflectionLimit": "L/250",
+                  "memberChecks": { "checked": 1, "passed": 0, "failed": 1 },
+                  "failedMembers": [{ "mark": "SC1", "ratio": 1.4, "sourceObjectIds": ["a0b1c2d3-0001-4e4e-9f9f-000000000001"] }],
+                  "checks": [], "viz": { "nodes": {}, "edges": [] }
+                }
+                """);
+        }
+    }
+
+    /// <summary>
+    /// structural_solve composes the solver input from the extraction artifact (endpoint records
+    /// → arrays), injects the FULL KS catalog rows and the section guesses, threads the user's
+    /// answers through, writes the results artifact, and returns worst members WITH source ids.
+    /// </summary>
+    [Fact]
+    public async Task StructuralSolveComposesInputFromArtifactAndReturnsVerdictSummary()
+    {
+        using var directory = new TestDirectory();
+        var dataRoot = directory.GetPath("shipped-data");
+        Directory.CreateDirectory(Path.Combine(dataRoot, "structural"));
+        await File.WriteAllTextAsync(
+            Path.Combine(dataRoot, "structural", "sections-ks.json"),
+            """
+            {"sections":[
+              {"name":"H-300x300x10x15","H":300,"B":300,"tw":10,"tf":15,"A":119.8,"Ix":20400,"Iy":6750}
+            ]}
+            """);
+        var solver = new FakeStructuralSolver();
+        var (dispatcher, store, _) = await CreateDispatcherAsync(directory, new DataLibrary(dataRoot), solver);
+        var session = await BindSessionAsync(store, "solve-thread");
+
+        // The extraction step ran first: run the real structural_extract path to plant the artifact.
+        var extract = await dispatcher.DispatchAsync(
+            Call("structural_extract", "{}", threadId: "solve-thread"),
+            CancellationToken.None);
+        Assert.True(extract.Success, extract.Text);
+
+        var result = await dispatcher.DispatchAsync(
+            Call(
+                "structural_solve",
+                """{"answers":{"repairFreeEnds":true,"cantileverPoints":[[0.0,0.0,3000.0]]}}""",
+                threadId: "solve-thread"),
+            CancellationToken.None);
+
+        Assert.True(result.Success, result.Text);
+        using var input = JsonDocument.Parse(solver.LastInputJson!);
+        var inputRoot = input.RootElement;
+        // Endpoint records became arrays, and the catalog row went in whole.
+        Assert.Equal(0.0, inputRoot.GetProperty("members")[0].GetProperty("a")[0].GetDouble());
+        Assert.Equal(3000.0, inputRoot.GetProperty("members")[0].GetProperty("b")[2].GetDouble());
+        Assert.Equal(
+            20400.0,
+            inputRoot.GetProperty("sections").GetProperty("H-300x300x10x15").GetProperty("Ix").GetDouble());
+        // The extraction's section guess became the mark mapping.
+        Assert.Equal(
+            "H-300x300x10x15",
+            inputRoot.GetProperty("markSections").GetProperty("SC1").GetString());
+        // The user's answers reached the solver options verbatim.
+        Assert.True(inputRoot.GetProperty("options").GetProperty("repairFreeEnds").GetBoolean());
+        Assert.Equal(
+            3000.0,
+            inputRoot.GetProperty("options").GetProperty("cantileverPoints")[0][2].GetDouble());
+
+        using var payload = JsonDocument.Parse(result.Text);
+        var summary = payload.RootElement;
+        Assert.Equal(1, summary.GetProperty("memberChecks").GetProperty("failed").GetInt32());
+        Assert.Equal(
+            "a0b1c2d3-0001-4e4e-9f9f-000000000001",
+            summary.GetProperty("worstMembers")[0].GetProperty("sourceObjectIds")[0].GetString());
+        Assert.Equal("structural/results.json", summary.GetProperty("resultsArtifact").GetString());
+        Assert.True(File.Exists(directory.GetPath($"data/artifacts/{session.Id:N}/structural/results.json")));
     }
 
     /// <summary>
