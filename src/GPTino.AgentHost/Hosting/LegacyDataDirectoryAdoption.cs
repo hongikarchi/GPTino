@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GPTino.AgentHost.Data;
+using GPTino.AgentHost.Security;
 
 namespace GPTino.AgentHost.Hosting;
 
@@ -250,6 +251,10 @@ public static partial class LegacyDataDirectoryAdoption
             {
                 if (Directory.Exists(finalPath))
                 {
+                    // Both paths are fixed DurableDirectoryNames under the adopting root, but the
+                    // recursive delete still refuses to run through any reparse point so a planted
+                    // junction cannot redirect it outside the root.
+                    ConstrainedPath.RejectExistingReparsePoints(destinationRoot, finalPath, "Adoption");
                     Directory.Delete(finalPath, recursive: true);
                 }
                 Directory.Move(stagedPath, finalPath);
@@ -298,10 +303,17 @@ public static partial class LegacyDataDirectoryAdoption
     {
         try
         {
-            if (Directory.Exists(path))
+            if (!Directory.Exists(path))
             {
-                Directory.Delete(path, recursive: true);
+                return;
             }
+            // Cleanup targets are staging/committed paths this class itself composed under the
+            // adopting root; still never recursively delete through a junction — skip instead.
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                return;
+            }
+            Directory.Delete(path, recursive: true);
         }
         catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
         {

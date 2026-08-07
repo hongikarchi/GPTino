@@ -642,7 +642,14 @@ internal static partial class Program
             var guardedBuild = relative == "scripts/build-package.ps1" &&
                                text.Contains("Assert-GeneratedPath", StringComparison.Ordinal) &&
                                text.Contains("artifactPrefix", StringComparison.Ordinal);
-            if (!guardedBuild)
+            // prune-artifacts.ps1 deletes only through its Add-Target gate, which resolves every
+            // candidate to a full path, throws unless it is inside the artifacts tree, and skips
+            // reparse points so a stray junction cannot redirect the delete. Require those guard
+            // markers verbatim so the allowance dies the moment the guard is weakened or removed.
+            var guardedPrune = relative == "scripts/prune-artifacts.ps1" &&
+                               text.Contains("Refusing to prune outside the artifacts tree", StringComparison.Ordinal) &&
+                               text.Contains("ReparsePoint", StringComparison.Ordinal);
+            if (!guardedBuild && !guardedPrune)
             {
                 throw new InvalidOperationException($"Unguarded recursive Remove-Item found in {relative}.");
             }
@@ -666,7 +673,15 @@ internal static partial class Program
                     relative == "src/GPTino.AgentHost/Runtime/LiveDocumentBackend.cs" &&
                     text.Contains("ConstrainedPath.RejectExistingReparsePoints", StringComparison.Ordinal) &&
                     text.Contains(".gptino-owned-reserved-job", StringComparison.Ordinal);
-                if (!guardedReservationCleanup)
+                // Legacy-root adoption deletes only the fixed DurableDirectoryNames it stages under
+                // the adopting root, walks the path for reparse points before the replace-delete,
+                // and its quiet cleanup skips junctions outright. Marker-pinned like the entry above
+                // so weakening the guard revokes the allowance.
+                var guardedAdoption =
+                    relative == "src/GPTino.AgentHost/Hosting/LegacyDataDirectoryAdoption.cs" &&
+                    text.Contains("ConstrainedPath.RejectExistingReparsePoints", StringComparison.Ordinal) &&
+                    text.Contains("FileAttributes.ReparsePoint", StringComparison.Ordinal);
+                if (!guardedReservationCleanup && !guardedAdoption)
                 {
                     throw new InvalidOperationException(
                         $"Unguarded recursive Directory.Delete found in {relative}.");
