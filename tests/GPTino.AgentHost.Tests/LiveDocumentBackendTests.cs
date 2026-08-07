@@ -1804,7 +1804,7 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
 
     public SessionStore Store { get; }
 
-    public LiveDocumentBackend Backend { get; }
+    public LiveDocumentBackend Backend { get; private set; }
 
     public AgentHostOptions Options { get; }
 
@@ -1839,6 +1839,23 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
     // With IncludeDeleteChain: replaces the linear wires with a first <-> second cycle (third stays
     // unwired) so the reorderer's cycle defense can be exercised.
     public bool IncludeDeleteCycle { get; set; }
+
+    // Opt-in mutable canvas state for ledger-persistence tests: once set (typically by a
+    // responseFactory observing the canvas.create write), snapshots include one extra component
+    // whose fingerprint is CreatedComponentFingerprint — flip that value to simulate a manual
+    // Grasshopper edit between runs.
+    public bool IncludeCreatedComponent { get; set; }
+
+    public Guid CreatedComponentId { get; } = Guid.Parse("7b7f2c3d-1f7e-4a41-9c69-2d47f2a5b9c1");
+
+    public string CreatedComponentFingerprint { get; set; } = "created-v1";
+
+    // Rhino 8's CPython3 script component type id (mirrors LiveDocumentBackend
+    // .Cpython3ScriptComponentTypeId). The created component reports this type so commit-time
+    // ledger recording treats it as a script component and records its Source/Io/Value baseline
+    // rows from a python.inspect — the responder must serve python.inspect for that to land.
+    public static readonly Guid ScriptComponentTypeId =
+        Guid.Parse("719467e6-7cf5-4848-99b0-c5dd57e5442c");
 
     public Guid? LastRegistrationMessageId { get; private set; }
 
@@ -2055,12 +2072,57 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
         var wires = WireFirstTwoObjects && IncludeNumberSliderValue
             ? new[] { new WireState(CanvasObjectId, Guid.NewGuid(), SecondCanvasObjectId, Guid.NewGuid()) }
             : Array.Empty<WireState>();
+        if (IncludeCreatedComponent)
+        {
+            objects = objects.Append(new CanvasObjectState(
+                CreatedComponentId,
+                ScriptComponentTypeId,
+                "Created",
+                new CanvasPoint(220, 20),
+                new CanvasSize(90, 40),
+                CreatedComponentFingerprint)).ToArray();
+        }
         return new(
             target.GrasshopperDocumentId!.Value,
             "document-v1",
             objects,
             wires,
             Array.Empty<GroupState>());
+    }
+
+    /// <summary>
+    /// Simulates an AgentHost restart over the SAME data root: the current backend (and bridge
+    /// connection) is torn down, a fresh backend instance starts against the same stores and pipe
+    /// endpoint, and the same document pair re-registers. Callers start their own responder after
+    /// this returns. In-memory-only state is gone by construction — exactly what the durable
+    /// resource-ledger tests need to prove hydration.
+    /// </summary>
+    public async Task RestartBackendAsync(IReadOnlyList<BridgeAdapterOwner>? availableAdapters = null)
+    {
+        await DisconnectClientAsync();
+        await Backend.StopAsync(CancellationToken.None);
+        Backend.Dispose();
+        Environment.SetEnvironmentVariable("GPTINO_BRIDGE_SECRET", Secret.ExportBase64());
+        try
+        {
+            Backend = new LiveDocumentBackend(
+                Store,
+                Options,
+                new EventHub(),
+                NullLogger<LiveDocumentBackend>.Instance);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GPTINO_BRIDGE_SECRET", null);
+        }
+        await Backend.StartAsync(CancellationToken.None);
+        await ConnectAsync();
+        var response = await RegisterAsync(availableAdapters: availableAdapters);
+        if (response.Kind != BridgeMessageKind.Response)
+        {
+            throw new InvalidOperationException(
+                $"Test bridge re-registration failed: {response.ErrorCode ?? response.PayloadType}");
+        }
     }
 
     public FakeBridgeResponder StartResponder(

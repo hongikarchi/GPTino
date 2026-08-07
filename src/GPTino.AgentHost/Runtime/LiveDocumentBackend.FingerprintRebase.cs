@@ -24,16 +24,32 @@ namespace GPTino.AgentHost.Runtime;
 // gptino:auto expectation resolution and self-stale concrete-fingerprint rebase against the session resource ledger.
 public sealed partial class LiveDocumentBackend
 {
+    // The in-memory ledger key: the durable per-document scoping ("{docKey}|{kind}:{id}:{field}")
+    // applied to the flat runtime map too. Two documents with identical component InstanceGuids
+    // (a file-copied .gh is common practice) must never see each other's baselines — a session
+    // that only ever wrote a resource in doc A has no self-sequential claim on the same-id
+    // resource in doc B, so the lookup itself has to be doc-scoped, not just the durable rows.
+    internal static string ResourceLedgerKey(string docKey, ResourceAddress resource) =>
+        $"{ResourceLedgerDocPrefix(docKey)}{resource.Kind}:{resource.Id}:{resource.Field}";
+
+    internal static string ResourceLedgerKey(string docKey, string resourceKey) =>
+        $"{ResourceLedgerDocPrefix(docKey)}{resourceKey}";
+
+    // Canonical (lowercase) doc scope prefix; '|' cannot occur in a docKey (a 16-hex-char hash).
+    internal static string ResourceLedgerDocPrefix(string docKey) =>
+        $"{docKey.Trim().ToLowerInvariant()}|";
+
     // Resolves gptino:auto read/write expectations against the live snapshot, gated by the per-session
     // resource ledger: an auto expectation is filled with the live fingerprint ONLY when THIS session wrote
-    // the resource and it has not changed since (self-sequential). A foreign-session write, a manual
-    // Grasshopper edit, an absent resource, or a resource this session never wrote is REFUSED and returned as
-    // a conflict so the existing Blocked path stops it. Runs on the single broker worker thread, so the
-    // ledger read cannot race a commit.
+    // the resource IN THIS DOCUMENT (the ledger is keyed per docKey) and it has not changed since
+    // (self-sequential). A foreign-session write, a manual Grasshopper edit, an absent resource, or a
+    // resource this session never wrote is REFUSED and returned as a conflict so the existing Blocked path
+    // stops it. Runs on the single broker worker thread, so the ledger read cannot race a commit.
     internal static (ChangeSet Resolved, IReadOnlyList<string> Conflicts) ResolveAutoExpectations(
         ChangeSet changeSet,
         StateSnapshot liveState,
         Guid sessionId,
+        string docKey,
         IReadOnlyDictionary<string, ResourceLedgerEntry> resourceLedger)
     {
         if (!changeSet.ReadSet.Concat(changeSet.WriteSet).Any(expectation => expectation.IsAuto))
@@ -42,6 +58,7 @@ public sealed partial class LiveDocumentBackend
         }
 
         var conflicts = new List<string>();
+        var docPrefix = ResourceLedgerDocPrefix(docKey);
 
         ResourceExpectation Resolve(ResourceExpectation expectation)
         {
@@ -59,21 +76,31 @@ public sealed partial class LiveDocumentBackend
                     "Create it first, or supply a concrete fingerprint.");
                 return expectation;
             }
-            if (!resourceLedger.TryGetValue(key, out var ledger))
+            if (!resourceLedger.TryGetValue(docPrefix + key, out var ledger))
             {
-                // Fallback: a Python/Rhino sub-domain may lack its own ledger row (e.g. the first setComponentIo
-                // right after createComponent), yet the parent component/object this session created still has a
-                // ledger row. If this session owns the parent AND the parent's own fingerprint is unchanged
-                // (no foreign session write and no manual edit touched the component or any sub-domain since),
-                // resolve the sub-domain auto to its own live fingerprint. A foreign change moves the parent
-                // fingerprint, so this still declines.
-                var parent = ParentResource(expectation.Resource);
+                // Fallback: a sub-domain may lack its own ledger row, yet the parent component/object this
+                // session created still has one. If this session owns the parent AND the parent's own
+                // fingerprint is unchanged, resolve the sub-domain auto to its own live fingerprint. This is
+                // ONLY sound for sub-domains whose manual/foreign edits are guaranteed to move the parent
+                // fingerprint (see ParentFallbackDetectsManualEdits) — for the others, a foreign or manual
+                // edit leaves the parent untouched and the fallback would blind-fill over it (live gate
+                // 20260807T175523Z-d1884d03: a foreign source write auto-filled through the parent). Those
+                // kinds require a DIRECT ledger row, recorded at component creation and on every script
+                // write by UpdateResourceLedgerAsync. The scan only ever considers entries of THIS document
+                // (same docKey prefix): a parent row recorded in a file-copied sibling document proves
+                // nothing about this one.
+                var parent = ParentFallbackDetectsManualEdits(expectation.Resource.Kind)
+                    ? ParentResource(expectation.Resource)
+                    : null;
                 if (parent is not null)
                 {
                     var parentLive = liveState.Resources.FirstOrDefault(item =>
                         ExactDomainOverlaps(item.Resource, parent));
-                    var parentEntry = resourceLedger.Values.FirstOrDefault(entry =>
-                        entry.SessionId == sessionId && ExactDomainOverlaps(entry.Resource, parent));
+                    var parentEntry = resourceLedger
+                        .Where(pair => pair.Key.StartsWith(docPrefix, StringComparison.Ordinal))
+                        .Select(pair => pair.Value)
+                        .FirstOrDefault(entry =>
+                            entry.SessionId == sessionId && ExactDomainOverlaps(entry.Resource, parent));
                     if (parentLive is not null &&
                         parentEntry.Resource is not null &&
                         string.Equals(parentEntry.Fingerprint, parentLive.Fingerprint, StringComparison.Ordinal))
@@ -119,8 +146,9 @@ public sealed partial class LiveDocumentBackend
     /// gptino:auto cannot fill, so a session that already advanced a resource's fingerprint with its
     /// OWN prior commit then submits a stale base and Blocks — the dominant conflict in the field.
     /// Using the exact same safety test as <see cref="ResolveAutoExpectations"/> (the current live
-    /// fingerprint equals what THIS session last wrote, per the ledger — no foreign write, no manual
-    /// drift), we rebase both the writeSet expectation AND the operation payload fingerprint to live.
+    /// fingerprint equals what THIS session last wrote IN THIS DOCUMENT, per the doc-scoped ledger —
+    /// no foreign write, no manual drift), we rebase both the writeSet expectation AND the operation
+    /// payload fingerprint to live.
     /// A foreign/drifted resource is left untouched, so <see cref="ConflictDetector"/> still Blocks a
     /// genuine conflict. Returns the (possibly) rewritten change set and operations plus the rebased
     /// resource keys for logging.
@@ -131,6 +159,7 @@ public sealed partial class LiveDocumentBackend
             IReadOnlyList<PreparedOperation> operations,
             StateSnapshot liveState,
             Guid sessionId,
+            string docKey,
             IReadOnlyDictionary<string, ResourceLedgerEntry> resourceLedger)
     {
         var rebased = new List<(ResourceAddress Resource, string StaleFingerprint, string LiveFingerprint)>();
@@ -149,7 +178,7 @@ public sealed partial class LiveDocumentBackend
             {
                 continue; // absent, unmanaged, or not stale — nothing to rebase here.
             }
-            var key = $"{expectation.Resource.Kind}:{expectation.Resource.Id}:{expectation.Resource.Field}";
+            var key = ResourceLedgerKey(docKey, expectation.Resource);
             // Rebase ONLY when the live state is this session's own last write (no foreign write, no
             // manual drift) — identical to the gptino:auto self-sequential test.
             if (!resourceLedger.TryGetValue(key, out var ledger) ||
@@ -231,10 +260,28 @@ public sealed partial class LiveDocumentBackend
         return document.RootElement.Clone();
     }
 
+    // Whether the parent-ownership fallback can prove the ABSENCE of a manual/foreign edit for this
+    // sub-domain: "parent fingerprint unchanged" is the fallback's only drift evidence, so the fallback
+    // is sound ONLY where a manual edit of the sub-domain is guaranteed to move the parent fingerprint.
+    // Verified against the adapters' fingerprint composition:
+    // - GrasshopperComponent structure fingerprint hashes InstanceGuid|ComponentGuid|NickName|sockets
+    //   (names, nicknames, type hints, access, incoming wires — GrasshopperCanvasFoundationAdapter
+    //   .ToObjectState). A manual socket/schema/typing edit (Io) therefore moves it: fallback sound.
+    //   Source text and value/output state are NOT hashed there — a manual source or value edit leaves
+    //   the parent untouched, so Source/Value must have a direct ledger row (no fallback). Layout has
+    //   its own row in every snapshot (recorded from creation) and a manual drag moves only the layout
+    //   fingerprint: no fallback either.
+    // - RhinoObject's fingerprint hashes id|logicalId|geometryJson|attributesJson
+    //   (RhinoSceneFoundationAdapter.ToState), so BOTH sub-domain manual edits move it: fallback sound.
+    private static bool ParentFallbackDetectsManualEdits(ResourceKind kind) => kind is
+        ResourceKind.GrasshopperComponentIo or
+        ResourceKind.RhinoObjectGeometry or
+        ResourceKind.RhinoObjectAttributes;
+
     // The parent component/object of a Python/Rhino sub-domain, or null when the resource is already a
-    // top-level domain. A freshly created component has no source/io/value snapshot rows yet, but its parent
-    // exists; the parent's own fingerprint moves if anyone (foreign session or manual edit) touches the
-    // component or its sub-domains, so the parent's unchanged fingerprint is a sound self-ownership proof.
+    // top-level domain. Only consulted for kinds where ParentFallbackDetectsManualEdits holds — for
+    // those, a freshly created component has no io snapshot row yet, but its parent exists, and the
+    // parent's unchanged fingerprint is a sound self-ownership proof.
     private static ResourceAddress? ParentResource(ResourceAddress resource) => resource.Kind switch
     {
         ResourceKind.GrasshopperComponentSource or ResourceKind.GrasshopperComponentIo or

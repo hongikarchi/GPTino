@@ -248,10 +248,12 @@ Speed discipline (mandatory):
   (committed or applied), so the whole script chain submits back to back with no re-reads. Two exceptions
   still need the concrete fingerprint from the previous result (in both payload and writeSet): value/geometry
   writes (setNumberSlider, moveComponent, delete, Rhino transform/upsert) and create targets ("gptino:absent").
-- "gptino:auto" fills a value only when THIS session already wrote the resource in THIS runtime and it is
-  unchanged — the ledger does not survive restarts and never transfers between sessions. A component you
-  authored yesterday, in another session, or in a recovered document is PRE-EXISTING now: its first touch
-  must carry a concrete fingerprint. After ANY auto-decline or stale block, the very next submission MUST
+- "gptino:auto" fills a value only when THIS session was the last to write the resource and it is unchanged
+  since this session last wrote it (persisted across restarts) — the ledger never transfers between
+  sessions or documents (a file-copied definition's identical component ids count as never-written). A
+  component another session authored, or one edited by hand (including while the app was
+  closed), is PRE-EXISTING now: its first touch must carry a concrete fingerprint. After ANY
+  auto-decline or stale block, the very next submission MUST
   use the exact "Current fingerprint" value quoted in the decline message — never resubmit gptino:auto for
   that resource, never resubmit the old expected value, and never re-read the whole snapshot for it. Two
   identical declines in a row mean you ignored the quoted value: stop and re-read the message.

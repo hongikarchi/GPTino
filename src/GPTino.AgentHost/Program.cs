@@ -629,7 +629,9 @@ api.MapDelete("/sessions/{id:guid}", async (
 {
     await sessionStore.SetSessionDeletedAsync(id, deleted: true, cancellationToken);
     // A hidden session can never be resumed from the panel, so its recovery-halt latch (and the
-    // other session-scoped runtime latches) must not outlive the delete.
+    // other session-scoped runtime latches) must not outlive the delete. Runtime state ONLY: the
+    // session's resource-ledger baselines stay (in memory and durably) so a later restore comes
+    // back with gptino:auto working — ledger removal happens only on purge.
     liveBackend.ForgetSessionRuntimeState(id);
     await queueControl.RefreshScheduleAsync(cancellationToken);
     events.Publish();
@@ -661,7 +663,9 @@ api.MapDelete("/sessions/{id:guid}/purge", async (
     CancellationToken cancellationToken) =>
 {
     await sessionStore.PurgeSessionAsync(id, cancellationToken);
-    liveBackend.ForgetSessionRuntimeState(id);
+    // Purge is the point of no return: runtime latches AND the session's resource-ledger rows
+    // (memory + durable) go — a purged session can never submit again.
+    liveBackend.ForgetSessionCompletely(id);
     await queueControl.RefreshScheduleAsync(cancellationToken);
     events.Publish();
     return Results.NoContent();

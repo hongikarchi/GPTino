@@ -18,6 +18,7 @@ using GPTino.CanvasSceneAdapter;
 using GPTino.Core;
 using GPTino.History;
 using GPTino.ScriptAdapter;
+using Microsoft.Data.Sqlite;
 
 namespace GPTino.AgentHost.Runtime;
 
@@ -117,10 +118,20 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     private readonly ILogger<LiveDocumentBackend> _logger;
     private readonly ConflictDetector _conflictDetector = new();
     // Per-resource "last committed by whom, to what fingerprint" ledger used to resolve gptino:auto
-    // expectations to a live fingerprint ONLY for a session's own self-sequential writes. Both the commit
-    // write and the execute-time read run on the SingleWriterBroker's single worker thread (one job at a
-    // time under the write lease), so access is fully serialized and needs no lock.
-    private readonly Dictionary<string, ResourceLedgerEntry> _resourceLedger = new(StringComparer.Ordinal);
+    // expectations to a live fingerprint ONLY for a session's own self-sequential writes. Keys are
+    // doc-scoped exactly like the durable rows — "{docKey}|{kind}:{id}:{field}" (see
+    // ResourceLedgerKey) — so two documents with identical component InstanceGuids (a file-copied
+    // .gh) can never see each other's baselines. Both the commit write and the execute-time read run
+    // on the SingleWriterBroker's single worker thread (one job at a time under the write lease);
+    // the dictionary is concurrent only because ForgetSessionCompletely (an HTTP-thread purge
+    // caller) removes entries and a Save As re-keys them off the broker thread. Mirrored durably in
+    // _resourceLedgerStore and hydrated per docKey on first consult, so a restart no longer forgets
+    // which resources a session last wrote — the safety predicate itself is unchanged.
+    private readonly ConcurrentDictionary<string, ResourceLedgerEntry> _resourceLedger = new(StringComparer.Ordinal);
+    // Doc keys whose durable ledger rows were already loaded into _resourceLedger. Broker worker
+    // thread only (guarded by the same single-writer discipline as the ledger reads).
+    private readonly HashSet<string> _hydratedLedgerDocKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ResourceLedgerStore _resourceLedgerStore;
     private readonly SingleWriterBroker _broker;
     private readonly DurableJobStore _jobStore;
     private readonly string _dataRoot;
@@ -163,6 +174,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         _artifactRoot = Path.Combine(_dataRoot, "artifacts");
         Directory.CreateDirectory(_artifactRoot);
         _jobStore = new DurableJobStore(Path.Combine(_dataRoot, "live-jobs.db"));
+        _resourceLedgerStore = new ResourceLedgerStore(Path.Combine(_dataRoot, "resource-ledger.db"));
 
         if (!string.IsNullOrWhiteSpace(options.BridgePipe))
         {
@@ -1894,6 +1906,12 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             // The docKey was frozen at submit time; a document closed between enqueue and execution
             // fails deterministically here (no write happened) with the registered-document listing.
             var targetState = ResolveJobTargetState(entry.TargetDoc);
+            // Restore this document's durable ledger rows (once per docKey, on this single broker
+            // worker thread) BEFORE the first gptino:auto / self-stale consult below. Hydration only
+            // restores knowledge — the safety predicate (ledger fingerprint == live fingerprint AND
+            // same session) is unchanged, so a canvas edited while the app was off still mismatches
+            // and is still refused.
+            await HydrateResourceLedgerAsync(targetState.DocKey, execution.Token).ConfigureAwait(false);
             var before = await CaptureSnapshotAsync(targetState, force: true, execution.Token)
                 .ConfigureAwait(false);
             var preparedOperations = await PreflightFrozenOperationsAsync(
@@ -1912,6 +1930,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 job.ChangeSet,
                 before.State,
                 job.ChangeSet.SessionId,
+                targetState.DocKey,
                 _resourceLedger);
             if (autoConflicts.Count > 0)
             {
@@ -1927,6 +1946,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 preparedOperations,
                 before.State,
                 job.ChangeSet.SessionId,
+                targetState.DocKey,
                 _resourceLedger);
             resolvedChangeSet = selfStaleRebase.ChangeSet;
             preparedOperations = selfStaleRebase.Operations;
@@ -2169,7 +2189,13 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                         "Could not build the applied view for job {JobId}.",
                         job.JobId);
                 }
-                UpdateResourceLedger(before, after, job.ChangeSet.SessionId, job.JobId);
+                await UpdateResourceLedgerAsync(
+                    targetState,
+                    before,
+                    after,
+                    operationObservations,
+                    job.ChangeSet.SessionId,
+                    job.JobId).ConfigureAwait(false);
                 var message = string.Join(" ", verificationProblems);
                 await SetJobPhaseAsync(entry, JobState.Failed, message).ConfigureAwait(false);
                 return new JobExecutionResult(job.JobId, JobState.Failed, message);
@@ -2210,7 +2236,13 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             {
                 _logger.LogWarning(exception, "Could not capture post-solve observations for job {JobId}.", job.JobId);
             }
-            UpdateResourceLedger(before, after, job.ChangeSet.SessionId, job.JobId);
+            await UpdateResourceLedgerAsync(
+                targetState,
+                before,
+                after,
+                operationObservations,
+                job.ChangeSet.SessionId,
+                job.JobId).ConfigureAwait(false);
             AccumulateTurnCreatedComponents(job.ChangeSet.SessionId, before.Canvas, after.Canvas);
             // Informational commit quality: runtime warnings and empty solved outputs, appended to
             // the commit message (and thereby the problem-log row SetJobPhaseAsync writes) so a
@@ -2462,6 +2494,28 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
         await _jobStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _resourceLedgerStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            // Orphan sweep: a purge whose fire-and-forget RemoveSessionAsync raced (and lost to) an
+            // in-flight commit's upsert leaves rows for a session that no longer exists; reclaim
+            // them here so they never erode the per-doc cap permanently. The residual window is one
+            // runtime: rows orphaned AFTER this sweep survive until the next startup, and in the
+            // interim they can only ever cause a refusal (the safety predicate requires the same
+            // session id). Known = every session row, live AND soft-deleted — soft-deleted sessions
+            // keep their baselines so a restore comes back working.
+            var knownSessionIds = await _store.ReadAllSessionIdsAsync(cancellationToken).ConfigureAwait(false);
+            await _resourceLedgerStore.RemoveSessionsExceptAsync(knownSessionIds, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The durable ledger is restorable knowledge only: a broken store means a cold start
+            // (today's pre-persistence behavior), never a failed AgentHost startup.
+            _logger.LogWarning(
+                exception,
+                "Could not initialize the durable resource ledger; gptino:auto baselines will not survive this restart.");
+        }
         var recovery = await _jobStore.RecoverInterruptedAsync(cancellationToken)
             .ConfigureAwait(false);
         var (sessions, _) = await _store.ReadStateAsync(cancellationToken).ConfigureAwait(false);
@@ -2904,10 +2958,12 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     /// Follows a Save As rename through every store keyed by the path-derived docKey: the managed
     /// history folder moves from histories\&lt;oldKey&gt; to histories\&lt;newKey&gt; (continuity —
     /// no fork on the next launch) and the cached repository handle is dropped so GetHistory
-    /// reopens at the new path; persisted session bindings (sessions.gh_doc) and frozen durable
-    /// jobs (live_jobs.target_doc) are rewritten old→new. In-memory queue entries were already
-    /// re-keyed under _connectionGate by the caller. Best-effort by design: a partial migration
-    /// must never reject the registration itself (the target is live either way).
+    /// reopens at the new path; persisted session bindings (sessions.gh_doc), frozen durable
+    /// jobs (live_jobs.target_doc) and durable resource-ledger rows (resource_ledger.doc_key)
+    /// are rewritten old→new, and the IN-MEMORY resource-ledger entries move to the new
+    /// "{docKey}|" prefix (they are doc-scoped like the durable rows). In-memory queue entries
+    /// were already re-keyed under _connectionGate by the caller. Best-effort by design: a partial
+    /// migration must never reject the registration itself (the target is live either way).
     /// </summary>
     private async Task MigrateRenamedDocumentKeyAsync(
         TargetState targetState,
@@ -2948,11 +3004,30 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             _historyGate.Release();
         }
 
+        // In-memory resource-ledger rekey: entries live under "{docKey}|{kind}:{id}:{field}", so a
+        // Save As must move them to the new prefix or the renamed (still-live, never-closed)
+        // document would lose its own baselines until a restart — refusal-only, but a functional
+        // regression. TryAdd keeps an entry the new key somehow already owns (runtime entries win,
+        // same discipline as hydration); an entry a racing commit writes under the OLD prefix after
+        // this sweep is merely unreachable — a refusal, never a wrong fill.
+        var oldPrefix = ResourceLedgerDocPrefix(oldDocKey);
+        var newPrefix = ResourceLedgerDocPrefix(newDocKey);
+        foreach (var pair in _resourceLedger)
+        {
+            if (pair.Key.StartsWith(oldPrefix, StringComparison.Ordinal))
+            {
+                _resourceLedger.TryAdd(newPrefix + pair.Key[oldPrefix.Length..], pair.Value);
+                _resourceLedger.TryRemove(pair);
+            }
+        }
+
         try
         {
             await _store.RemapGrasshopperDocAsync(oldDocKey, newDocKey, cancellationToken)
                 .ConfigureAwait(false);
             await _jobStore.RemapTargetDocAsync(oldDocKey, newDocKey, cancellationToken)
+                .ConfigureAwait(false);
+            await _resourceLedgerStore.RemapDocKeyAsync(oldDocKey, newDocKey, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -5261,10 +5336,13 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     }
 
     /// <summary>
-    /// Drops the session-scoped runtime latches (recovery halt, last-terminal tidy gate, per-turn
-    /// tidy seeds) when a session is soft-deleted or purged. Without this, deleting a halted
-    /// session would park an unresumable latch: the panel hides the session, so nothing can ever
-    /// POST /resume for it again, and a later restore would come back frozen.
+    /// Drops the session-scoped W1 runtime latches ONLY (recovery halt, last-terminal tidy gate,
+    /// per-turn tidy seeds) when a session is soft-deleted or purged. Without this, deleting a
+    /// halted session would park an unresumable latch: the panel hides the session, so nothing can
+    /// ever POST /resume for it again, and a later restore would come back frozen. The session's
+    /// resource-ledger entries are deliberately NOT touched here: a soft-deleted session can be
+    /// RESTORED, and a restored session must come back with its gptino:auto baselines working —
+    /// the ledger is removed only on purge (<see cref="ForgetSessionCompletely"/>).
     /// </summary>
     public void ForgetSessionRuntimeState(Guid sessionId)
     {
@@ -5275,6 +5353,46 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         {
             _broker.NotifyScheduleChanged();
             _events.Publish();
+        }
+    }
+
+    /// <summary>
+    /// PURGE-only forget: the runtime latches above plus the session's resource-ledger entries, in
+    /// memory and durably. A purged session can never submit again, so its gptino:auto baselines
+    /// are dead weight (and removing them keeps the per-doc row cap for live sessions).
+    /// </summary>
+    public void ForgetSessionCompletely(Guid sessionId)
+    {
+        ForgetSessionRuntimeState(sessionId);
+        // Pair-removal only strips an entry still owned by this session, so a racing commit on the
+        // broker worker thread (which may re-own the key for another session) is never clobbered.
+        foreach (var pair in _resourceLedger)
+        {
+            if (pair.Value.SessionId == sessionId)
+            {
+                _resourceLedger.TryRemove(pair);
+            }
+        }
+        _ = ForgetSessionLedgerRowsAsync(sessionId);
+    }
+
+    /// <summary>Fire-and-forget durable half of the purge-forget above; best-effort by design (an
+    /// orphaned row can only ever cause a refusal, never a bad write — the safety predicate needs
+    /// the SAME session id). A row this delete loses to a racing in-flight commit's upsert is
+    /// reclaimed by the startup orphan sweep (<see cref="ResourceLedgerStore.RemoveSessionsExceptAsync"/>).</summary>
+    private async Task ForgetSessionLedgerRowsAsync(Guid sessionId)
+    {
+        try
+        {
+            await _resourceLedgerStore.RemoveSessionAsync(sessionId, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                exception,
+                "Could not remove durable resource-ledger rows for purged session {SessionId}.",
+                sessionId);
         }
     }
 
@@ -5659,39 +5777,266 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     /// ledger ownership so that session's auto Blocks. Runs on both the commit path and the
     /// deterministic-failure path: the ledger tracks the last OBSERVED-AND-OWNED write, committed
     /// or not, because the write physically landed either way. Never-demote discipline; runs on
-    /// the broker worker thread, so no lock is needed.
+    /// the broker worker thread. Exactly the changed entries are mirrored durably (awaited, same
+    /// per-terminal-write discipline as the durable job store) so the ledger survives restarts;
+    /// deletions leave their rows behind on purpose — the in-memory ledger never removes entries
+    /// either, and a stale row is harmless (the live resource is absent, so auto still declines).
+    ///
+    /// Sub-domain coverage (live gate 20260807T175523Z-d1884d03): the raw after snapshot contains
+    /// only the canvas-owned domains (<see cref="BuildResources"/> — Document, Component structure,
+    /// Layout, slider Value, Wire, Group), so a snapshot diff alone NEVER records the script/Rhino
+    /// sub-domains (Source/Io, python Value, RhinoObject*) — which let a session auto-fill a
+    /// source another session had overwritten. Three layers now feed the ledger, later layers
+    /// overwriting earlier ones: (1) the snapshot diff; (2) the adapters' per-operation after
+    /// fingerprints (the only after-state evidence for domains outside the canvas snapshot — the
+    /// exact per-domain value each adapter's CAS validates); (3) the live Python-state fingerprint
+    /// of every script component this job touched, stamped onto ALL THREE of its Source/Io/Value
+    /// rows — those sub-domains CAS-validate against the ONE whole-state fingerprint
+    /// (<c>PythonComponentFingerprint</c> over source+schema+typing+runtime messages), so any
+    /// script write moves all three live values at once and per-op recording alone would strand
+    /// the sibling rows as "drifted". Canvas-domain writeSet declarations whose op was a
+    /// fingerprint NO-OP are deliberately NOT recorded: minting a ledger row for an unchanged
+    /// resource would let a later bogus concrete fingerprint pass the self-stale rebase (its
+    /// "this session's own commit advanced it" premise would be false), weakening the
+    /// ConflictDetector Block — and a missing row only ever costs a refusal.
     /// </summary>
-    private void UpdateResourceLedger(
+    private async Task UpdateResourceLedgerAsync(
+        TargetState targetState,
         SnapshotEnvelope before,
         SnapshotEnvelope after,
+        IReadOnlyList<ResourceObservation> observations,
         Guid sessionId,
         Guid jobId)
     {
         try
         {
+            var docKey = targetState.DocKey;
             var beforeFingerprints = before.State.Resources.ToDictionary(
                 item => $"{item.Resource.Kind}:{item.Resource.Id}:{item.Resource.Field}",
                 item => item.Fingerprint,
                 StringComparer.Ordinal);
+            var records = new Dictionary<string, (ResourceAddress Resource, string Fingerprint)>(
+                StringComparer.Ordinal);
+            void Record(ResourceAddress resource, string? fingerprint)
+            {
+                if (!string.IsNullOrWhiteSpace(fingerprint))
+                {
+                    records[$"{resource.Kind}:{resource.Id}:{resource.Field}"] =
+                        (resource, fingerprint!);
+                }
+            }
+
+            // Layer 1: the snapshot diff (canvas-owned domains). Component ids whose structure
+            // fingerprint moved feed the script-refresh candidates below: a wire/rename this job
+            // applied can change a script component's runtime messages — and thereby its live
+            // Python-state fingerprint — without any python op in the job.
+            var structureChangedComponentIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var resource in after.State.Resources.Where(item =>
                 !string.IsNullOrWhiteSpace(item.Fingerprint)))
             {
                 var key = $"{resource.Resource.Kind}:{resource.Resource.Id}:{resource.Resource.Field}";
                 var changed = !beforeFingerprints.TryGetValue(key, out var beforeFingerprint) ||
                     !string.Equals(beforeFingerprint, resource.Fingerprint, StringComparison.Ordinal);
-                if (changed)
+                if (!changed)
                 {
-                    _resourceLedger[key] = new ResourceLedgerEntry(
-                        resource.Resource,
-                        resource.Fingerprint!,
-                        sessionId,
-                        after.State.Revision);
+                    continue;
+                }
+                Record(resource.Resource, resource.Fingerprint);
+                if (resource.Resource.Kind == ResourceKind.GrasshopperComponent)
+                {
+                    structureChangedComponentIds.Add(resource.Resource.Id);
                 }
             }
+
+            // Layer 2: adapter-observed after fingerprints (Script and RhinoScene writes). These
+            // carry the exact per-domain fingerprint the adapter's CAS validates at execute time.
+            // Script sub-domain observations additionally mark the component for the layer-3
+            // refresh, keeping the last non-empty per-op fingerprint as the inspect fallback.
+            var scriptComponents = new Dictionary<string, string?>(StringComparer.Ordinal);
+            foreach (var observation in observations)
+            {
+                Record(observation.Resource, observation.Fingerprint);
+                if (observation.Resource.Kind is
+                    ResourceKind.GrasshopperComponentSource or
+                    ResourceKind.GrasshopperComponentIo or
+                    ResourceKind.GrasshopperComponentValue)
+                {
+                    scriptComponents.TryGetValue(observation.Resource.Id, out var lastSeen);
+                    scriptComponents[observation.Resource.Id] =
+                        string.IsNullOrWhiteSpace(observation.Fingerprint) ? lastSeen : observation.Fingerprint;
+                }
+            }
+
+            // Layer 3 candidates beyond python ops: script components this job CREATED (so the
+            // create→setSource(auto) flow needs no parent fallback), and script components whose
+            // structure this job moved while this session already owns their python rows (the
+            // wire→execute(auto) chain: the wire re-solve can change runtime messages, moving the
+            // shared Python-state fingerprint). A foreign session's rows are never refreshed —
+            // its next auto declines on the drift, which is the correct outcome.
+            var beforeObjectIds = before.Canvas.Objects.Select(item => item.ObjectId).ToHashSet();
+            foreach (var component in after.Canvas.Objects)
+            {
+                var id = component.ObjectId.ToString("D");
+                if (scriptComponents.ContainsKey(id) ||
+                    !IsScriptComponentType(component.ComponentTypeId) ||
+                    !structureChangedComponentIds.Contains(id))
+                {
+                    continue;
+                }
+                var created = !beforeObjectIds.Contains(component.ObjectId);
+                var owned = ScriptSubDomainKinds.Any(kind =>
+                    _resourceLedger.TryGetValue(
+                        ResourceLedgerKey(docKey, new ResourceAddress(kind, id)),
+                        out var entry) &&
+                    entry.SessionId == sessionId);
+                if (created || owned)
+                {
+                    scriptComponents[id] = null;
+                }
+            }
+            foreach (var (id, observedFingerprint) in scriptComponents)
+            {
+                if (!Guid.TryParse(id, out var componentId))
+                {
+                    continue;
+                }
+                var fingerprint =
+                    await TryReadScriptStateFingerprintAsync(targetState, componentId).ConfigureAwait(false)
+                    ?? observedFingerprint;
+                if (string.IsNullOrWhiteSpace(fingerprint))
+                {
+                    continue;
+                }
+                foreach (var kind in ScriptSubDomainKinds)
+                {
+                    Record(new ResourceAddress(kind, id), fingerprint);
+                }
+            }
+
+            if (records.Count == 0)
+            {
+                return;
+            }
+            var changedRecords = new List<ResourceLedgerRecord>(records.Count);
+            foreach (var (key, value) in records)
+            {
+                // In-memory key is doc-scoped ("{docKey}|{kind}:{id}:{field}") like the durable
+                // row; the durable ResourceKey column keeps the docKey-less composite (the
+                // doc_key column already scopes it).
+                _resourceLedger[ResourceLedgerKey(docKey, key)] = new ResourceLedgerEntry(
+                    value.Resource,
+                    value.Fingerprint,
+                    sessionId,
+                    after.State.Revision);
+                changedRecords.Add(new ResourceLedgerRecord(
+                    key,
+                    value.Resource,
+                    value.Fingerprint,
+                    sessionId,
+                    after.State.Revision));
+            }
+            // CancellationToken.None: the write physically landed; a cancelled turn must not
+            // skip recording it (the whole point is surviving interruption).
+            await _resourceLedgerStore.UpsertAsync(docKey, changedRecords, CancellationToken.None)
+                .ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             _logger.LogWarning(exception, "Could not update the resource ledger for job {JobId}.", jobId);
+        }
+    }
+
+    // The script sub-domains that share ONE live fingerprint domain: python.setSource/setSchema/
+    // setTyping/execute all CAS-validate against PythonComponentFingerprint (whole component
+    // state), and python.inspect (snapshot enrichment) reports that same fingerprint for each of
+    // them — so their ledger rows must always advance together.
+    private static readonly ResourceKind[] ScriptSubDomainKinds =
+    [
+        ResourceKind.GrasshopperComponentSource,
+        ResourceKind.GrasshopperComponentIo,
+        ResourceKind.GrasshopperComponentValue,
+    ];
+
+    /// <summary>
+    /// The live Python-state fingerprint of one script component (one python.inspect round trip),
+    /// read at ledger-update time so the recorded rows match what snapshot enrichment will report
+    /// to the session's NEXT gptino:auto consult. Null on any failure — a non-script component, a
+    /// missing Script adapter, or a bridge error — so the caller falls back to the last
+    /// operation-observed fingerprint (or records nothing); a missing row can only ever produce a
+    /// refusal, never a bad fill.
+    /// </summary>
+    private async Task<string?> TryReadScriptStateFingerprintAsync(
+        TargetState targetState,
+        Guid componentId)
+    {
+        try
+        {
+            var inspection = await ReadInspectionScopeAsync(
+                targetState,
+                $"script:{componentId:D}",
+                CancellationToken.None).ConfigureAwait(false);
+            return string.IsNullOrWhiteSpace(inspection.Fingerprint) ? null : inspection.Fingerprint;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogDebug(
+                exception,
+                "Ledger-time python.inspect for {ComponentId} failed; using the operation-observed fingerprint.",
+                componentId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Loads one document's durable ledger rows into the in-memory ledger, once per docKey, on the
+    /// broker worker thread. TryAdd only, under the doc-scoped key: an entry the current runtime
+    /// already recorded for this document always wins over a restored row (the runtime entry is
+    /// strictly fresher — the durable mirror of it may even have failed to write). A
+    /// missing/broken store is a cold start — logged, never failing the job; a TRANSIENT store
+    /// failure (SqliteException) rolls the hydrated mark back so the next job for this doc
+    /// retries instead of leaving the document cold for the whole runtime.
+    /// </summary>
+    private async Task HydrateResourceLedgerAsync(string docKey, CancellationToken cancellationToken)
+    {
+        if (!_hydratedLedgerDocKeys.Add(docKey))
+        {
+            return;
+        }
+        try
+        {
+            var records = await _resourceLedgerStore.ReadDocumentAsync(docKey, cancellationToken)
+                .ConfigureAwait(false);
+            foreach (var record in records)
+            {
+                _resourceLedger.TryAdd(ResourceLedgerKey(docKey, record.ResourceKey), new ResourceLedgerEntry(
+                    record.Resource,
+                    record.Fingerprint,
+                    record.SessionId,
+                    record.Revision));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Not hydrated after all — let the next job for this doc retry.
+            _hydratedLedgerDocKeys.Remove(docKey);
+            throw;
+        }
+        catch (SqliteException exception)
+        {
+            // Transient store trouble (locked file, torn WAL, corrupt bytes being repaired): not
+            // hydrated after all — retry on the next job instead of staying cold all runtime.
+            _hydratedLedgerDocKeys.Remove(docKey);
+            _logger.LogWarning(
+                exception,
+                "Could not hydrate the resource ledger for doc {DocKey}; will retry on the next job.",
+                docKey);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                exception,
+                "Could not hydrate the resource ledger for doc {DocKey}; continuing cold.",
+                docKey);
         }
     }
 

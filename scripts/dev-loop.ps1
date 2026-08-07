@@ -30,76 +30,122 @@ param(
     # artifacts/ reached 26 GB / 318k files; each launch now prunes down to this many past runs
     # first. 0 disables pruning for this launch.
     [int]$KeepRuns = 10,
+    # Relaunch Rhino against an EXISTING run directory instead of creating a fresh one: reuses its
+    # runtime dir (so durable AgentHost state — jobs, sessions, resource ledger — survives the
+    # restart), its token from loop-state.json, and its scene files. No pruning, no token or scene
+    # generation. Still refuses while Rhino is running; rewrites loop-state.json with the new pid.
+    [string]$ReuseRun,
     [string]$RhinoExe = 'C:\Program Files\Rhino 8\System\Rhino.exe'
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 
+# Parameter contradictions first, before any environment checks: the reused run keeps ITS scene,
+# so scene parameters would be silently ignored — refuse them loudly instead ($PSBoundParameters
+# distinguishes an explicit -SceneKind from the default).
+if ($ReuseRun) {
+    if ($PSBoundParameters.ContainsKey('SceneKind')) {
+        throw '-SceneKind cannot be combined with -ReuseRun: the reused run keeps its original scene kind.'
+    }
+    if ($RegenerateScene) {
+        throw '-RegenerateScene cannot be combined with -ReuseRun: the reused run keeps its original scene files.'
+    }
+}
+
 if (-not (Test-Path -LiteralPath $RhinoExe)) { throw "Rhino not found: $RhinoExe" }
 if (Get-Process -Name Rhino -ErrorAction SilentlyContinue) {
     throw 'Rhino is running. Close it completely before starting a dev-loop run.'
 }
 
-# --- prune old evidence before adding more ---------------------------------------
-# Runs before the new directory exists, so KeepRuns counts PAST runs and this launch is extra.
-if ($KeepRuns -gt 0) {
-    & (Join-Path $PSScriptRoot 'prune-artifacts.ps1') -KeepRuns $KeepRuns -Execute |
-        Select-Object -Last 1 | ForEach-Object { Write-Host $_ }
+if ($ReuseRun) {
+    # --- reuse an existing run: same runtime dir, token, and scenes ---------------
+    $runRoot = [IO.Path]::GetFullPath($ReuseRun)
+    if (-not (Test-Path -LiteralPath (Join-Path $runRoot '.gptino-owned-run'))) {
+        throw "Not a GPTino dev-loop run directory (missing .gptino-owned-run): $runRoot"
+    }
+    $statePath = Join-Path $runRoot 'loop-state.json'
+    if (-not (Test-Path -LiteralPath $statePath)) {
+        throw "Cannot reuse $runRoot : loop-state.json is missing (was the run ever launched?)."
+    }
+    $prior = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $runtime = Join-Path $runRoot 'runtime'
+    if (-not (Test-Path -LiteralPath $runtime)) {
+        throw "Cannot reuse $runRoot : its runtime directory is missing ($runtime)."
+    }
+    $token = $prior.token
+    $scene3dm = $prior.scene3dm
+    $sceneGh = $prior.sceneGh
+    if (-not $token) { throw "loop-state.json in $runRoot carries no token." }
+    # Explicit null/absent guards BEFORE Test-Path: binding $null to -LiteralPath is a parameter
+    # error, which would mask the real problem (a malformed loop-state.json).
+    if (-not $scene3dm) { throw "loop-state.json in $runRoot carries no scene3dm path." }
+    if (-not $sceneGh) { throw "loop-state.json in $runRoot carries no sceneGh path." }
+    if (-not (Test-Path -LiteralPath $scene3dm)) { throw "Reused scene missing: $scene3dm" }
+    if (-not (Test-Path -LiteralPath $sceneGh)) { throw "Reused Grasshopper doc missing: $sceneGh" }
+    Write-Host "Reusing run $runRoot (runtime state and token preserved)."
 }
-
-# --- marked run directory (must satisfy DevelopmentDataDirectoryPolicy) ---------
-$runRoot = Join-Path $repo "artifacts\dev-loop\$RunId"
-$runtime = Join-Path $runRoot 'runtime'
-New-Item -ItemType Directory -Path $runtime -Force | Out-Null
-Set-Content -LiteralPath (Join-Path $runRoot '.gptino-owned-run') -Value "GPTino dev loop`n" -Encoding utf8
-
-# --- 256-bit hex API token -----------------------------------------------------
-$bytes = New-Object 'System.Byte[]' 32
-[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-$token = -join ($bytes | ForEach-Object { $_.ToString('x2') })
-
-# --- scene assets --------------------------------------------------------------
-# Non-paneling kinds get a kind-suffixed filename so a reused run directory can never
-# serve a stale scene of the wrong kind.
-$sceneName = if ($SceneKind -eq 'paneling') { 'scene.3dm' } else { "scene-$SceneKind.3dm" }
-$scene3dm = Join-Path $runRoot $sceneName
-$sceneGh = Join-Path $runRoot 'scene.gh'
-
-# Empty saved Grasshopper doc. This used to be found by scanning artifacts/dev-loop for a
-# 1631-byte bench.gh -- i.e. the harness depended on a file living inside DISPOSABLE evidence
-# directories, and the first prune of that tree took the launcher down with it. The template is a
-# fixture, so it lives with the scripts (force-added past the *.gh ignore rule).
-$emptyGh = Join-Path $PSScriptRoot 'fixtures\empty-definition.gh'
-if (-not (Test-Path -LiteralPath $emptyGh)) { throw "Missing Grasshopper template fixture: $emptyGh" }
-Copy-Item -LiteralPath $emptyGh -Destination $sceneGh -Force
-
-# Paneling geometry: generate scene.3dm via a synchronous RhinoPython pass.
-if ($RegenerateScene -or -not (Test-Path -LiteralPath $scene3dm)) {
-    Remove-Item -LiteralPath $scene3dm, "$scene3dm.scene-ok" -Force -ErrorAction SilentlyContinue
-    $genPsi = New-Object System.Diagnostics.ProcessStartInfo
-    $genPsi.FileName = $RhinoExe
-    $genScript = Join-Path $repo 'scripts\dev-scene.py'
-    $genPsi.Arguments = "/nosplash /runscript=`"_-RunPythonScript $genScript _Exit`""
-    $genPsi.UseShellExecute = $false
-    $genPsi.EnvironmentVariables['GPTINO_SCENE_3DM'] = $scene3dm
-    $genPsi.EnvironmentVariables['GPTINO_SCENE_KIND'] = $SceneKind
-    Write-Host "Generating $SceneKind scene -> $scene3dm"
-    $gen = [System.Diagnostics.Process]::Start($genPsi)
-    # The python writes a '.scene-ok' marker when it has saved the .3dm. Poll for it
-    # rather than trusting Rhino's _Exit (a stray dialog can leave the GUI running);
-    # once the marker lands the scene is complete and the throwaway Rhino is killed.
-    $marker = "$scene3dm.scene-ok"
-    $genDeadline = (Get-Date).AddSeconds(180)
-    while ((Get-Date) -lt $genDeadline -and -not (Test-Path -LiteralPath $marker)) {
-        if ($gen.HasExited) { break }
-        Start-Sleep -Milliseconds 500
+else {
+    # --- prune old evidence before adding more ---------------------------------------
+    # Runs before the new directory exists, so KeepRuns counts PAST runs and this launch is extra.
+    if ($KeepRuns -gt 0) {
+        & (Join-Path $PSScriptRoot 'prune-artifacts.ps1') -KeepRuns $KeepRuns -Execute |
+            Select-Object -Last 1 | ForEach-Object { Write-Host $_ }
     }
-    if (-not $gen.HasExited) { try { $gen.Kill() } catch { } }
-    if (-not (Test-Path -LiteralPath $marker)) {
-        throw "Scene generation did not produce $scene3dm (.scene-ok marker missing)."
+
+    # --- marked run directory (must satisfy DevelopmentDataDirectoryPolicy) ---------
+    $runRoot = Join-Path $repo "artifacts\dev-loop\$RunId"
+    $runtime = Join-Path $runRoot 'runtime'
+    New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $runRoot '.gptino-owned-run') -Value "GPTino dev loop`n" -Encoding utf8
+
+    # --- 256-bit hex API token -----------------------------------------------------
+    $bytes = New-Object 'System.Byte[]' 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $token = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+
+    # --- scene assets --------------------------------------------------------------
+    # Non-paneling kinds get a kind-suffixed filename so a reused run directory can never
+    # serve a stale scene of the wrong kind.
+    $sceneName = if ($SceneKind -eq 'paneling') { 'scene.3dm' } else { "scene-$SceneKind.3dm" }
+    $scene3dm = Join-Path $runRoot $sceneName
+    $sceneGh = Join-Path $runRoot 'scene.gh'
+
+    # Empty saved Grasshopper doc. This used to be found by scanning artifacts/dev-loop for a
+    # 1631-byte bench.gh -- i.e. the harness depended on a file living inside DISPOSABLE evidence
+    # directories, and the first prune of that tree took the launcher down with it. The template is a
+    # fixture, so it lives with the scripts (force-added past the *.gh ignore rule).
+    $emptyGh = Join-Path $PSScriptRoot 'fixtures\empty-definition.gh'
+    if (-not (Test-Path -LiteralPath $emptyGh)) { throw "Missing Grasshopper template fixture: $emptyGh" }
+    Copy-Item -LiteralPath $emptyGh -Destination $sceneGh -Force
+
+    # Paneling geometry: generate scene.3dm via a synchronous RhinoPython pass.
+    if ($RegenerateScene -or -not (Test-Path -LiteralPath $scene3dm)) {
+        Remove-Item -LiteralPath $scene3dm, "$scene3dm.scene-ok" -Force -ErrorAction SilentlyContinue
+        $genPsi = New-Object System.Diagnostics.ProcessStartInfo
+        $genPsi.FileName = $RhinoExe
+        $genScript = Join-Path $repo 'scripts\dev-scene.py'
+        $genPsi.Arguments = "/nosplash /runscript=`"_-RunPythonScript $genScript _Exit`""
+        $genPsi.UseShellExecute = $false
+        $genPsi.EnvironmentVariables['GPTINO_SCENE_3DM'] = $scene3dm
+        $genPsi.EnvironmentVariables['GPTINO_SCENE_KIND'] = $SceneKind
+        Write-Host "Generating $SceneKind scene -> $scene3dm"
+        $gen = [System.Diagnostics.Process]::Start($genPsi)
+        # The python writes a '.scene-ok' marker when it has saved the .3dm. Poll for it
+        # rather than trusting Rhino's _Exit (a stray dialog can leave the GUI running);
+        # once the marker lands the scene is complete and the throwaway Rhino is killed.
+        $marker = "$scene3dm.scene-ok"
+        $genDeadline = (Get-Date).AddSeconds(180)
+        while ((Get-Date) -lt $genDeadline -and -not (Test-Path -LiteralPath $marker)) {
+            if ($gen.HasExited) { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $gen.HasExited) { try { $gen.Kill() } catch { } }
+        if (-not (Test-Path -LiteralPath $marker)) {
+            throw "Scene generation did not produce $scene3dm (.scene-ok marker missing)."
+        }
+        Start-Sleep -Seconds 2  # let the Rhino handle on scene.3dm release before the live open
     }
-    Start-Sleep -Seconds 2  # let the Rhino handle on scene.3dm release before the live open
 }
 
 # A reused run directory still holds the PREVIOUS run's endpoint.json; polling would report that

@@ -490,6 +490,28 @@ public sealed class SessionStore
     }
 
     /// <summary>
+    /// Every session id that still has a row — live AND soft-deleted (a soft-deleted session can
+    /// be restored, so it counts as existing). Feeds the resource-ledger orphan sweep at startup;
+    /// only a purged session's id disappears from this set.
+    /// </summary>
+    public async Task<IReadOnlyList<Guid>> ReadAllSessionIdsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id FROM sessions;";
+        var ids = new List<Guid>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (Guid.TryParse(reader.GetString(0), out var id))
+            {
+                ids.Add(id);
+            }
+        }
+        return ids;
+    }
+
+    /// <summary>
     /// Permanently removes a session and its transcript (messages cascade on the FK). Irreversible;
     /// callers gate this behind an explicit user confirmation. Live-jobs history and attachment
     /// files keyed by this session id are left on disk — harmless orphans that never surface once
