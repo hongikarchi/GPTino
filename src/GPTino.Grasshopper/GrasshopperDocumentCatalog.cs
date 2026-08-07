@@ -22,6 +22,7 @@ public static class GrasshopperDocumentCatalog
     private static bool _canvasCreatedSubscribed;
     private static bool _canvasDestroyedSubscribed;
     private static bool _rhinoClosingSubscribed;
+    private static bool _operationScopeExitSubscribed;
     private static int _isDrainingMutations;
     private static int _mutationThreadId;
     private static int _acceptingResolutions;
@@ -61,6 +62,16 @@ public static class GrasshopperDocumentCatalog
         document = null!;
         return false;
     }
+
+    /// <summary>
+    /// Whether Grasshopper itself still hosts this exact document instance — asked of the
+    /// document SERVER directly, never of this catalog's bookkeeping (which is deliberately
+    /// deferred while a bridge operation runs; see DrainMutations). This is the mid-operation
+    /// liveness probe: after a pump-capable call (NewSolution), an adapter must confirm the
+    /// document was not closed/replaced re-entrantly before mutating it further. UI-thread use.
+    /// </summary>
+    public static bool IsDocumentHostedByGrasshopper(GH_Document? document) =>
+        document is not null && _documentServer?.Contains(document) == true;
 
     /// <summary>
     /// Live (id, document) pairs for read-only inspection such as selection polling. Returns
@@ -146,6 +157,15 @@ public static class GrasshopperDocumentCatalog
     private static void SubscribeCore()
     {
         _documentServer ??= global::Grasshopper.Instances.DocumentServer;
+        if (!_operationScopeExitSubscribed)
+        {
+            // Drains the mutations that DrainMutations deferred while a bridge operation was
+            // executing on this thread (see the gate there). Fires on the operation's thread
+            // immediately after it completes, so deferred unregister/register bookkeeping runs
+            // with at most one operation of delay and never inside the operation's pump.
+            BridgeUiOperationScope.Exited += DrainMutations;
+            _operationScopeExitSubscribed = true;
+        }
         if (!_documentAddedSubscribed)
         {
             _documentServer.DocumentAdded += OnDocumentAdded;
@@ -221,6 +241,11 @@ public static class GrasshopperDocumentCatalog
             () => global::Rhino.RhinoApp.Closing -= OnRhinoClosing,
             () => _rhinoClosingSubscribed = false,
             _rhinoClosingSubscribed,
+            cleanupFailures);
+        TryCleanup(
+            () => BridgeUiOperationScope.Exited -= DrainMutations,
+            () => _operationScopeExitSubscribed = false,
+            _operationScopeExitSubscribed,
             cleanupFailures);
 
         foreach (var canvas in AttachedCanvases.ToArray())
@@ -539,6 +564,15 @@ public static class GrasshopperDocumentCatalog
             throw new InvalidOperationException(
                 "A synchronous Grasshopper catalog lifecycle call cannot be re-entered.");
         }
+        if (BridgeUiOperationScope.IsActiveOnCurrentThread)
+        {
+            // A synchronous lifecycle call re-entered from an in-flight bridge operation's pump
+            // (Rhino closing mid-write is the realistic case). Blocking on the queue would
+            // deadlock — it only drains after the operation completes, and the operation cannot
+            // complete while its pump is blocked here — so run inline as the lesser evil.
+            action();
+            return;
+        }
 
         var completion = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -555,6 +589,19 @@ public static class GrasshopperDocumentCatalog
 
     private static void DrainMutations()
     {
+        // Re-entrancy gate for the document-open crash: a bridge write's NewSolution pumps the
+        // message queue, and a user's File>Open/Close dispatches document events ON TOP of that
+        // in-flight write. Draining here would unregister/tear down the very document the write
+        // is mutating (native use-after-teardown, instant silent Rhino death). Leave the work
+        // queued; BridgeUiOperationScope.Exited drains it right after the operation completes.
+        if (BridgeUiOperationScope.IsActiveOnCurrentThread)
+        {
+            DevelopmentDiagnosticTrace.TryWrite(
+                "Grasshopper",
+                "document-catalog-drain-deferred",
+                $"queued={MutationQueue.Count}");
+            return;
+        }
         if (Interlocked.CompareExchange(ref _isDrainingMutations, 1, 0) != 0)
         {
             return;

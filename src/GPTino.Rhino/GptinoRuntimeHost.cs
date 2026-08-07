@@ -982,7 +982,18 @@ public sealed class GptinoRuntimeHost : IDisposable
                 }
 
                 var result = await RhinoUiThreadDispatcher.InvokeAsync(
-                    () => handler.HandleAsync(target, request, cancellationToken),
+                    async () =>
+                    {
+                        // Scope the UI-thread execution so catalog/runtime bookkeeping re-entered
+                        // from this operation's message pump (a user opening/closing a GH document
+                        // mid-solve) defers until the operation completes instead of tearing down
+                        // the document under the write. See BridgeUiOperationScope.
+                        using (BridgeUiOperationScope.Enter())
+                        {
+                            return await handler.HandleAsync(target, request, cancellationToken)
+                                .ConfigureAwait(true);
+                        }
+                    },
                     cancellationToken).ConfigureAwait(false);
                 response = BridgeFrame.Create(
                     BridgeMessageKind.Response,

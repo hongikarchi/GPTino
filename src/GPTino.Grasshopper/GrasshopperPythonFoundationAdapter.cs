@@ -230,6 +230,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
 
         component.ExpireSolution(recompute: false);
         document.NewSolution(expireAllObjects: false);
+        GrasshopperDocumentLiveness.ThrowIfDetached(document, "python.setSchema");
         var after = ReadState(component);
         return Task.FromResult(new ScriptMutationResult(
             request.OperationId,
@@ -290,6 +291,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
 
         component.ExpireSolution(recompute: false);
         document.NewSolution(expireAllObjects: false);
+        GrasshopperDocumentLiveness.ThrowIfDetached(document, "python.setTyping");
         var after = ReadState(component);
         return Task.FromResult(new ScriptMutationResult(
             request.OperationId,
@@ -317,6 +319,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
 
         component.ExpireSolution(recompute: false);
         document.NewSolution(expireAllObjects: request.RecomputeDocument);
+        GrasshopperDocumentLiveness.ThrowIfDetached(document, "python.execute");
         var state = ReadState(component);
         var solved = state.RuntimeMessages.All(message => message.Level != RuntimeMessageLevel.Error);
         return Task.FromResult(new PythonExecutionResult(

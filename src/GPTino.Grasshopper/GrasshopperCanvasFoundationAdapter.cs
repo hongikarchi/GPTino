@@ -321,6 +321,7 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         }
         parameter.ExpireSolution(recompute: false);
         document.NewSolution(expireAllObjects: false);
+        GrasshopperDocumentLiveness.ThrowIfDetached(document, "canvas.referenceRhinoObjects");
         global::Grasshopper.Instances.ActiveCanvas?.Invalidate();
 
         var after = ToObjectState(parameter, BuildParameterOwners(document));
@@ -960,6 +961,7 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         if (changed)
         {
             document.NewSolution(false);
+            GrasshopperDocumentLiveness.ThrowIfDetached(document, "canvas.setWire");
         }
 
         var afterSnapshot = await CaptureSnapshotCoreAsync(document, cancellationToken).ConfigureAwait(false);
