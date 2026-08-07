@@ -53,15 +53,19 @@ public sealed class CodexAuthProbe
 
     private CodexAuthSnapshot Evaluate()
     {
-        if (CodexInstallation.HasStoredCredentials())
-        {
-            return new CodexAuthSnapshot(CodexAuthStatus.LoggedIn, "Signed in to Codex.");
-        }
+        // CLI presence first: stored credentials with no launchable CLI must read as CliMissing.
+        // A stale auth.json surviving an uninstall would otherwise report signed-in, skip the
+        // panel's login gate, and defer the failure to send time — exactly what the gate exists
+        // to prevent.
         if (!CodexInstallation.TryLocateExecutable(_options, out _))
         {
             return new CodexAuthSnapshot(
                 CodexAuthStatus.CliMissing,
                 "Codex CLI not found — click to open a terminal that installs it (npm) and signs in.");
+        }
+        if (CodexInstallation.HasStoredCredentials())
+        {
+            return new CodexAuthSnapshot(CodexAuthStatus.LoggedIn, "Signed in to Codex.");
         }
         return new CodexAuthSnapshot(
             CodexAuthStatus.LoggedOut,

@@ -9,7 +9,10 @@ namespace GPTino.Rhino;
 [Guid("91ab786f-4437-457a-b04f-d0ddfe1d363b")]
 public sealed class GptinoPanel : Panel
 {
-    private const string OpenGrasshopperScheme = "gptino";
+    // Scheme for panel-initiated Rhino actions. The URI host names the action
+    // (gptino://open-grasshopper, gptino://save-rhino, ...); OnWebViewNavigating maps it to the
+    // Rhino command. Used by both the waiting page below and the React panel's own CTAs.
+    private const string PanelActionScheme = "gptino";
 
     // NOTE: the WebView2 occlusion-disable flag (WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS) is set in
     // GptinoPlugIn.DisableWebViewOcclusionDetection at plugin load — earlier than any panel, which
@@ -366,11 +369,30 @@ public sealed class GptinoPanel : Panel
 
     private void OnWebViewNavigating(object? sender, WebViewLoadingEventArgs e)
     {
-        if (e.Uri is { } uri && string.Equals(uri.Scheme, OpenGrasshopperScheme, StringComparison.OrdinalIgnoreCase))
+        if (e.Uri is not { } uri ||
+            !string.Equals(uri.Scheme, PanelActionScheme, StringComparison.OrdinalIgnoreCase))
         {
-            e.Cancel = true;
-            global::Rhino.RhinoApp.RunScript("_Grasshopper", echo: false);
+            return;
         }
+        // Always cancel gptino:// navigations — the WebView must never try to resolve them —
+        // and only then decide whether the action is known.
+        e.Cancel = true;
+        var command = uri.Host switch
+        {
+            "open-grasshopper" => "_Grasshopper",
+            "save-rhino" => "_Save",
+            "save-as-rhino" => "_SaveAs",
+            "open-rhino" => "_Open",
+            _ => null,
+        };
+        if (command is null)
+        {
+            return;
+        }
+        // Deferred past this event's dispatch: unlike _Grasshopper, the save/open commands raise
+        // modal file dialogs, which must not open from inside the WebView's DocumentLoading event.
+        Application.Instance.AsyncInvoke(() =>
+            global::Rhino.RhinoApp.RunScript(command, echo: false));
     }
 
     /// <summary>
@@ -435,7 +457,25 @@ public sealed class GptinoPanel : Panel
             // target registration, a saved Rhino file alone boots the AgentHost, and the panel
             // itself (login gate, then the Model/Data tab CTAs) walks the user through the rest.
             "unsaved" => """
-              <p>Save this Rhino document (<b>File &gt; Save</b>) and GPTino attaches by itself.</p>
+              <p>GPTino attaches as soon as this document is saved.</p>
+              """,
+            _ => string.Empty,
+        };
+        // One-click remediation per state, dispatched through the gptino:// action scheme the
+        // panel already intercepts (OnWebViewNavigating). Each state offers exactly what it
+        // needs: unsaved -> save (or open an existing file instead), autosave -> Save As (the
+        // notice's own instruction), readonly -> reopen after clearing the lock.
+        var stateActions = documentState switch
+        {
+            "unsaved" => """
+              <a class="cta" href="gptino://save-rhino">Save this document&hellip;</a>
+              <a class="cta" href="gptino://open-rhino">Open a saved file&hellip;</a>
+              """,
+            "autosave" => """
+              <a class="cta" href="gptino://save-as-rhino">Save As&hellip;</a>
+              """,
+            "readonly" => """
+              <a class="cta" href="gptino://open-rhino">Open a saved file&hellip;</a>
               """,
             _ => string.Empty,
         };
@@ -447,6 +487,11 @@ public sealed class GptinoPanel : Panel
                 <style>
                   body { font: 13px system-ui; margin: 20px; color: #c9d1d9; background: #161b22; }
                   small { color: #8b949e; }
+                  a.cta {
+                    display: inline-block; margin: 10px 8px 0 0; padding: 6px 12px;
+                    border: 1px solid #526334; border-radius: 6px;
+                    color: #b7e166; text-decoration: none; background: rgba(183,225,102,0.06);
+                  }
                   .notice {
                     margin: 10px 0; padding: 8px 12px;
                     border-left: 3px solid #e6b85c; border-radius: 0 6px 6px 0;
@@ -458,6 +503,7 @@ public sealed class GptinoPanel : Panel
                 <h3>GPTino is starting</h3>
                 <p>{{status}}</p>
                 {{stateNotice}}
+                {{stateActions}}
                 <p><small>GPTino attaches to the saved Rhino file — no Grasshopper needed to start.
                 Open a definition whenever canvas work begins; Rhino-side sessions run without one.</small></p>
                 <small>Rhino document {{_documentSerial}}</small>

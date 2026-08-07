@@ -236,6 +236,15 @@ export default function App() {
     if (selectedId) markSeen(selectedId);
   }, [selectedId, serverRuntime, markSeen]);
 
+  // Assigned before every return path — including the login gate below — so a notification
+  // deep-link fired while gated still selects its session once the gate lifts.
+  const openSession = (id: string) => {
+    switchTab("model");
+    setSelectedId(id);
+    completion.markSeen(id);
+  };
+  openSessionRef.current = openSession;
+
   if (loading) {
     return (
       <main className="boot-screen">
@@ -268,9 +277,9 @@ export default function App() {
   // signed-out (or CLI-less) panel blocks at the first screen — the same role the open-Grasshopper
   // block plays for a missing definition — instead of letting the user discover the failure at
   // send time. One button opens a terminal that remediates the specific state (login, or
-  // npm-install + login). The auth probe re-reads on every SSE re-projection (3s cache), so
-  // finishing in the terminal unlocks this screen by itself a few seconds later. Gate only on the
-  // two known-bad wire values so an unexpected value can never brick the panel.
+  // npm-install + login). AgentHost's auth watcher polls the probe and publishes on a status
+  // change, so finishing in the terminal unlocks this screen by itself a few seconds later.
+  // Gate only on the two known-bad wire values so an unexpected value can never brick the panel.
   const codexAuth = runtime.codexAuth;
   if (codexAuth && (codexAuth.status === "logged-out" || codexAuth.status === "cli-missing")) {
     const cliMissing = codexAuth.status === "cli-missing";
@@ -293,7 +302,13 @@ export default function App() {
         >
           {cliMissing ? "Install Codex & log in" : "Log in to GPT"}
         </button>
-        <span className="boot-hint">This screen unlocks automatically once you're signed in.</span>
+        {/* A failed terminal launch (409 from /runtime/login-terminal, network error) lands in
+            `error`; the gate is the only surface the user can see, so it must show it. */}
+        {error ? (
+          <span className="boot-hint error" role="alert">{error}</span>
+        ) : (
+          <span className="boot-hint">This screen unlocks automatically once you're signed in.</span>
+        )}
       </main>
     );
   }
@@ -312,13 +327,6 @@ export default function App() {
     (total, flow) => total + flow.missingReferenceCount,
     0,
   );
-  const openSession = (id: string) => {
-    switchTab("model");
-    setSelectedId(id);
-    completion.markSeen(id);
-  };
-  openSessionRef.current = openSession;
-
   return (
     <div className="app-shell">
       <header className="document-header">

@@ -33,17 +33,14 @@ public sealed class CodexLoginLauncher
             return false;
         }
         // `cmd /k ...` — /k keeps the window open after the flow so the user sees the result and
-        // can retry. With the CLI installed, the doubled outer quotes are how cmd's /k preserves a
-        // quoted executable path that may contain spaces. With it missing, the terminal installs
-        // the CLI and chains into login; if npm itself is absent, cmd's own "'npm' is not
-        // recognized" plus the echoed Node.js hint stay visible in the open window — that IS the
-        // guidance surface, and the panel's login gate stays up for a retry after installing Node.
+        // can retry; the doubled outer quotes are how cmd's /k preserves a quoted path that may
+        // contain spaces.
         var hasCli = CodexInstallation.TryLocateExecutable(_options, out var codexPath);
-        var arguments = hasCli
-            ? $"/k \"\"{codexPath}\" login\""
-            : "/k \"echo Installing the Codex CLI with npm (requires Node.js - https://nodejs.org) & npm install -g @openai/codex && codex login\"";
         try
         {
+            var arguments = hasCli
+                ? $"/k \"\"{codexPath}\" login\""
+                : $"/k \"\"{WriteInstallScript()}\"\"";
             var startInfo = new ProcessStartInfo("cmd.exe")
             {
                 Arguments = arguments,
@@ -63,5 +60,35 @@ public sealed class CodexLoginLauncher
             message = $"Could not open the login terminal: {exception.Message}";
             return false;
         }
+    }
+
+    /// <summary>
+    /// Emits the CLI-missing remediation as a batch script rather than a <c>/k</c> one-liner.
+    /// The spawned cmd inherits AgentHost's PATH as captured at Rhino launch, so a Node.js
+    /// installed mid-session is invisible to a bare <c>npm</c> — and a fresh install's
+    /// <c>codex</c> shim likewise. The script probes the standard on-disk locations first,
+    /// falls back to PATH, and names the real remediation (restart Rhino) when even that fails.
+    /// </summary>
+    private static string WriteInstallScript()
+    {
+        var scriptPath = Path.Combine(Path.GetTempPath(), "gptino-codex-setup.cmd");
+        File.WriteAllText(scriptPath, string.Join("\r\n", new[]
+        {
+            "@echo off",
+            "echo Installing the Codex CLI with npm (requires Node.js - https://nodejs.org)",
+            "set \"NPM_CMD=npm\"",
+            "if exist \"%ProgramFiles%\\nodejs\\npm.cmd\" set \"NPM_CMD=%ProgramFiles%\\nodejs\\npm.cmd\"",
+            "call \"%NPM_CMD%\" install -g @openai/codex",
+            "if errorlevel 1 (",
+            "  echo.",
+            "  echo Install failed. If you just installed Node.js, restart Rhino and click the button again.",
+            "  goto :eof",
+            ")",
+            "set \"CODEX_CMD=codex\"",
+            "if exist \"%APPDATA%\\npm\\codex.cmd\" set \"CODEX_CMD=%APPDATA%\\npm\\codex.cmd\"",
+            "call \"%CODEX_CMD%\" login",
+            "",
+        }));
+        return scriptPath;
     }
 }

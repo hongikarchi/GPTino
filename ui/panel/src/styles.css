@@ -1770,6 +1770,7 @@ button.status-chip:hover strong {
    panel is healthy, it is waiting on the user, not broken. */
 .login-screen .brand-mark { color: var(--ink-amber); border-color: var(--amber-edge); background: var(--amber); }
 .boot-hint { color: var(--muted); font-size: var(--fs-sec); }
+.boot-hint.error { color: var(--text-red-8); }
 
 /* Session canvas — node-and-wire view of sessions → single-writer broker → documents */
 
