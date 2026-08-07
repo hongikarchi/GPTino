@@ -32,6 +32,11 @@ jobs:
         run: git diff --check HEAD^ HEAD
       - name: Verify repository safety boundary
         run: dotnet run --project tools/GPTino.DevLoop/GPTino.DevLoop.csproj --configuration Release -- verify --stage boundary
+      # The PythonStructuralSolver tests run the real solver.py against the runner's Python (no
+      # Rhino py39 here, so it falls back to PATH python). They validate against closed-form beam
+      # theory, so installing the real engine keeps that coverage live in CI instead of skipping it.
+      - name: Install the structural solver runtime (PyNiteFEA)
+        run: python -m pip install --disable-pip-version-check PyNiteFEA
       - name: Build panel, validate .NET, and stage one package
         shell: pwsh
         run: ./scripts/build-package.ps1
