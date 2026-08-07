@@ -192,6 +192,16 @@ export interface DataFlowDetail {
   };
 }
 
+/**
+ * Present while the session is halted for recovery: the halting job, the reason, and when it
+ * stopped. Absent/null on a healthy session. Cleared by POST /sessions/{id}/resume.
+ */
+export interface SessionHalt {
+  jobId: string;
+  message: string;
+  at: string;
+}
+
 export interface GptinoSession {
   id: string;
   title: string;
@@ -212,6 +222,8 @@ export interface GptinoSession {
   routingReason?: string;
   routingError?: string;
   paused: boolean;
+  /** Set while the session is halted pending user recovery; absent/null otherwise. */
+  halt?: SessionHalt | null;
   terminalOpen?: boolean;
   unread?: number;
   currentActivity?: string | null;

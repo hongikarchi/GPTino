@@ -41,6 +41,8 @@ public interface ILiveDocumentBackend
 
     Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken);
 
+    Task<object> ResumeSessionAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken);
+
     Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken);
 
     Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken);
@@ -90,6 +92,9 @@ public sealed class DisconnectedDocumentBackend : ILiveDocumentBackend
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken) =>
+        Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
+
+    public Task<object> ResumeSessionAsync(SessionRecord session, JsonElement arguments, CancellationToken cancellationToken) =>
         Task.FromException<object>(new InvalidOperationException("The Rhino/Grasshopper bridge is not connected."));
 
     public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
@@ -179,6 +184,8 @@ public sealed class DynamicToolDispatcher
                 "arrange_layout" => DynamicToolResult.Ok(await ArrangeLayoutAsync(call, cancellationToken).ConfigureAwait(false)),
                 "job_status" => DynamicToolResult.Ok(
                     await _backend.ReadJobAsync(call.Arguments, cancellationToken).ConfigureAwait(false)),
+                "recovery_resume" => DynamicToolResult.Ok(
+                    await ResumeRecoveryAsync(call, cancellationToken).ConfigureAwait(false)),
                 "skill_read" => DynamicToolResult.Ok(RequireSkills().Read(TryString(call.Arguments, "name"))),
                 "memory_append" => AppendMemory(call),
                 "goal_propose" => DynamicToolResult.Ok(
@@ -218,6 +225,14 @@ public sealed class DynamicToolDispatcher
         var session = await _store.FindSessionByThreadAsync(call.ThreadId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The calling Codex thread is not bound to a GPTino session.");
         return await _backend.ReadDataFlowAsync(session, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<object> ResumeRecoveryAsync(DynamicToolCall call, CancellationToken cancellationToken)
+    {
+        // Deliberately NOT gated on pause: recovery_resume only lifts the halt latch of the
+        // calling session — it performs no document write.
+        var session = await RequireCallingSessionAsync(call.ThreadId, cancellationToken).ConfigureAwait(false);
+        return await _backend.ResumeSessionAsync(session, call.Arguments, cancellationToken).ConfigureAwait(false);
     }
 
     private SkillLibrary RequireSkills() =>
@@ -293,6 +308,7 @@ public sealed class DynamicToolDispatcher
         "change_submit" => $"Submitting: {TryString(call.Arguments, "summary")}",
         "arrange_layout" => "Tidying the canvas layout",
         "job_status" => "Polling job status",
+        "recovery_resume" => "Resuming after a recovery halt",
         "skill_read" => $"Reading skill {TryString(call.Arguments, "name")}",
         "memory_append" => "Saving a project memory note",
         "data_read" => $"Reading data {TryString(call.Arguments, "name")}",

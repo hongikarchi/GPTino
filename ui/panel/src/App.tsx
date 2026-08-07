@@ -553,6 +553,7 @@ export default function App() {
             }}
             onCaptureSelection={actions.captureSelection}
             onResume={() => selected && void actions.pauseSession(selected.id, false)}
+            onResumeHalt={() => (selected ? actions.resumeHalt(selected.id) : Promise.resolve(false))}
             onDelete={() => {
               if (!selected) return;
               const deletedId = selected.id;

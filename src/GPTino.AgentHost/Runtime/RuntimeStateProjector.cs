@@ -64,6 +64,7 @@ public sealed class RuntimeStateProjector
         {
             var messages = await _store.ReadMessagesAsync(session.Id, limit: 250, cancellationToken: cancellationToken).ConfigureAwait(false);
             var hasEffectiveModel = _effectiveModels.TryGet(session.Id, out var effectiveModel);
+            var sessionHalt = live?.TryReadSessionHalt(session.Id);
             projectedSessions.Add(new
             {
                 id = session.Id,
@@ -76,6 +77,12 @@ public sealed class RuntimeStateProjector
             // Raw card JSON: the panel parses it (one shape, one owner) and renders the card.
             goalCard = session.GoalCard,
             approvalCard = session.ApprovalCard,
+                // SHARED CONTRACT: present while the host holds this session halted after a
+                // recoveryRequired job; null (absent) otherwise. The panel's resume button posts
+                // /sessions/{id}/resume.
+                halt = sessionHalt is null
+                    ? null
+                    : (object)new { jobId = sessionHalt.JobId, message = sessionHalt.Message, at = sessionHalt.At },
                 backend = "codex",
                 effectiveModel = hasEffectiveModel ? effectiveModel.Model : null,
                 reasoning = hasEffectiveModel ? effectiveModel.Reasoning : null,

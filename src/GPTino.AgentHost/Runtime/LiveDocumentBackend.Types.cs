@@ -134,6 +134,22 @@ public sealed partial class LiveDocumentBackend
 
     private sealed record QueuedConflict(Guid OtherJobId, ChangeConflict Conflict);
 
+    /// <summary>
+    /// Session-level recovery halt latch: set when a job of the session ends RecoveryRequired,
+    /// removed only by an explicit resume (model tool recovery_resume or the panel's resume
+    /// button) that names the halting job. While latched, fresh submissions are refused, queued
+    /// jobs are cancelled, the scheduler treats the session as Blocked, and the post-turn
+    /// auto-tidy never runs — the incident's canvas state stays untouched for review.
+    /// </summary>
+    internal sealed record SessionHaltState(Guid JobId, string Message, DateTimeOffset At);
+
+    /// <summary>
+    /// Result of a resume attempt: <c>Resumed</c> is true when the halt was lifted or the session
+    /// was not halted (idempotent); on a jobId mismatch it is false and <c>Halt</c> carries the
+    /// current halt so the caller can self-correct.
+    /// </summary>
+    internal sealed record SessionResumeOutcome(bool Resumed, SessionHaltState? Halt);
+
     private sealed class LiveJobEntry(
         QueuedJob job,
         SessionRecord session,

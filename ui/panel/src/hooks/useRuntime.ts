@@ -220,6 +220,18 @@ export function useRuntime() {
           (activeClient) => activeClient.setSessionTarget(sessionId, grasshopperDoc),
         );
       },
+      // Clears a halted session's halt state. Deliberately NOT optimistic: the halt banner must
+      // stay mounted while the POST is in flight (its busy "재개 중…" label and its inline failure
+      // message live in that component instance), so the halt is cleared only by the post-action
+      // refetch after the server's 204. On failure nothing was changed locally — the same banner
+      // instance stays up and renders the error. Double-fire is prevented by the busy state.
+      resumeHalt(sessionId: string) {
+        return runAction(
+          `halt:${sessionId}`,
+          undefined,
+          (activeClient) => activeClient.resumeHaltedSession(sessionId),
+        );
+      },
       pauseSession(sessionId: string, paused: boolean) {
         return runAction(
           `pause:${sessionId}`,

@@ -238,6 +238,11 @@ public static class HouseRules
           20000000: raise TimeoutError("solve budget"). A truly unbounded loop (while(true) / for(;;) / while
           True) with no such guard and no break is rejected before the write.
 
+        Recovery halt (mandatory): after a job ends recoveryRequired, the host HALTS this session — its
+        queued jobs are cancelled and new submissions are refused. Inspect job_status and the document,
+        report the actual state to the user, then call recovery_resume with the halting jobId. Never
+        blind-resubmit: cancelled jobs need a NEW idempotencyKey, resubmitted only after the resume.
+
         Canvas wiring discipline (mandatory):
         - Linear left-to-right flow: never create a wire whose source component sits right of its target.
         - A shared param connects only to its EARLIEST consumer; later stages receive the value relayed

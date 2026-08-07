@@ -27,7 +27,10 @@ describe("deriveGraph", () => {
     expect(sessionNodes.map((candidate) => candidate.id)).toEqual(
       state.sessions.map((session) => `session:${session.id}`),
     );
-    expect(sessionNodes.map((candidate) => candidate.rank)).toEqual([1, 2, 3, 4, 5]);
+    // Rank is 1-based priority order over however many demo sessions exist.
+    expect(sessionNodes.map((candidate) => candidate.rank)).toEqual(
+      state.sessions.map((_, index) => index + 1),
+    );
     expect(node(model, "orchestrator").kind).toBe("orchestrator");
     expect(node(model, "doc:rhino").docTarget).toBe("rhino");
     expect(node(model, `doc:gh:${DOC_FACADE}`).docTarget).toBe("grasshopper");

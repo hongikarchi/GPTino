@@ -25,6 +25,7 @@ import type {
   ModelProfile,
   RuntimeConflict,
   SessionActivity,
+  SessionHalt,
   SessionUsage,
 } from "../types";
 import { Icon } from "./Icons";
@@ -74,6 +75,8 @@ interface ChatPaneProps {
   onCaptureSelection?(): Promise<PinnedSelection>;
   /** Resume a paused session (the composer is disabled while paused). */
   onResume(): void;
+  /** Clear this session's halt state (POST /resume). Resolves false when the request failed. */
+  onResumeHalt(): Promise<boolean>;
   /** Soft-delete this session (hidden from the list, recoverable from the trash). */
   onDelete(): void;
   /** Stop the current turn and retract the last user message; resolves its text (or null) to edit. */
@@ -327,9 +330,88 @@ function ProblemIndicator({ error, conflicts }: { error?: string | null; conflic
   );
 }
 
+// Past this length the halt message renders truncated with a 더 보기/접기 toggle, so a long
+// recovery explanation never pushes the transcript below the fold.
+const HALT_MESSAGE_PREVIEW = 160;
+
+/** Exported for the pure-logic test harness (no DOM env in vitest). */
+export const truncateHaltMessage = (message: string, limit = HALT_MESSAGE_PREVIEW): string =>
+  message.length <= limit ? message : `${message.slice(0, limit - 1).trimEnd()}…`;
+
+/** Inline error under the 재개 button when POST /resume fails (exported for the tests). */
+export const HALT_RESUME_FAILED_MESSAGE =
+  "재개 요청이 실패했습니다 — 연결을 확인하고 다시 시도해 주세요.";
+
+/**
+ * The 재개 click flow, exported for the pure-logic tests: busy-guarded (no double-fire even if
+ * the disabled attribute is bypassed), clears the previous inline error before retrying, and
+ * reports the failure message when the POST fails. The banner stays mounted throughout — the
+ * halt itself is only cleared by the server-confirmed refetch (no optimistic clear), which is
+ * what keeps this instance's busy label and failure state visible.
+ */
+export async function runHaltResume(
+  busy: boolean,
+  onResume: () => Promise<boolean>,
+  setFailed: (message: string | null) => void,
+): Promise<void> {
+  if (busy) return;
+  setFailed(null);
+  const ok = await onResume();
+  if (!ok) setFailed(HALT_RESUME_FAILED_MESSAGE);
+}
+
+// The halted-for-recovery callout: sibling of .blocked-callout in the stream, amber like the
+// paused status (halt is recoverable — red is reserved for blocked/broken). Shows the reason
+// (truncated with expand), the halting job id, and the 재개 button that POSTs /resume.
+function HaltBanner({ halt, busy, onResume }: { halt: SessionHalt; busy: boolean; onResume(): Promise<boolean> }) {
+  const [expanded, setExpanded] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const long = halt.message.length > HALT_MESSAGE_PREVIEW;
+  return (
+    <div className="halt-callout" role="alert">
+      <strong>
+        <Icon name="warning" /> 복구 필요로 정지됨
+      </strong>
+      <p>
+        {expanded || !long ? halt.message : truncateHaltMessage(halt.message)}
+        {long ? (
+          <button
+            type="button"
+            className="halt-expand"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? "접기" : "더 보기"}
+          </button>
+        ) : null}
+      </p>
+      <div className="halt-meta">
+        <span className="halt-job" title={`정지시킨 작업: ${halt.jobId}`}>
+          Job {halt.jobId}
+        </span>
+        <time dateTime={halt.at}>{formatTime(halt.at)}</time>
+        <button
+          type="button"
+          className="halt-resume"
+          disabled={busy}
+          title="정지 상태를 해제하고 세션을 다시 실행합니다"
+          onClick={() => void runHaltResume(busy, onResume, setFailed)}
+        >
+          {busy ? "재개 중…" : "재개"}
+        </button>
+      </div>
+      {failed ? (
+        <p className="halt-error" role="alert">
+          {failed}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 const shortFile = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, error, currentSelection, onModel, onPinModel, onRename, onTarget, onSend, onCaptureSelection, onResume, onDelete, onStopEdit, onFocus, onFocusCanvas, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
+export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, busyActions, error, currentSelection, onModel, onPinModel, onRename, onTarget, onSend, onCaptureSelection, onResume, onResumeHalt, onDelete, onStopEdit, onFocus, onFocusCanvas, onSelectAlt, onAnswerGoal, onAnswerApproval }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
   // Inline session rename: the title becomes a text field on click, commits on Enter/blur.
   const [editingTitle, setEditingTitle] = useState(false);
@@ -711,6 +793,14 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
               </h2>
             )}
             <StatusBadge status={session.status} />
+            {session.halt ? (
+              <span
+                className="halt-badge"
+                title={`Job ${session.halt.jobId} — ${session.halt.message}`}
+              >
+                복구 필요로 정지됨
+              </span>
+            ) : null}
           </div>
         </div>
         {session.paused ? (
@@ -752,6 +842,13 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
       </header>
 
       <div className="chat-stream" ref={streamRef} aria-live="polite">
+        {session.halt ? (
+          <HaltBanner
+            halt={session.halt}
+            busy={busyActions.has(`halt:${session.id}`)}
+            onResume={onResumeHalt}
+          />
+        ) : null}
         {session.status === "blocked" && sessionConflicts.length > 0 ? (
           <div className="blocked-callout" role="alert">
             {sessionConflicts.map((conflict) => (

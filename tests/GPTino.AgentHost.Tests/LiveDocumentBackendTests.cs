@@ -1818,15 +1818,27 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
 
     public Guid SecondCanvasObjectId { get; } = Guid.Parse("63ef5e65-a239-4b02-89ea-d959fbd68404");
 
+    public Guid ThirdCanvasObjectId { get; } = Guid.Parse("2f4c1c8e-6c0d-4a86-9a4e-6a3f5b1f9d21");
+
     public string ObjectFingerprint => "object-v1";
 
     public string SecondObjectFingerprint => "object-v2";
+
+    public string ThirdObjectFingerprint => "object-v3";
 
     public bool IncludeNumberSliderValue { get; set; }
 
     // Opt-in: wire the two canvas objects (first -> second) so the tidy layout has a real dataflow cluster
     // to arrange. Off by default so every existing test keeps its wire-free canvas.
     public bool WireFirstTwoObjects { get; set; }
+
+    // Opt-in: three plain components with first -> second -> third wires (a linear dataflow chain),
+    // for the consumer-first delete reordering tests. Off by default.
+    public bool IncludeDeleteChain { get; set; }
+
+    // With IncludeDeleteChain: replaces the linear wires with a first <-> second cycle (third stays
+    // unwired) so the reorderer's cycle defense can be exercised.
+    public bool IncludeDeleteCycle { get; set; }
 
     public Guid? LastRegistrationMessageId { get; private set; }
 
@@ -1979,6 +1991,39 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
 
     public CanvasSnapshot CreateSnapshotFor(DocumentRuntime target)
     {
+        if (IncludeDeleteChain)
+        {
+            var typeId = Guid.Parse("29322931-96ae-4d34-874b-a722bc3a0e4a");
+            var chainObjects = new[]
+            {
+                new CanvasObjectState(
+                    CanvasObjectId, typeId, "Source",
+                    new CanvasPoint(10, 20), new CanvasSize(90, 40), ObjectFingerprint),
+                new CanvasObjectState(
+                    SecondCanvasObjectId, typeId, "Stage",
+                    new CanvasPoint(140, 20), new CanvasSize(90, 40), SecondObjectFingerprint),
+                new CanvasObjectState(
+                    ThirdCanvasObjectId, typeId, "Sink",
+                    new CanvasPoint(270, 20), new CanvasSize(90, 40), ThirdObjectFingerprint),
+            };
+            var chainWires = IncludeDeleteCycle
+                ? new[]
+                {
+                    new WireState(CanvasObjectId, Guid.NewGuid(), SecondCanvasObjectId, Guid.NewGuid()),
+                    new WireState(SecondCanvasObjectId, Guid.NewGuid(), CanvasObjectId, Guid.NewGuid()),
+                }
+                : new[]
+                {
+                    new WireState(CanvasObjectId, Guid.NewGuid(), SecondCanvasObjectId, Guid.NewGuid()),
+                    new WireState(SecondCanvasObjectId, Guid.NewGuid(), ThirdCanvasObjectId, Guid.NewGuid()),
+                };
+            return new(
+                target.GrasshopperDocumentId!.Value,
+                "document-v1",
+                chainObjects,
+                chainWires,
+                Array.Empty<GroupState>());
+        }
         var state = new CanvasObjectState(
             CanvasObjectId,
             Guid.Parse("29322931-96ae-4d34-874b-a722bc3a0e4a"),

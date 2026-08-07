@@ -373,6 +373,26 @@ internal static class DynamicToolSpecs
                         additionalProperties = false
                     }),
                 Function(
+                    "recovery_resume",
+                    "Lift the host-enforced session halt after a job ended recoveryRequired. When that " +
+                    "happens the host halts THIS session only: queued jobs are cancelled and new " +
+                    "change_submit calls are refused until you resume. FIRST inspect job_status for the " +
+                    "halting job and the live document, report the actual state to the user, THEN call " +
+                    "this with the halting jobId. Never blind-resubmit: jobs cancelled by the halt need a " +
+                    "NEW idempotencyKey, resubmitted only after resume. A wrong jobId does not resume — " +
+                    "the response returns the current halt {jobId, message} so you can self-correct. " +
+                    "Idempotent when the session is not halted.",
+                    new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            jobId = new { type = "string", format = "uuid", description = "The jobId that ended recoveryRequired and halted this session." }
+                        },
+                        required = new[] { "jobId" },
+                        additionalProperties = false
+                    }),
+                Function(
                     "skill_read",
                     "Read a built-in GPTino skill: vetted Python sources and reference notes shipped with the plugin. " +
                     "The available skills are indexed in your instructions. Use skill code verbatim for conventional " +

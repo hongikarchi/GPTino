@@ -43,6 +43,25 @@ public sealed class DynamicToolSchemaCoverageTests
         Assert.Equal(expected.OrderBy(x => x, StringComparer.Ordinal), schema.OrderBy(x => x, StringComparer.Ordinal));
     }
 
+    /// <summary>
+    /// The recovery halt teaches "call recovery_resume" in rejection messages and house rules; the
+    /// tool must actually exist in the model-facing schema (with its jobId argument) or the model
+    /// is told to call something it cannot emit — the exact drift class this file guards.
+    /// </summary>
+    [Fact]
+    public void RecoveryResumeToolIsExposedWithAJobIdArgument()
+    {
+        var json = JsonSerializer.SerializeToElement(DynamicToolSpecs.Create());
+        var tools = json[0].GetProperty("tools").EnumerateArray().ToArray();
+        var resume = Assert.Single(tools, tool =>
+            tool.GetProperty("name").GetString() == "recovery_resume");
+        var schema = resume.GetProperty("inputSchema");
+        Assert.True(schema.GetProperty("properties").TryGetProperty("jobId", out _));
+        Assert.Contains(
+            "jobId",
+            schema.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
+    }
+
     private static IEnumerable<string> EnumCamelNames<TEnum>() where TEnum : struct, Enum =>
         Enum.GetNames<TEnum>().Select(JsonNamingPolicy.CamelCase.ConvertName);
 

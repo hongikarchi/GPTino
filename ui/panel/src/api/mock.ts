@@ -293,6 +293,43 @@ const demoState: RuntimeState = {
       ],
     },
     {
+      // Halted-for-recovery fixture: badge in the chat header, halt banner with the halting job,
+      // and a 재개 button that clears the state (the mock's resumeHaltedSession below).
+      id: "columns",
+      title: "Column grid",
+      summary: "Ground-floor column retrofit",
+      status: "idle",
+      modelProfile: "high",
+      effectiveModel: "gpt-5.6-sol",
+      reasoning: "high",
+      paused: false,
+      boundGrasshopperDocId: DOC_FACADE,
+      halt: {
+        jobId: "8c1f5b2e-77aa-4d3c-9e01-5a2b6c4d8e90",
+        message:
+          "커밋 전 검증에서 기둥 12개 중 3개의 베이스 커브가 Rhino 문서에서 삭제된 것을 발견했습니다. " +
+          "지금 이어서 커밋하면 남은 9개 기둥만 재생성되어 그리드가 비대칭이 됩니다. " +
+          "삭제된 커브를 복원하거나(Undo 또는 레이어 Columns::Base 확인) 9개만으로 진행할지 결정한 뒤 재개해 주세요. " +
+          "재개 전까지 이 세션의 대기 중인 ChangeSet은 적용되지 않습니다.",
+        at: minutesAgo(6),
+      },
+      messages: [
+        {
+          id: "m-col-1",
+          role: "user",
+          content: "1층 기둥 그리드를 6m 스팬으로 재배치해줘.",
+          createdAt: minutesAgo(15),
+        },
+        {
+          id: "m-col-2",
+          role: "assistant",
+          content:
+            "기둥 12개의 재배치 ChangeSet을 준비했습니다. 커밋 전 검증 중 기준 커브 일부가 사라져 세션을 정지했습니다 — 위 배너에서 상태를 확인하고 재개해 주세요.",
+          createdAt: minutesAgo(6),
+        },
+      ],
+    },
+    {
       // An ordinary session doing document care — the same session model as every other row.
       id: "document-care",
       title: "Document care",
@@ -758,6 +795,13 @@ export function createMockApiClient(): GptinoApiClient {
       );
       state.orderVersion += 1;
       emit();
+    },
+    async resumeHaltedSession(sessionId) {
+      await delay();
+      // Idempotent like the real endpoint: resuming a non-halted (or unknown) session is a no-op.
+      mutateSession(sessionId, (index) => {
+        state.sessions[index].halt = null;
+      });
     },
     async setSessionPaused(sessionId, paused) {
       await delay();

@@ -25,6 +25,17 @@ public sealed record DurableJobRecord(
 public sealed record DurableJobInsertResult(bool Inserted, DurableJobRecord Record);
 
 /// <summary>
+/// Startup recovery outcome: every durable row, plus the ids of exactly the rows THIS call
+/// converted from a non-terminal state to RecoveryRequired. Callers must latch recovery halts
+/// from <see cref="InterruptedJobIds"/> only — rows that were already terminal RecoveryRequired
+/// before this startup (an acknowledged resume, or a row recorded by an earlier run/shutdown)
+/// are history, not a fresh interruption, and must never re-halt their session on restart.
+/// </summary>
+public sealed record DurableJobRecoveryResult(
+    IReadOnlyList<DurableJobRecord> Records,
+    IReadOnlySet<Guid> InterruptedJobIds);
+
+/// <summary>
 /// Durable metadata for live-document jobs. The store deliberately persists no
 /// replay intent: interrupted jobs are converted to RecoveryRequired at startup.
 /// </summary>
@@ -108,7 +119,7 @@ public sealed class DurableJobStore
         }
     }
 
-    public async Task<IReadOnlyList<DurableJobRecord>> RecoverInterruptedAsync(
+    public async Task<DurableJobRecoveryResult> RecoverInterruptedAsync(
         CancellationToken cancellationToken = default)
     {
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -117,6 +128,28 @@ public sealed class DurableJobStore
             await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var transaction = connection.BeginTransaction();
             var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+            // Capture the ids BEFORE the UPDATE, inside the same transaction: these — and only
+            // these — are the jobs genuinely interrupted mid-flight, as opposed to RecoveryRequired
+            // rows that were already terminal (acknowledged / recorded by an earlier run).
+            var interrupted = new HashSet<Guid>();
+            await using (var find = connection.CreateCommand())
+            {
+                find.Transaction = transaction;
+                find.CommandText = """
+                    SELECT job_id FROM live_jobs
+                    WHERE state IN ($queued,$validating,$executing,$verifying);
+                    """;
+                find.Parameters.AddWithValue("$queued", JobState.Queued.ToString());
+                find.Parameters.AddWithValue("$validating", JobState.Validating.ToString());
+                find.Parameters.AddWithValue("$executing", JobState.Executing.ToString());
+                find.Parameters.AddWithValue("$verifying", JobState.Verifying.ToString());
+                await using var reader = await find.ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    interrupted.Add(Guid.Parse(reader.GetString(0)));
+                }
+            }
             await using (var recover = connection.CreateCommand())
             {
                 recover.Transaction = transaction;
@@ -142,7 +175,7 @@ public sealed class DurableJobStore
             var records = await ReadAllAsync(connection, transaction, cancellationToken)
                 .ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return records;
+            return new DurableJobRecoveryResult(records, interrupted);
         }
         finally
         {

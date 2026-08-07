@@ -142,6 +142,11 @@ export function deriveGraph(state: RuntimeState): GraphModel {
 
   const sessionNodeById = new Map<string, GraphNode>();
   sessions.forEach((session, index) => {
+    // A halt rides the warning channel: the node gets the "!" mark and the reason lands in the
+    // tooltip, alongside any single-session conflict text.
+    const haltWarning = session.halt ? `복구 필요로 정지됨 — ${session.halt.message}` : undefined;
+    const conflictWarning = singleSessionWarnings.get(session.id);
+    const warning = [haltWarning, conflictWarning].filter(Boolean).join("\n") || undefined;
     const node: GraphNode = {
       id: `session:${session.id}`,
       kind: "session",
@@ -153,7 +158,7 @@ export function deriveGraph(state: RuntimeState): GraphModel {
       sublabel: session.currentActivity ?? session.job?.phase ?? session.summary,
       rank: index + 1,
       session,
-      warning: singleSessionWarnings.get(session.id),
+      warning,
     };
     nodes.push(node);
     sessionNodeById.set(session.id, node);

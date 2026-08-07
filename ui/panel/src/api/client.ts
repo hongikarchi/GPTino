@@ -36,6 +36,8 @@ export interface GptinoApiClient {
   getDataFlowDetail(docId?: string | null): Promise<DataFlowDetail>;
   reorderSessions(request: SessionOrderRequest): Promise<void>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
+  /** Clear a session's halt state so it can run again. Idempotent (204 on a non-halted session too). */
+  resumeHaltedSession(sessionId: string): Promise<void>;
   /** Stop the current turn and pull the last user message back for editing; returns its text. */
   retractLastMessage(sessionId: string): Promise<string | null>;
   /** Bind (docKey) or unbind (null) the GH document this session's writes target. */
@@ -249,6 +251,12 @@ class HttpApiClient implements GptinoApiClient {
       method: "PUT",
       body: JSON.stringify({ paused }),
     });
+  }
+
+  resumeHaltedSession(sessionId: string): Promise<void> {
+    // Empty body on purpose (the contract is POST with no payload → 204); request() skips the
+    // JSON Content-Type header when there is no body.
+    return this.request(`/sessions/${encodeURIComponent(sessionId)}/resume`, { method: "POST" });
   }
 
   async retractLastMessage(sessionId: string): Promise<string | null> {

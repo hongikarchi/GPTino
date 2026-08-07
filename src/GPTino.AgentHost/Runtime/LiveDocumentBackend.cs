@@ -99,6 +99,18 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     // committed ChangeSet's before/after snapshots). BeginTurn resets it; the orchestrator drains it at
     // turn end to seed the automatic layout tidy. Each set is guarded by locking on itself.
     private readonly ConcurrentDictionary<Guid, HashSet<Guid>> _turnCreatedComponents = new();
+    // Per-session recovery halt latch (see SessionHaltState). Set through the SetJobPhaseAsync
+    // funnel / the restart restore path; cleared only by an explicit resume naming the halt job.
+    private readonly ConcurrentDictionary<Guid, SessionHaltState> _sessionHalts = new();
+    // Jobs the halt paths (latch sweep / submit enqueue re-check) are cancelling, mapped to the
+    // halting job's id. Marked BEFORE broker TryCancel so the marker happens-before the completion
+    // observer wakes; consumed (removed) ONLY inside ObserveCompletionAsync, which is the single
+    // writer of the durable Cancelled/"halted-by-recovery" teaching record — two racing halt paths
+    // can therefore never strip each other's marker or clobber the record.
+    private readonly ConcurrentDictionary<Guid, Guid> _haltCancelledJobs = new();
+    // Last terminal job state per session: the post-turn auto-tidy consults it so a turn whose
+    // last job ended Failed/Blocked never has its half-applied canvas rearranged.
+    private readonly ConcurrentDictionary<Guid, JobState> _lastTerminalJobStates = new();
     private readonly SessionStore _store;
     private readonly AgentHostOptions _options;
     private readonly EventHub _events;
@@ -1234,8 +1246,10 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 // 'gptino:auto' skips the whole-snapshot-id gate; the concrete per-component layout
                 // fingerprints above still govern conflicts, so a between-capture drift blocks correctly.
                 expectedSnapshotId = ResourceExpectation.AutoFingerprint,
-                idempotencyKey = FormattableString.Invariant($"arrange-{Guid.NewGuid():N}"),
-                summary = FormattableString.Invariant($"Auto-tidy layout ({writeSet.Count} components)"),
+                // The key/summary prefixes are the arrange-job tag IsArrangeJob keys off; keep
+                // them in sync with the constants.
+                idempotencyKey = FormattableString.Invariant($"{ArrangeIdempotencyKeyPrefix}{Guid.NewGuid():N}"),
+                summary = FormattableString.Invariant($"{ArrangeSummaryPrefix} ({writeSet.Count} components)"),
                 wait,
             },
             BridgeProtocol.JsonOptions);
@@ -1259,6 +1273,20 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         {
             return 0;
         }
+        // A halted session never auto-tidies: the incident's canvas state must stay untouched
+        // for review (the production failure was an auto-tidy committing on RecoveryRequired
+        // wreckage). Soft-skip: a turn whose LAST job ended Failed/Blocked (or was cancelled/
+        // interrupted) is not rearranged either — never tidy a half-failed turn's canvas.
+        if (_sessionHalts.ContainsKey(session.Id))
+        {
+            return 0;
+        }
+        if (_lastTerminalJobStates.TryGetValue(session.Id, out var lastTerminal) &&
+            lastTerminal is JobState.Failed or JobState.Blocked
+                or JobState.RecoveryRequired or JobState.Cancelled)
+        {
+            return 0;
+        }
         Guid[] seeds;
         lock (set)
         {
@@ -1279,6 +1307,20 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         {
             _logger.LogWarning(exception, "Automatic post-turn tidy failed for session {SessionId}.", session.Id);
             return 0;
+        }
+    }
+
+    // Test seam (InternalsVisibleTo): seeds the per-turn accumulator exactly as a committed create
+    // would, so the tidy-gate tests can exercise the post-turn path without a full create round trip.
+    internal void SeedTurnCreatedComponents(Guid sessionId, params Guid[] componentIds)
+    {
+        var set = _turnCreatedComponents.GetOrAdd(sessionId, static _ => new HashSet<Guid>());
+        lock (set)
+        {
+            foreach (var id in componentIds)
+            {
+                set.Add(id);
+            }
         }
     }
 
@@ -1405,6 +1447,11 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 elapsed,
                 cancellationToken).ConfigureAwait(false);
         }
+
+        // Host-enforced recovery halt: a FRESH submission into a halted session is refused with
+        // the remediation path. Checked AFTER the idempotent duplicate fast path above so replays
+        // of already-accepted keys (including the halting job itself) keep answering.
+        ThrowIfSessionHalted(session.Id);
 
         // Resolve the optional user-approval grant AFTER the duplicate fast path (like the target
         // below): a matching request hash proves the request was already accepted with a
@@ -1565,7 +1612,9 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                             UpdatedAt = DateTimeOffset.UtcNow
                         };
                         entry = CreateRestoredEntry(recovered, session);
-                        RegisterRestoredEntry(entry);
+                        // latchHalt: this path itself just converted the orphaned row to
+                        // RecoveryRequired — a genuine this-run interruption, so it halts.
+                        RegisterRestoredEntry(entry, latchHalt: true);
                     }
                     duplicate = true;
                 }
@@ -1588,6 +1637,20 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         {
             var ticket = _broker.Enqueue(entry.Job);
             TrackCompletion(entry, ticket.Completion);
+            // RACE-CLOSE: the halt latch may have flipped after the submit-entry check but before
+            // this enqueue (a same-session job just ended RecoveryRequired). The latch-set path's
+            // sweep only sees jobs registered before its enumeration, and the scheduler overlay
+            // already refuses halted sessions — this re-check retires the freshly inserted job
+            // deterministically instead of leaving it parked in the queue until resume. Mark +
+            // cancel only: the completion observer is the single writer of the durable
+            // Cancelled/"halted-by-recovery" record and resolves the entry AFTER that write, so a
+            // wait:true caller still returns the terminal projection and a concurrent sweep over
+            // the same job can never race this path's marker (see CancelQueuedSessionJobs).
+            if (_sessionHalts.TryGetValue(session.Id, out var lateHalt))
+            {
+                _haltCancelledJobs.TryAdd(entry.Job.JobId, lateHalt.JobId);
+                _broker.TryCancel(entry.Job.JobId);
+            }
             _events.Publish();
         }
         return await ProjectJobAfterOptionalWaitAsync(
@@ -1915,6 +1978,15 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             // an existing human-placed object is never moved (it is only an immutable collision obstacle).
             preparedOperations = CanvasAutoPlacement.ResolveAutoPivots(preparedOperations, before.Canvas);
 
+            // Consumer-first delete reordering: within each CONTIGUOUS run of canvas.delete
+            // operations, downstream (consumer) components are dispatched before their upstream
+            // sources. The structure fingerprint hashes a component's INPUT wires, so deleting an
+            // upstream component first removes a surviving target's incoming wire and refuses the
+            // batch's own later delete mid-apply (RecoveryRequired). Deleting consumers first
+            // never moves a remaining target's fingerprint. DISPATCH ORDER ONLY: FrozenPayload,
+            // operation ids, and the accepted request hash (computed at submit) stay byte-identical.
+            preparedOperations = ReorderContiguousDeletesConsumerFirst(preparedOperations, before.Canvas);
+
             await EnsureHistoryBaselineAsync(targetState, before, execution.Token).ConfigureAwait(false);
             var lease = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
             await SetJobPhaseAsync(
@@ -2234,14 +2306,167 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         }
     }
 
+    /// <summary>
+    /// Reorders CONTIGUOUS runs of canvas.delete operations consumer-first using the
+    /// before-snapshot's wire topology (canvas wires unioned with each input's CurrentSources —
+    /// the same union the layout uses). Rules: never reorder across a non-delete boundary
+    /// (segment-local only), stable among independent deletes (original order preserved), and
+    /// defensive — a cycle or an unreadable target keeps the submitted order. Dispatch order
+    /// changes ONLY; payloads and identity are untouched.
+    /// </summary>
+    private static IReadOnlyList<PreparedOperation> ReorderContiguousDeletesConsumerFirst(
+        IReadOnlyList<PreparedOperation> operations,
+        CanvasSnapshot canvas)
+    {
+        static bool IsCanvasDelete(PreparedOperation operation) =>
+            string.Equals(operation.BridgeOperation, "canvas.delete", StringComparison.Ordinal);
+        if (operations.Count(IsCanvasDelete) < 2)
+        {
+            return operations;
+        }
+        var result = new List<PreparedOperation>(operations.Count);
+        var run = new List<PreparedOperation>();
+        void FlushRun()
+        {
+            if (run.Count == 1)
+            {
+                result.Add(run[0]);
+            }
+            else if (run.Count > 1)
+            {
+                result.AddRange(OrderDeleteRunConsumerFirst(run, canvas));
+            }
+            run.Clear();
+        }
+        foreach (var operation in operations)
+        {
+            if (IsCanvasDelete(operation))
+            {
+                run.Add(operation);
+                continue;
+            }
+            FlushRun();
+            result.Add(operation);
+        }
+        FlushRun();
+        return result;
+    }
+
+    // Complexity note: the stable-Kahn emission below is O(n^3) worst case over the run's delete
+    // count (n emissions x n candidate scans x n prerequisite checks). Deliberate: delete runs are
+    // a handful of operations in practice, and the stable smallest-original-index tie-break is
+    // worth more than an asymptotic win here.
+    private static IReadOnlyList<PreparedOperation> OrderDeleteRunConsumerFirst(
+        IReadOnlyList<PreparedOperation> run,
+        CanvasSnapshot canvas)
+    {
+        // Target object of every delete in the run; anything unreadable keeps the original order.
+        var indexesByTarget = new Dictionary<Guid, List<int>>();
+        for (var index = 0; index < run.Count; index++)
+        {
+            if (!run[index].Arguments.TryGetProperty("objectId", out var idElement) ||
+                idElement.ValueKind != JsonValueKind.String ||
+                !Guid.TryParse(idElement.GetString(), out var objectId))
+            {
+                return run;
+            }
+            if (!indexesByTarget.TryGetValue(objectId, out var list))
+            {
+                indexesByTarget[objectId] = list = [];
+            }
+            list.Add(index);
+        }
+
+        // source -> consumer edges restricted to the run's targets, from the before-snapshot's
+        // topology. Wires are authoritative; each input's CurrentSources are unioned in so a
+        // snapshot that reported only one form still yields the full graph.
+        var feeds = new HashSet<(Guid Source, Guid Consumer)>();
+        foreach (var wire in canvas.Wires)
+        {
+            if (wire.SourceObjectId != wire.TargetObjectId &&
+                indexesByTarget.ContainsKey(wire.SourceObjectId) &&
+                indexesByTarget.ContainsKey(wire.TargetObjectId))
+            {
+                feeds.Add((wire.SourceObjectId, wire.TargetObjectId));
+            }
+        }
+        foreach (var item in canvas.Objects)
+        {
+            if (!indexesByTarget.ContainsKey(item.ObjectId))
+            {
+                continue;
+            }
+            foreach (var input in item.Inputs)
+            {
+                foreach (var source in input.CurrentSources)
+                {
+                    if (source.OwnerObjectId != item.ObjectId &&
+                        indexesByTarget.ContainsKey(source.OwnerObjectId))
+                    {
+                        feeds.Add((source.OwnerObjectId, item.ObjectId));
+                    }
+                }
+            }
+        }
+        if (feeds.Count == 0)
+        {
+            return run;
+        }
+
+        // prerequisites[i] = run indexes that must dispatch BEFORE i: every consumer of i's
+        // target. Deleting the consumer first never moves the source's structure fingerprint;
+        // the reverse order does (the incident class this exists to kill).
+        var prerequisites = new HashSet<int>[run.Count];
+        for (var index = 0; index < run.Count; index++)
+        {
+            prerequisites[index] = [];
+        }
+        foreach (var (source, consumer) in feeds)
+        {
+            foreach (var sourceIndex in indexesByTarget[source])
+            {
+                foreach (var consumerIndex in indexesByTarget[consumer])
+                {
+                    prerequisites[sourceIndex].Add(consumerIndex);
+                }
+            }
+        }
+
+        // Stable Kahn: always emit the unblocked delete with the smallest ORIGINAL index, so
+        // independent deletes keep their submitted order exactly. No emittable node => cycle in
+        // the declared topology: keep the submitted order defensively.
+        var emitted = new bool[run.Count];
+        var ordered = new List<PreparedOperation>(run.Count);
+        while (ordered.Count < run.Count)
+        {
+            var progressed = false;
+            for (var index = 0; index < run.Count; index++)
+            {
+                if (emitted[index] || !prerequisites[index].All(previous => emitted[previous]))
+                {
+                    continue;
+                }
+                emitted[index] = true;
+                ordered.Add(run[index]);
+                progressed = true;
+                break;
+            }
+            if (!progressed)
+            {
+                return run;
+            }
+        }
+        return ordered;
+    }
+
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
         await _jobStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
-        var durableJobs = await _jobStore.RecoverInterruptedAsync(cancellationToken)
+        var recovery = await _jobStore.RecoverInterruptedAsync(cancellationToken)
             .ConfigureAwait(false);
         var (sessions, _) = await _store.ReadStateAsync(cancellationToken).ConfigureAwait(false);
         var sessionsById = sessions.ToDictionary(session => session.Id);
-        foreach (var durable in durableJobs)
+        foreach (var durable in recovery.Records)
         {
             if (durable.ChangeSet.SessionId != durable.SessionId)
             {
@@ -2251,12 +2476,17 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
 
             var session = sessionsById.GetValueOrDefault(durable.SessionId)
                 ?? CreateRecoveredSession(durable);
-            RegisterRestoredEntry(CreateRestoredEntry(durable, session));
+            // Latch ONLY sessions whose job THIS startup converted from a non-terminal state:
+            // RecoveryRequired rows that were already terminal — an acknowledged resume, or a
+            // row recorded by an earlier run — are history and must not re-halt on every boot.
+            RegisterRestoredEntry(
+                CreateRestoredEntry(durable, session),
+                latchHalt: recovery.InterruptedJobIds.Contains(durable.JobId));
             _enqueueSequence = Math.Max(_enqueueSequence, durable.EnqueueSequence);
         }
 
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
-        if (durableJobs.Count > 0)
+        if (recovery.Records.Count > 0)
         {
             _events.Publish();
         }
@@ -4850,23 +5080,47 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
 
     private IReadOnlyDictionary<Guid, SessionRunState> ReadSessionStates()
     {
+        IReadOnlyDictionary<Guid, SessionRunState> states;
         lock (_scheduleGate)
         {
-            return _sessionStates;
+            states = _sessionStates;
         }
+        if (_sessionHalts.IsEmpty)
+        {
+            return states;
+        }
+        // Overlay (on a copy — the source snapshot is shared): halted sessions read as Blocked so
+        // the ReadyWorkScheduler never dispatches their queued jobs. Core stays untouched and
+        // every other session keeps running.
+        var overlaid = new Dictionary<Guid, SessionRunState>(states);
+        foreach (var sessionId in _sessionHalts.Keys)
+        {
+            overlaid[sessionId] = SessionRunState.Blocked;
+        }
+        return overlaid;
     }
 
     private async Task SetJobPhaseAsync(
         LiveJobEntry entry,
         JobState state,
         string? message,
-        IReadOnlyList<ChangeConflict>? blockingConflicts = null)
+        IReadOnlyList<ChangeConflict>? blockingConflicts = null,
+        string? phaseOverride = null,
+        bool triggerHalt = true)
     {
-        var phase = state.ToString().ToLowerInvariant();
+        var phase = phaseOverride ?? state.ToString().ToLowerInvariant();
         // Terminal states can be re-asserted (executor sets them, then the broker's completion
         // observer sets the same state again); only genuine transitions go to the problem log.
         var isRepeat = state == entry.State &&
             string.Equals(message, entry.Message, StringComparison.Ordinal);
+        // A repeated RecoveryRequired re-assert is a full no-op: the first write already recorded
+        // it durably and latched the halt. Writing again would (a) re-latch a halt an intervening
+        // resume just lifted and (b) revert the durable "recoveryrequired-acknowledged" phase that
+        // resume recorded — the observer's late re-assert must never undo the user's resume.
+        if (state == JobState.RecoveryRequired && isRepeat)
+        {
+            return;
+        }
         await _jobStore.UpdateStateAsync(
             entry.Job.JobId,
             state,
@@ -4878,6 +5132,15 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             entry.BlockingConflicts = blockingConflicts;
         }
         entry.SetPhase(state, phase, message);
+        // Auto-tidy/arrange submissions are excluded from the per-session last-terminal tracker:
+        // it gates the NEXT turn's tidy, and a previous turn's async arrange ending Blocked must
+        // not suppress the tidy of a fully-committed later turn.
+        if ((state is JobState.Committed or JobState.RolledBack or JobState.Blocked
+                or JobState.RecoveryRequired or JobState.Failed or JobState.Cancelled) &&
+            !IsArrangeJob(entry))
+        {
+            _lastTerminalJobStates[entry.Session.Id] = state;
+        }
         if (!isRepeat)
         {
             _problemLog?.RecordJobState(
@@ -4888,6 +5151,221 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 message,
                 blockingConflicts);
         }
+        // The single funnel every RecoveryRequired transition passes through (execution paths and
+        // the completion observer alike) doubles as the halt trigger. Idempotent: the latch is
+        // first-writer-wins, so re-asserted terminals never re-halt or re-sweep. triggerHalt is
+        // false only for the shutdown OperationCanceledException path — see ObserveCompletionAsync.
+        if (state == JobState.RecoveryRequired && triggerHalt)
+        {
+            await HaltSessionForRecoveryAsync(entry.Session.Id, entry.Job.JobId, message)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private const string HaltedByRecoveryPhase = "halted-by-recovery";
+    private const string RecoveryAcknowledgedPhase = "recoveryrequired-acknowledged";
+
+    // ArrangeSeedsAsync tags every layout submission (the model's arrange_layout tool and the
+    // automatic post-turn tidy alike) with this idempotency-key prefix plus this summary prefix.
+    // Both must match for IsArrangeJob so an ordinary change_submit can't collide by key alone.
+    private const string ArrangeIdempotencyKeyPrefix = "arrange-";
+    private const string ArrangeSummaryPrefix = "Auto-tidy layout";
+
+    private static bool IsArrangeJob(LiveJobEntry entry) =>
+        entry.IdempotencyKey.StartsWith(ArrangeIdempotencyKeyPrefix, StringComparison.Ordinal) &&
+        entry.Summary.StartsWith(ArrangeSummaryPrefix, StringComparison.Ordinal);
+
+    private static string HaltCancellationMessage(Guid haltJobId) =>
+        $"Cancelled because job {haltJobId:D} ended recoveryRequired and the session was halted. " +
+        "Inspect job_status / the document, report to the user, then call recovery_resume with " +
+        "that jobId. Resubmit this work with a NEW idempotencyKey after resume if it is still wanted.";
+
+    private void ThrowIfSessionHalted(Guid sessionId)
+    {
+        if (_sessionHalts.TryGetValue(sessionId, out var halt))
+        {
+            throw new InvalidOperationException(
+                $"This session is halted: job {halt.JobId:D} ended recoveryRequired. Inspect " +
+                "job_status and the live document, report the actual state to the user, then call " +
+                $"recovery_resume with jobId {halt.JobId:D}. Queued jobs were cancelled — after " +
+                "resume, resubmit any still-needed work with a NEW idempotencyKey.");
+        }
+    }
+
+    /// <summary>Current halt of a session, or null when it is not halted (projection surface).</summary>
+    internal SessionHaltState? TryReadSessionHalt(Guid sessionId) =>
+        _sessionHalts.TryGetValue(sessionId, out var halt) ? halt : null;
+
+    // Sets the latch (first halt wins) and discards the session's pending auto-tidy seeds so the
+    // post-turn tidy can never fire on the incident's wreckage. Synchronous on purpose: the
+    // restart restore path calls it while holding _submissionGate, and the halt path must NEVER
+    // take that gate itself (the submit path holds it; the race is closed at the enqueue re-check).
+    // `at` pins the latch to the incident time when the caller knows it (the restart restore path
+    // passes the durable row's UpdatedAt); live halts default to now.
+    private bool LatchSessionHalt(Guid sessionId, Guid jobId, string? message, DateTimeOffset? at = null)
+    {
+        var halt = new SessionHaltState(
+            jobId,
+            string.IsNullOrWhiteSpace(message) ? "The job ended recoveryRequired." : message,
+            at ?? DateTimeOffset.UtcNow);
+        if (!_sessionHalts.TryAdd(sessionId, halt))
+        {
+            return false;
+        }
+        _turnCreatedComponents.TryRemove(sessionId, out _);
+        return true;
+    }
+
+    /// <summary>
+    /// Halts ONE session after a RecoveryRequired job: latches it, discards its pending tidy
+    /// seeds, and marks + broker-cancels its still-queued jobs (each job's completion observer
+    /// then writes the durable Cancelled/"halted-by-recovery" record). Other sessions keep
+    /// running. Internal (InternalsVisibleTo) so the race-close test can flip the latch mid-submit.
+    /// </summary>
+    internal Task HaltSessionForRecoveryAsync(Guid sessionId, Guid jobId, string? message)
+    {
+        if (!LatchSessionHalt(sessionId, jobId, message))
+        {
+            return Task.CompletedTask;
+        }
+        CancelQueuedSessionJobs(sessionId, jobId);
+        _events.Publish();
+        return Task.CompletedTask;
+    }
+
+    // Internal (InternalsVisibleTo) so the marker-race test can drive two concurrent sweeps over
+    // the same queued job.
+    internal void CancelQueuedSessionJobs(Guid sessionId, Guid haltJobId)
+    {
+        foreach (var entry in _jobs.Values
+            .Where(candidate => candidate.Session.Id == sessionId &&
+                candidate.Job.JobId != haltJobId &&
+                candidate.State == JobState.Queued)
+            .OrderBy(candidate => candidate.Job.EnqueueSequence))
+        {
+            // Mark BEFORE TryCancel so the marker happens-before the completion observer wakes.
+            // Markers are removed ONLY at the observer's single consumption point (which is also
+            // the single durable writer for halt cancellations) — so when this sweep and the
+            // submit path's enqueue re-check race over the same queued job, neither can strip the
+            // other's marker or double-write the row: whichever TryCancel wins resolves the broker
+            // completion once, and the one observer writes the one teaching record. TryCancel
+            // returning false (executing / already cancelled / not yet broker-enqueued) leaves the
+            // marker in place on purpose: the observer consumes it at that job's terminal no
+            // matter how it ends, and for the not-yet-enqueued case the submit path's re-check
+            // completes the cancellation under the same marker. (A marker added just after a job's
+            // observer already finished is unreachable and merely idles in the map — jobIds are
+            // never reused, so it can never mislabel anything.)
+            _haltCancelledJobs.TryAdd(entry.Job.JobId, haltJobId);
+            _broker.TryCancel(entry.Job.JobId);
+        }
+    }
+
+    /// <summary>
+    /// Drops the session-scoped runtime latches (recovery halt, last-terminal tidy gate, per-turn
+    /// tidy seeds) when a session is soft-deleted or purged. Without this, deleting a halted
+    /// session would park an unresumable latch: the panel hides the session, so nothing can ever
+    /// POST /resume for it again, and a later restore would come back frozen.
+    /// </summary>
+    public void ForgetSessionRuntimeState(Guid sessionId)
+    {
+        var hadHalt = _sessionHalts.TryRemove(sessionId, out _);
+        _lastTerminalJobStates.TryRemove(sessionId, out _);
+        _turnCreatedComponents.TryRemove(sessionId, out _);
+        if (hadHalt)
+        {
+            _broker.NotifyScheduleChanged();
+            _events.Publish();
+        }
+    }
+
+    /// <summary>
+    /// Lifts the recovery halt when <paramref name="jobId"/> names the halting job, acknowledging
+    /// it durably (phase "recoveryrequired-acknowledged"). Idempotent: resuming a session that is
+    /// not halted succeeds. A mismatched jobId returns the current halt for the error surface.
+    /// </summary>
+    internal async Task<SessionResumeOutcome> TryResumeSessionAsync(
+        Guid sessionId,
+        Guid jobId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_sessionHalts.TryGetValue(sessionId, out var halt))
+        {
+            return new SessionResumeOutcome(true, null);
+        }
+        if (halt.JobId != jobId)
+        {
+            return new SessionResumeOutcome(false, halt);
+        }
+        _sessionHalts.TryRemove(new KeyValuePair<Guid, SessionHaltState>(sessionId, halt));
+        // Durable acknowledgment written DIRECTLY (not through SetJobPhaseAsync — the funnel
+        // would re-latch the very halt this call is lifting).
+        _jobs.TryGetValue(jobId, out var haltEntry);
+        var acknowledgedMessage = haltEntry?.Message ?? halt.Message;
+        try
+        {
+            await _jobStore.UpdateStateAsync(
+                jobId,
+                JobState.RecoveryRequired,
+                RecoveryAcknowledgedPhase,
+                acknowledgedMessage,
+                cancellationToken).ConfigureAwait(false);
+            haltEntry?.SetPhase(
+                JobState.RecoveryRequired,
+                RecoveryAcknowledgedPhase,
+                acknowledgedMessage);
+        }
+        catch (KeyNotFoundException)
+        {
+            // No durable row for the halting job (latched without one); the resume still lifts.
+        }
+        _broker.NotifyScheduleChanged();
+        _events.Publish();
+        return new SessionResumeOutcome(true, null);
+    }
+
+    /// <summary>
+    /// Panel resume (SHARED CONTRACT: POST /sessions/{id}/resume): lifts whatever halt the
+    /// session currently has. Idempotent — a non-halted session is a successful no-op.
+    /// </summary>
+    internal async Task ResumeSessionFromPanelAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        if (_sessionHalts.TryGetValue(sessionId, out var halt))
+        {
+            await TryResumeSessionAsync(sessionId, halt.JobId, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Model tool recovery_resume: jobId must name the halting job (self-correcting error).</summary>
+    public async Task<object> ResumeSessionAsync(
+        SessionRecord session,
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        var jobText = RequiredString(arguments, "jobId");
+        if (!Guid.TryParse(jobText, out var jobId))
+        {
+            throw new InvalidOperationException("recovery_resume requires jobId as a UUID.");
+        }
+        var outcome = await TryResumeSessionAsync(session.Id, jobId, cancellationToken)
+            .ConfigureAwait(false);
+        if (!outcome.Resumed)
+        {
+            var halt = outcome.Halt!;
+            return new
+            {
+                resumed = false,
+                halt = new { jobId = halt.JobId, message = halt.Message, at = halt.At },
+                message = "jobId does not match the halting job. This session is halted by job " +
+                    $"{halt.JobId:D}; call recovery_resume again with that exact id.",
+            };
+        }
+        return new
+        {
+            resumed = true,
+            message = "Session resumed. Jobs queued at the halt were cancelled — resubmit any " +
+                "still-needed work with a NEW idempotencyKey.",
+        };
     }
 
     private static LiveJobEntry CreateRestoredEntry(
@@ -4915,7 +5393,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         return entry;
     }
 
-    private void RegisterRestoredEntry(LiveJobEntry entry)
+    private void RegisterRestoredEntry(LiveJobEntry entry, bool latchHalt)
     {
         var scope = IdempotencyScope(entry.Session.Id, entry.IdempotencyKey);
         if (!_jobs.TryAdd(entry.Job.JobId, entry))
@@ -4930,6 +5408,34 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 $"Duplicate durable idempotency key for session '{entry.Session.Id:D}'.");
         }
         _broker.RecordJobState(entry.Job.JobId, entry.State);
+        // The restart restore path does not flow through SetJobPhaseAsync (DurableJobStore marked
+        // the interrupted rows RecoveryRequired inside RecoverInterruptedAsync), so interrupted
+        // sessions come back HALTED here — honest state, resumed only explicitly. latchHalt is
+        // true ONLY for jobs converted to RecoveryRequired in THIS process (this startup's
+        // RecoverInterruptedAsync, or the duplicate-insert recovery in SubmitChangeAsync) —
+        // acknowledged or previously recorded RecoveryRequired rows never re-latch. Latch only:
+        // at restore every non-terminal sibling already became RecoveryRequired, so there is
+        // nothing queued to sweep, and this is also safe under _submissionGate (the
+        // duplicate-insert recovery path in SubmitChangeAsync holds it while registering). The
+        // latch timestamp is the record's UpdatedAt (the incident/conversion moment), not "now",
+        // so the panel shows when the job actually stopped.
+        if (latchHalt && entry.State == JobState.RecoveryRequired)
+        {
+            LatchSessionHalt(entry.Session.Id, entry.Job.JobId, entry.Message, entry.UpdatedAt);
+        }
+    }
+
+    // Test seam (InternalsVisibleTo): replays the completion observer's terminal re-assert for a
+    // job — the same state+message write ObserveCompletionAsync issues after the executor already
+    // recorded the terminal — so the repeat-suppression in SetJobPhaseAsync can be exercised
+    // deterministically against a resume that landed in between.
+    internal Task SimulateCompletionReassertForTestAsync(Guid jobId)
+    {
+        if (!_jobs.TryGetValue(jobId, out var entry))
+        {
+            throw new InvalidOperationException($"Unknown job '{jobId:D}'.");
+        }
+        return SetJobPhaseAsync(entry, entry.State, entry.Message);
     }
 
     private static SessionRecord CreateRecoveredSession(DurableJobRecord record) =>
@@ -4956,15 +5462,48 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         try
         {
             var result = await completion.ConfigureAwait(false);
-            await SetJobPhaseAsync(entry, result.State, result.Message).ConfigureAwait(false);
-            entry.CompleteWith(result);
+            // Single consumption point of the halt-cancellation markers, and the single durable
+            // writer for halt cancellations: the halt paths (latch sweep / enqueue re-check) only
+            // mark + broker-TryCancel, so however many of them raced over this job, exactly one
+            // teaching record is written, exactly here. The marker is set BEFORE the cancellation
+            // resolves this completion, so consumption is deterministic. The entry.State check
+            // separates a pre-dispatch halt cancel (entry never left Queued — a successful
+            // TryCancel proves the broker never took it) from an executor-side Cancelled, whose
+            // own richer record must stand even if a stale halt marker exists.
+            var haltMarked = _haltCancelledJobs.TryRemove(entry.Job.JobId, out var haltJobId);
+            if (haltMarked && result.State == JobState.Cancelled && entry.State == JobState.Queued)
+            {
+                var message = HaltCancellationMessage(haltJobId);
+                // Terminal phase FIRST, entry completion AFTER — a wait:true watcher that wakes
+                // on the completion must never observe a stale Queued projection.
+                await SetJobPhaseAsync(
+                    entry,
+                    JobState.Cancelled,
+                    message,
+                    phaseOverride: HaltedByRecoveryPhase).ConfigureAwait(false);
+                entry.CompleteWith(new JobExecutionResult(entry.Job.JobId, JobState.Cancelled, message));
+            }
+            else
+            {
+                await SetJobPhaseAsync(entry, result.State, result.Message).ConfigureAwait(false);
+                entry.CompleteWith(result);
+            }
         }
         catch (OperationCanceledException)
         {
+            // Shutdown: SingleWriterBroker.DisposeAsync cancelled the pending completion. Consume
+            // any halt marker (nothing else will) and record the honest interruption WITHOUT the
+            // halt trigger: during shutdown a latch+sweep would race every sibling's own
+            // OCE-observer write nondeterministically (Cancelled/"halted-by-recovery" vs
+            // RecoveryRequired) and leak markers — and it buys nothing, because whether a session
+            // must come back halted is decided by the NEXT startup's restore path from the
+            // durable rows alone.
+            _haltCancelledJobs.TryRemove(entry.Job.JobId, out _);
             const string message =
                 "AgentHost stopped before this job reached a durable terminal state. " +
                 "No operations will be replayed automatically; inspect the document before recovery.";
-            await SetJobPhaseAsync(entry, JobState.RecoveryRequired, message).ConfigureAwait(false);
+            await SetJobPhaseAsync(entry, JobState.RecoveryRequired, message, triggerHalt: false)
+                .ConfigureAwait(false);
             entry.CompleteWith(new JobExecutionResult(entry.Job.JobId, JobState.RecoveryRequired, message));
         }
         finally

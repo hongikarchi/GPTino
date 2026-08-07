@@ -476,6 +476,25 @@ api.MapPut("/sessions/{id:guid}/approval", async (
     return Results.NoContent();
 });
 
+// SHARED CONTRACT: lifts the host-enforced recovery halt of one session (the projection's "halt"
+// field). Empty body -> 204; idempotent (resuming a non-halted session is also 204); 404 for an
+// unknown session. Same base path and token auth as the approval endpoint above. A human pressed
+// this — the model-side twin is the recovery_resume tool.
+api.MapPost("/sessions/{id:guid}/resume", async (
+    Guid id,
+    SessionStore sessionStore,
+    LiveDocumentBackend liveBackend,
+    CancellationToken cancellationToken) =>
+{
+    var session = await sessionStore.FindSessionAsync(id, cancellationToken);
+    if (session is null)
+    {
+        return Results.NotFound(new ApiError("session_not_found", $"Session {id:D} was not found."));
+    }
+    await liveBackend.ResumeSessionFromPanelAsync(id, cancellationToken);
+    return Results.NoContent();
+});
+
 api.MapPost("/sessions", async (
     CreateSessionRequest request,
     SessionStore sessionStore,
@@ -605,9 +624,13 @@ api.MapPut("/sessions/{id:guid}/goal", async (
 api.MapDelete("/sessions/{id:guid}", async (
     Guid id,
     SessionStore sessionStore,
+    LiveDocumentBackend liveBackend,
     CancellationToken cancellationToken) =>
 {
     await sessionStore.SetSessionDeletedAsync(id, deleted: true, cancellationToken);
+    // A hidden session can never be resumed from the panel, so its recovery-halt latch (and the
+    // other session-scoped runtime latches) must not outlive the delete.
+    liveBackend.ForgetSessionRuntimeState(id);
     await queueControl.RefreshScheduleAsync(cancellationToken);
     events.Publish();
     return Results.NoContent();
@@ -634,9 +657,11 @@ api.MapPost("/sessions/{id:guid}/restore", async (
 api.MapDelete("/sessions/{id:guid}/purge", async (
     Guid id,
     SessionStore sessionStore,
+    LiveDocumentBackend liveBackend,
     CancellationToken cancellationToken) =>
 {
     await sessionStore.PurgeSessionAsync(id, cancellationToken);
+    liveBackend.ForgetSessionRuntimeState(id);
     await queueControl.RefreshScheduleAsync(cancellationToken);
     events.Publish();
     return Results.NoContent();

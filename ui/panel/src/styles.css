@@ -826,6 +826,106 @@ button.status-chip:hover strong {
   font-weight: 600;
 }
 
+/* Halted-for-recovery surfaces. Amber, like the paused status: a halt is recoverable by the
+   user (red stays reserved for blocked/broken). Both themes flow through the color tokens. */
+
+.halt-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 999px;
+  color: var(--text-amber-3);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.halt-callout {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
+  border-left: 3px solid var(--amber);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--amber) 7%, transparent);
+  /* Halt messages quote raw ids/paths; wrap them like the blocked callout does. */
+  overflow-wrap: anywhere;
+}
+
+.halt-callout strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-amber-3);
+  font-size: var(--fs-sec);
+}
+
+.halt-callout strong svg { width: 13px; height: 13px; }
+
+.halt-callout p {
+  margin: 5px 0 0;
+  color: var(--text-amber);
+  font-size: var(--fs-sec);
+  line-height: 1.55;
+}
+
+/* Inline expand toggle for long halt messages. */
+.halt-expand {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-amber-3);
+  font-size: var(--fs-micro);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.halt-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+}
+
+.halt-job {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Same recipe as .chat-resume — the one control that wakes a halted session. */
+.halt-resume {
+  flex: none;
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: var(--fs-micro, 10px);
+  color: var(--lime);
+  background: color-mix(in srgb, var(--lime) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lime) 35%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.halt-resume:hover:not(:disabled) { background: color-mix(in srgb, var(--lime) 16%, transparent); }
+.halt-resume:disabled { opacity: 0.5; cursor: default; }
+
+/* Scoped under the callout so it outweighs the `.halt-callout p` amber rule. */
+.halt-callout .halt-error {
+  margin: 6px 0 0;
+  color: var(--text-red-3);
+  font-size: var(--fs-micro);
+}
+
 .chat-stream {
   min-height: 0;
   padding: 14px clamp(12px, 3vw, 28px);

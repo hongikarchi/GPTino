@@ -332,6 +332,23 @@ public sealed class DynamicToolDispatcherTests
         Assert.DoesNotContain("\"members\":", result.Text.Replace(" ", ""));
     }
 
+    [Fact]
+    public async Task RecoveryResumeForwardsBoundSessionAndJobId()
+    {
+        using var directory = new TestDirectory();
+        var (dispatcher, store, backend) = await CreateDispatcherAsync(directory);
+        var session = await BindSessionAsync(store, "resume-thread");
+        var jobId = Guid.NewGuid().ToString("D");
+
+        var result = await dispatcher.DispatchAsync(
+            Call("recovery_resume", $$"""{"jobId":"{{jobId}}"}""", threadId: "resume-thread"),
+            CancellationToken.None);
+
+        Assert.True(result.Success, result.Text);
+        Assert.Equal(session.Id, backend.ResumedSession?.Id);
+        Assert.Equal(jobId, backend.ResumedJobId);
+    }
+
     private static async Task<SessionRecord> BindSessionAsync(SessionStore store, string threadId)
     {
         var session = await store.CreateSessionAsync(new CreateSessionRequest("Artifacts"));
@@ -410,6 +427,20 @@ public sealed class DynamicToolDispatcherTests
 
         public Task<object> ReadJobAsync(JsonElement arguments, CancellationToken cancellationToken) =>
             Task.FromResult<object>(new { state = "queued" });
+
+        public SessionRecord? ResumedSession { get; private set; }
+
+        public string? ResumedJobId { get; private set; }
+
+        public Task<object> ResumeSessionAsync(
+            SessionRecord session,
+            JsonElement arguments,
+            CancellationToken cancellationToken)
+        {
+            ResumedSession = session;
+            ResumedJobId = arguments.TryGetProperty("jobId", out var jobId) ? jobId.GetString() : null;
+            return Task.FromResult<object>(new { resumed = true });
+        }
 
         public Task<object> ReadDataFlowAsync(SessionRecord session, CancellationToken cancellationToken) =>
             Task.FromResult<object>(new { docId = "test", references = new { }, bakes = new { } });
