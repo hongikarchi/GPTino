@@ -1,9 +1,9 @@
 using System.Text.Json;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.BridgeContract.Tests;
 
-public sealed class CordycepsCanvasBridgeOperationHandlerTests
+public sealed class CanvasBridgeOperationHandlerTests
 {
     [Fact]
     public void CatalogPayload_OmittedOptionsUseBoundedDefaults()
@@ -41,11 +41,11 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
                         Obsolete: false)
                 })
         };
-        var handler = new CordycepsCanvasBridgeOperationHandler(adapter);
+        var handler = new CanvasBridgeOperationHandler(adapter);
         var arguments = new ComponentCatalogSearchRequest("point", 10);
         var request = BridgeOperationRequest.Create(
             "catalog-1",
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.catalog",
             BridgeOperationAccess.Read,
             2,
@@ -80,10 +80,10 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
                 "after",
                 [requestPayload.ObjectId])
         };
-        var handler = new CordycepsCanvasBridgeOperationHandler(adapter);
+        var handler = new CanvasBridgeOperationHandler(adapter);
         var request = BridgeOperationRequest.Create(
             requestPayload.OperationId,
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.setNumberSlider",
             BridgeOperationAccess.Write,
             2,
@@ -123,11 +123,11 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
             CatalogResult = new ComponentCatalogSearchResult(Guid.NewGuid(), string.Empty, 1, []),
             OutputResult = result
         };
-        var handler = new CordycepsCanvasBridgeOperationHandler(adapter);
+        var handler = new CanvasBridgeOperationHandler(adapter);
         var requestPayload = new InspectCanvasOutputsRequest(objectId);
         var request = BridgeOperationRequest.Create(
             "inspect-outputs",
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.inspectOutputs",
             BridgeOperationAccess.Read,
             2,
@@ -149,11 +149,11 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
             CatalogResult = new ComponentCatalogSearchResult(Guid.NewGuid(), string.Empty, 1, []),
             FocusResult = new CanvasFocusResult(SelectedCount: 2, MissingCount: 0, "focus-v1")
         };
-        var handler = new CordycepsCanvasBridgeOperationHandler(adapter);
+        var handler = new CanvasBridgeOperationHandler(adapter);
         var requestPayload = new CanvasFocusRequest(ids, Zoom: true);
         var request = BridgeOperationRequest.Create(
             "canvas-focus",
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.focusObjects",
             BridgeOperationAccess.Read,
             2,
@@ -170,7 +170,7 @@ public sealed class CordycepsCanvasBridgeOperationHandlerTests
         Assert.Equal("focus-v1", response.AfterFingerprint);
     }
 
-    private sealed class FakeCanvasAdapter : ICordycepsCanvasAdapter
+    private sealed class FakeCanvasAdapter : ICanvasAdapter
     {
         public required ComponentCatalogSearchResult CatalogResult { get; init; }
 

@@ -8,6 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\GPTino.BridgeContract\GPTino.BridgeContract.csproj" />
-    <ProjectReference Include="..\..\src\GPTino.CordycepsAdapter\GPTino.CordycepsAdapter.csproj" />
+    <ProjectReference Include="..\..\src\GPTino.CanvasSceneAdapter\GPTino.CanvasSceneAdapter.csproj" />
   </ItemGroup>
 </Project>

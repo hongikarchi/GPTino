@@ -1,4 +1,4 @@
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.AgentHost.Runtime;
 

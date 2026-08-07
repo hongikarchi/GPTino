@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using GPTino.BridgeContract;
 
-namespace GPTino.WireifyAdapter;
+namespace GPTino.ScriptAdapter;
 
 /// <summary>
 /// Produces the bridge concurrency fingerprint for the complete observable state of a

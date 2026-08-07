@@ -8,8 +8,8 @@ using GPTino.AgentHost.Hosting;
 using GPTino.AgentHost.Runtime;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
-using GPTino.WireifyAdapter;
+using GPTino.CanvasSceneAdapter;
+using GPTino.ScriptAdapter;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace GPTino.AgentHost.Tests;
@@ -318,7 +318,7 @@ public sealed class LiveDocumentBackendTests
             new TypedOperation(
                 "create-component",
                 OperationKind.CreateComponent,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 Array.Empty<ResourceAddress>(),
                 [resource],
                 true,
@@ -478,7 +478,7 @@ public sealed class LiveDocumentBackendTests
             new TypedOperation(
                 "set-diameter",
                 OperationKind.SetValue,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 Reversible: true,
@@ -579,8 +579,8 @@ public sealed class LiveDocumentBackendTests
                 new ResourceExpectation(secondResource, harness.SecondObjectFingerprint)
             ],
             [
-                new TypedOperation("first-slider", OperationKind.SetValue, AdapterOwner.Cordyceps, [], [firstResource], true, firstArtifact),
-                new TypedOperation("second-slider", OperationKind.SetValue, AdapterOwner.Cordyceps, [], [secondResource], true, secondArtifact)
+                new TypedOperation("first-slider", OperationKind.SetValue, AdapterOwner.Canvas, [], [firstResource], true, firstArtifact),
+                new TypedOperation("second-slider", OperationKind.SetValue, AdapterOwner.Canvas, [], [secondResource], true, secondArtifact)
             ],
             [new VerificationPredicate("No runtime errors", PredicateKind.RuntimeErrorAbsent, null, null)],
             [],
@@ -724,7 +724,7 @@ public sealed class LiveDocumentBackendTests
             new TypedOperation(
                 "bad-pivot",
                 OperationKind.CreateComponent,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 true,
@@ -815,7 +815,7 @@ public sealed class LiveDocumentBackendTests
             Array.Empty<Guid>(),
             Array.Empty<ResourceExpectation>(),
             Array.Empty<ResourceExpectation>(),
-            [new TypedOperation("read-component", OperationKind.Read, AdapterOwner.Cordyceps, [resource], [], true, artifact)],
+            [new TypedOperation("read-component", OperationKind.Read, AdapterOwner.Canvas, [resource], [], true, artifact)],
             Array.Empty<VerificationPredicate>(),
             Array.Empty<RollbackBeforeImage>(),
             DateTimeOffset.UtcNow);
@@ -857,7 +857,7 @@ public sealed class LiveDocumentBackendTests
             [],
             [new ResourceExpectation(resource, harness.ObjectFingerprint)],
             [new ResourceExpectation(resource, harness.ObjectFingerprint)],
-            [new TypedOperation("read-with-write", OperationKind.Read, AdapterOwner.Cordyceps, [resource], [resource], true, artifact)],
+            [new TypedOperation("read-with-write", OperationKind.Read, AdapterOwner.Canvas, [resource], [resource], true, artifact)],
             [],
             [],
             DateTimeOffset.UtcNow);
@@ -902,7 +902,7 @@ public sealed class LiveDocumentBackendTests
             [new TypedOperation(
                 "read-with-stray-write-set",
                 OperationKind.Read,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [resource],
                 [],
                 true,
@@ -995,7 +995,7 @@ public sealed class LiveDocumentBackendTests
             new TypedOperation(
                 "reserved-op",
                 kind,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 true,
@@ -1221,13 +1221,13 @@ public sealed class LiveDocumentBackendTests
     }
 
     [Fact]
-    public async Task ConsecutiveWireifyMutationsUseRollingComponentFingerprints()
+    public async Task ConsecutiveScriptMutationsUseRollingComponentFingerprints()
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         const string f0 = "python-f0";
         const string f1 = "python-f1";
@@ -1331,9 +1331,9 @@ public sealed class LiveDocumentBackendTests
                 new ResourceExpectation(valueResource, f0)
             ],
             [
-                new TypedOperation("python-source", OperationKind.UpdatePythonSource, AdapterOwner.Wireify, [], [sourceResource], true, sourceArtifact),
-                new TypedOperation("python-schema", OperationKind.SetComponentIo, AdapterOwner.Wireify, [], [ioResource], true, schemaArtifact),
-                new TypedOperation("python-execute", OperationKind.ExecutePython, AdapterOwner.Wireify, [], [valueResource], true, executeArtifact)
+                new TypedOperation("python-source", OperationKind.UpdatePythonSource, AdapterOwner.Script, [], [sourceResource], true, sourceArtifact),
+                new TypedOperation("python-schema", OperationKind.SetComponentIo, AdapterOwner.Script, [], [ioResource], true, schemaArtifact),
+                new TypedOperation("python-execute", OperationKind.ExecutePython, AdapterOwner.Script, [], [valueResource], true, executeArtifact)
             ],
             [
                 new VerificationPredicate("Final Python fingerprint", PredicateKind.FingerprintEquals, sourceResource, f3),
@@ -1366,8 +1366,8 @@ public sealed class LiveDocumentBackendTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.CordycepsRhino
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.RhinoScene
             ]);
         var objectId = Guid.NewGuid();
         await using var responder = harness.StartResponder(responseFactory: request =>
@@ -1449,7 +1449,7 @@ public sealed class LiveDocumentBackendTests
                 new ResourceExpectation(rhinoResource, ResourceExpectation.AbsentFingerprint)
             ],
             [
-                new TypedOperation("preflight-move", OperationKind.MoveComponent, AdapterOwner.Cordyceps, [], [layoutResource], true, moveArtifact),
+                new TypedOperation("preflight-move", OperationKind.MoveComponent, AdapterOwner.Canvas, [], [layoutResource], true, moveArtifact),
                 new TypedOperation("preflight-rhino", OperationKind.CreateRhinoObject, AdapterOwner.RhinoBridge, [], [rhinoResource], true, rhinoArtifact)
             ],
             [new VerificationPredicate("No runtime errors", PredicateKind.RuntimeErrorAbsent, null, null)],
@@ -1928,7 +1928,7 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
             new RegisterDocumentRequest(
                 "test-rhino",
                 "1.0.0",
-                availableAdapters ?? [BridgeAdapterOwner.CordycepsCanvas]),
+                availableAdapters ?? [BridgeAdapterOwner.Canvas]),
             target ?? Target);
         LastRegistrationMessageId = registration.MessageId;
         await connection.SendAsync(registration);
@@ -2110,7 +2110,7 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
                 new TypedOperation(
                     operationId,
                     OperationKind.MoveComponent,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     Array.Empty<ResourceAddress>(),
                     effectiveWrites,
                     Reversible: true,

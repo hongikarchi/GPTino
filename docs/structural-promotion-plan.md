@@ -69,7 +69,7 @@ structural_solve { membersArtifact, answers?: { supports?, cantileverNodeIds?,
 
 ### Phase 1 — `structural_extract` (대, 세션 1~2회)
 
-**산출물**: `RhinoSceneFoundationAdapter`에 추출 메서드(+`ICordycepsRhinoSceneAdapter` 계약,
+**산출물**: `RhinoSceneFoundationAdapter`에 추출 메서드(+`IRhinoSceneAdapter` 계약,
 브리지 핸들러, `LiveDocumentBackend` 패스스루), `DynamicToolSpecs`/`Dispatcher` 배선, 단위 테스트.
 
 - 소스 3종: **커브**(축선이 이미 선이면 그대로), **InstanceReference**(프로토타입 xform 역산 —

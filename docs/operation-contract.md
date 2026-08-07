@@ -31,7 +31,7 @@ submits an immutable `ChangeSet`. JSON properties and enum values are camelCase.
   on one component share a whole-component fingerprint conflict domain; a
   contiguous sequence is the sole sibling-domain exception and rolls each
   verified after-fingerprint into the next operation. A ChangeSet containing
-  that sequence may not write a second Python component or any non-Wireify
+  that sequence may not write a second Python component or any non-Script
   resource because solver activity can change runtime-sensitive fingerprints.
 - Grasshopper component and Rhino object parent resources conflict with their
   child domains, so deletion or whole-object mutation cannot evade a
@@ -112,7 +112,8 @@ eventual `ObjectTable.Add`, `Replace`, or `ModifyAttributes` call can still fail
 at execution time—for example because of document-table constraints—and the job
 can then enter `recoveryRequired`.
 
-Bridge application frames use `protocolVersion=4`, carry the exact bound
+Bridge application frames use the current `protocolVersion`
+(`BridgeProtocol.Version`), carry the exact bound
 document target, and validate request/response correlation. Reads carry
 `BridgeOperationAccess.Read` and no lease. Writes carry `Write` plus a non-empty
 host-generated writer lease, and each adapter rechecks its expected access. The
@@ -127,19 +128,19 @@ may cover only its write operations.
 
 | Typed kind | Owner / bridge operation | Payload |
 |---|---|---|
-| `read` | owner-specific inspect | Canvas/Rhino: `{objectId}`; Wireify: `{componentId}` |
-| `moveComponent`, `setLayout` | Cordyceps / `canvas.move` | `{operationId,pivots:{guid:{x,y}},expectedFingerprints:{guid:sha256}}` |
-| `setValue` | Cordyceps / `canvas.setNumberSlider` | `{operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces}`; only Number Slider is supported |
-| `connectWire`, `disconnectWire` | Cordyceps / `canvas.setWire` | `{operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:"connect"|"disconnect",rejectCycles:true}` |
-| `createComponent` | Cordyceps / `canvas.create` | `{operationId,objectId,componentTypeId,pivot:{x,y},nickName}`; the model-facing contract mandates `pivot:"gptino:auto"` with optional `autoUpstream:[objectId,...]` — the broker resolves it to a concrete non-overlapping pivot before dispatch |
-| `referenceRhinoObjects` | Cordyceps / `canvas.referenceRhinoObjects` | `{operationId,objectId,rhinoObjectIds:[guid,...],paramType:"curve"\|"brep"\|"mesh"\|"surface"\|"point"\|"geometry",pivot,nickName}`; creates a typed GH parameter that persistently references existing Rhino objects (a live reference, not a baked copy); writeSet is `grasshopperComponent` + `gptino:absent`, like `createComponent` |
-| `deleteComponent` | Cordyceps / `canvas.delete` | `{operationId,objectId,expectedFingerprint}` |
-| `setGroup` | Cordyceps / `canvas.setGroup` | `{operationId,groupId,name,objectIds,argbColor}` |
-| `updatePythonSource` | Wireify / `python.setSource` | `{operationId,componentId,expectedSourceSha256,source,runtime:"csharp"|"cpython3"|"ironPython2",expireSolution}` — the `python.*` operations drive every Rhino 8 script component regardless of language |
-| `setComponentIo` | Wireify / `python.setSchema` | `{operationId,componentId,inputs,outputs,preserveIncidentWires}` |
-| `convertSocket` | Wireify / `python.setTyping` | `{operationId,componentId,inputParameterId,typeHint,access:"item"|"list"|"tree"}` |
-| `executePython` | Wireify / `python.execute` | `{operationId,componentId,expireUpstream,recomputeDocument}` |
-| `readRuntimeMessages` | Wireify / `python.runtimeMessages` | `{componentId}` |
+| `read` | owner-specific inspect | Canvas/Rhino: `{objectId}`; Script: `{componentId}` |
+| `moveComponent`, `setLayout` | Canvas / `canvas.move` | `{operationId,pivots:{guid:{x,y}},expectedFingerprints:{guid:sha256}}` |
+| `setValue` | Canvas / `canvas.setNumberSlider` | `{operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces}`; only Number Slider is supported |
+| `connectWire`, `disconnectWire` | Canvas / `canvas.setWire` | `{operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:"connect"|"disconnect",rejectCycles:true}` |
+| `createComponent` | Canvas / `canvas.create` | `{operationId,objectId,componentTypeId,pivot:{x,y},nickName}`; the model-facing contract mandates `pivot:"gptino:auto"` with optional `autoUpstream:[objectId,...]` — the broker resolves it to a concrete non-overlapping pivot before dispatch |
+| `referenceRhinoObjects` | Canvas / `canvas.referenceRhinoObjects` | `{operationId,objectId,rhinoObjectIds:[guid,...],paramType:"curve"\|"brep"\|"mesh"\|"surface"\|"point"\|"geometry",pivot,nickName}`; creates a typed GH parameter that persistently references existing Rhino objects (a live reference, not a baked copy); writeSet is `grasshopperComponent` + `gptino:absent`, like `createComponent` |
+| `deleteComponent` | Canvas / `canvas.delete` | `{operationId,objectId,expectedFingerprint}` |
+| `setGroup` | Canvas / `canvas.setGroup` | `{operationId,groupId,name,objectIds,argbColor}` |
+| `updatePythonSource` | Script / `python.setSource` | `{operationId,componentId,expectedSourceSha256,source,runtime:"csharp"|"cpython3"|"ironPython2",expireSolution}` — the `python.*` operations drive every Rhino 8 script component regardless of language |
+| `setComponentIo` | Script / `python.setSchema` | `{operationId,componentId,inputs,outputs,preserveIncidentWires}` |
+| `convertSocket` | Script / `python.setTyping` | `{operationId,componentId,inputParameterId,typeHint,access:"item"|"list"|"tree"}` |
+| `executePython` | Script / `python.execute` | `{operationId,componentId,expireUpstream,recomputeDocument}` |
+| `readRuntimeMessages` | Script / `python.runtimeMessages` | `{componentId}` |
 | `createRhinoPrimitive` | Rhino / `rhino.createPrimitive` | `{operationId,objectId,logicalEntityId,kind:"point"|"line"|"polyline"|"circle"|"box"|"sphere",point?,line?,polyline?,circle?,box?,sphere?,attributes?}`; exactly one definition must match `kind` |
 | `transformRhinoObject` | Rhino / `rhino.transform` | `{operationId,objectId,expectedFingerprint,matrix:{m00,m01,m02,m03,m10,m11,m12,m13,m20,m21,m22,m23,m30,m31,m32,m33}}` |
 | `createRhinoObject`, `modifyRhinoObject`, `bakeGeometry`, `updateRhinoAttributes` | Rhino / `rhino.upsert` | `{operationId,objectId,logicalEntityId,geometryType,geometryJson,attributesJson,expectedFingerprint}`; `createRhinoObject`/`bakeGeometry` require payload `null` plus writeSet `gptino:absent`, while modification/attribute updates require the same inspected fingerprint in both places |

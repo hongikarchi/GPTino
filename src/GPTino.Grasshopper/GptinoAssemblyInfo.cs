@@ -1,7 +1,7 @@
 using System.Drawing;
 using GPTino.BridgeContract;
-using GPTino.CordycepsAdapter;
-using GPTino.WireifyAdapter;
+using GPTino.CanvasSceneAdapter;
+using GPTino.ScriptAdapter;
 using Grasshopper.Kernel;
 
 namespace GPTino.Grasshopper;
@@ -42,10 +42,10 @@ public sealed class GptinoAssemblyPriority : GH_AssemblyPriority
             GrasshopperSelectionWatcher.Start();
             var resolver = new ExplicitGrasshopperDocumentResolver();
             BridgeProcessHub.RegisterOperationHandler(
-                new CordycepsCanvasBridgeOperationHandler(
+                new CanvasBridgeOperationHandler(
                     new GrasshopperCanvasFoundationAdapter(resolver)));
             BridgeProcessHub.RegisterOperationHandler(
-                new WireifyBridgeOperationHandler(
+                new ScriptBridgeOperationHandler(
                     new GrasshopperPythonFoundationAdapter(resolver)));
             var documentCount = global::Grasshopper.Instances.DocumentServer.DocumentCount;
             var hasActiveCanvas = global::Grasshopper.Instances.ActiveCanvas is not null;

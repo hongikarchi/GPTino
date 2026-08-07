@@ -17,7 +17,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../GPTino.BridgeContract/GPTino.BridgeContract.csproj" />
-    <ProjectReference Include="../GPTino.WireifyAdapter/GPTino.WireifyAdapter.csproj" />
-    <ProjectReference Include="../GPTino.CordycepsAdapter/GPTino.CordycepsAdapter.csproj" />
+    <ProjectReference Include="../GPTino.ScriptAdapter/GPTino.ScriptAdapter.csproj" />
+    <ProjectReference Include="../GPTino.CanvasSceneAdapter/GPTino.CanvasSceneAdapter.csproj" />
   </ItemGroup>
 </Project>

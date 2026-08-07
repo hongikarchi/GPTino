@@ -104,7 +104,7 @@ public sealed class InstructionAssemblerTests
         Assert.Contains("\"acceptancePredicates\":[]", HouseRules.Text, StringComparison.Ordinal);
         Assert.Contains("applied", HouseRules.Text, StringComparison.Ordinal);
         Assert.DoesNotContain(
-            "snapshot_read the component (scope wireify:",
+            "snapshot_read the component (scope script:",
             HouseRules.Text,
             StringComparison.Ordinal);
     }

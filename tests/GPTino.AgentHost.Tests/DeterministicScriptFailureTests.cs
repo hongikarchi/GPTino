@@ -2,8 +2,8 @@ using System.Text.Json;
 using GPTino.AgentHost.Api;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
-using GPTino.WireifyAdapter;
+using GPTino.CanvasSceneAdapter;
+using GPTino.ScriptAdapter;
 
 namespace GPTino.AgentHost.Tests;
 
@@ -18,8 +18,8 @@ public sealed class DeterministicScriptFailureTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         await using var responder = harness.StartResponder(responseFactory: request => request.Operation switch
         {
@@ -77,7 +77,7 @@ public sealed class DeterministicScriptFailureTests
                 new TypedOperation(
                     "execute-script",
                     OperationKind.ExecutePython,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [resource],
                     Reversible: true,
@@ -120,8 +120,8 @@ public sealed class DeterministicScriptFailureTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         await using var responder = harness.StartResponder(responseFactory: request => request.Operation switch
         {
@@ -205,7 +205,7 @@ public sealed class DeterministicScriptFailureTests
                 new TypedOperation(
                     "set-source",
                     OperationKind.UpdatePythonSource,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [sourceResource],
                     Reversible: true,
@@ -213,7 +213,7 @@ public sealed class DeterministicScriptFailureTests
                 new TypedOperation(
                     "execute-script",
                     OperationKind.ExecutePython,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [valueResource],
                     Reversible: true,
@@ -250,8 +250,8 @@ public sealed class DeterministicScriptFailureTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         await using var responder = harness.StartResponder(responseFactory: request => request.Operation switch
         {
@@ -308,7 +308,7 @@ public sealed class DeterministicScriptFailureTests
                 new TypedOperation(
                     "set-schema",
                     OperationKind.SetComponentIo,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [resource],
                     Reversible: true,
@@ -342,8 +342,8 @@ public sealed class DeterministicScriptFailureTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         var writeOps = new List<string>();
         await using var responder = harness.StartResponder(responseFactory: request =>
@@ -411,8 +411,8 @@ public sealed class DeterministicScriptFailureTests
                 new ResourceExpectation(ioResource, InitialFingerprint)
             ],
             [
-                new TypedOperation("shrink-source", OperationKind.UpdatePythonSource, AdapterOwner.Wireify, [], [sourceResource], true, sourceArtifact),
-                new TypedOperation("shrink-schema", OperationKind.SetComponentIo, AdapterOwner.Wireify, [], [ioResource], true, schemaArtifact)
+                new TypedOperation("shrink-source", OperationKind.UpdatePythonSource, AdapterOwner.Script, [], [sourceResource], true, sourceArtifact),
+                new TypedOperation("shrink-schema", OperationKind.SetComponentIo, AdapterOwner.Script, [], [ioResource], true, schemaArtifact)
             ],
             [],
             [],
@@ -519,7 +519,7 @@ public sealed class DeterministicScriptFailureTests
             new TypedOperation(
                 "bad-slider",
                 OperationKind.SetValue,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 Reversible: true,
@@ -585,7 +585,7 @@ public sealed class DeterministicScriptFailureTests
                 new TypedOperation(
                     "default-slider",
                     OperationKind.SetValue,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     [],
                     [resource],
                     Reversible: true,

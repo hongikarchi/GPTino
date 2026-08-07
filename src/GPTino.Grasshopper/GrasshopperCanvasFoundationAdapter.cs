@@ -6,7 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
 using GPTino.BridgeContract;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 using Grasshopper.Kernel;
 using Grasshopper.Kernel.Data;
 using Grasshopper.Kernel.Parameters;

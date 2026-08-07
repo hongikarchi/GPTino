@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using GPTino.BridgeContract;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.Rhino;
 
@@ -128,10 +128,10 @@ public sealed class GptinoRuntimeHost : IDisposable
         }
     }
 
-    public void RegisterRhinoSceneAdapter(ICordycepsRhinoSceneAdapter adapter)
+    public void RegisterRhinoSceneAdapter(IRhinoSceneAdapter adapter)
     {
         ArgumentNullException.ThrowIfNull(adapter);
-        RegisterOperationHandler(new CordycepsRhinoBridgeOperationHandler(adapter));
+        RegisterOperationHandler(new RhinoSceneBridgeOperationHandler(adapter));
     }
 
     /// <summary>Registers a fully specified target. This method never infers an active document.</summary>

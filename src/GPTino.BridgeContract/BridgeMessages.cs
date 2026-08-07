@@ -14,11 +14,14 @@ public static class BridgeMessageTypes
     public const string OperationResponse = "operation.response";
 }
 
+// Domain split (behavior derived from the Wireify and Cordyceps upstream projects; see
+// THIRD_PARTY_NOTICES): Script owns script-component source/schema/typing/execution,
+// Canvas owns GH canvas topology/layout, RhinoScene owns the Rhino document tables.
 public enum BridgeAdapterOwner
 {
-    Wireify,
-    CordycepsCanvas,
-    CordycepsRhino,
+    Script,
+    Canvas,
+    RhinoScene,
 }
 
 public enum BridgeOperationAccess

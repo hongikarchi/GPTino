@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <Description>Typed Wireify-owned Python and parameter operations for GPTino.</Description>
+    <Description>Typed script-component source, schema, typing, and execution operations for GPTino.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../GPTino.BridgeContract/GPTino.BridgeContract.csproj" />

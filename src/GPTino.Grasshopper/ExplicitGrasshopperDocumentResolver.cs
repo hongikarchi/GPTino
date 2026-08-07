@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using GPTino.BridgeContract;
-using GPTino.CordycepsAdapter;
-using GPTino.WireifyAdapter;
+using GPTino.CanvasSceneAdapter;
+using GPTino.ScriptAdapter;
 using Grasshopper.Kernel;
 
 namespace GPTino.Grasshopper;
@@ -11,8 +11,8 @@ namespace GPTino.Grasshopper;
 /// It never falls back to Instances.ActiveCanvas or Instances.ActiveDocument for an operation.
 /// </summary>
 public sealed class ExplicitGrasshopperDocumentResolver :
-    IWireifyDocumentResolver<GH_Document>,
-    ICordycepsDocumentResolver<GH_Document>
+    IScriptDocumentResolver<GH_Document>,
+    ICanvasSceneDocumentResolver<GH_Document>
 {
     public GH_Document Resolve(DocumentTarget target)
     {

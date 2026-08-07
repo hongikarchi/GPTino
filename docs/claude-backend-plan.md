@@ -24,8 +24,9 @@
 - **커플링은 가장자리 4곳뿐**: (a) 인바운드 와이어 파서(`DynamicToolCall.FromJson`, `item/tool/call`),
   (b) `codex_thread_id` 컬럼, (c) 아웃바운드 턴 러너(`SessionOrchestrator` + `ICodexSessionClient`),
   (d) 타임아웃 상수(25s/15s, Codex 30s 데드라인 연동).
-- **Cordyceps/Wireify는 외부 의존성 아님**: `GPTino.CordycepsAdapter`/`GPTino.WireifyAdapter`는
-  내부 이름(각각 MIT/Apache-2.0 출처 표기 재구현). `.references/wireify`는 gitignore·미빌드 참고자료.
+- **Cordyceps/Wireify는 외부 의존성 아님**: `GPTino.CanvasSceneAdapter`/`GPTino.ScriptAdapter`(구
+  CordycepsAdapter/WireifyAdapter)는 내부 코드(각각 MIT/Apache-2.0 출처 표기 재구현).
+  `.references/wireify`는 gitignore·미빌드 참고자료.
 
 ## 전달 벡터 대칭 (왜 구현이 갈리나)
 

@@ -823,8 +823,8 @@ if (developmentDataDirectory is not null)
         {
             scopes = new[]
             {
-                $"wireify:{componentId:D}",
-                $"wireify-messages:{componentId:D}"
+                $"script:{componentId:D}",
+                $"script-messages:{componentId:D}"
             }
         });
         return Results.Ok(await liveBackend.ReadSnapshotAsync(

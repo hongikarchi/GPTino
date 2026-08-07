@@ -276,7 +276,7 @@ Speed discipline (mandatory):
    "baseSnapshotRevision":-1,"baseGitCommit":null,"dependencies":[],
    "readSet":[],"writeSet":[{"resource":{"kind":"grasshopperComponent","id":"<uuid>","field":"*"},
    "expectedFingerprint":"gptino:absent"}],
-   "operations":[{"operationId":"create-x","kind":"createComponent","owner":"cordyceps",
+   "operations":[{"operationId":"create-x","kind":"createComponent","owner":"canvas",
    "reads":[],"writes":[{"kind":"grasshopperComponent","id":"<uuid>","field":"*"}],
    "reversible":false,"payloadArtifact":"operations/create-x.json"}],
    "acceptancePredicates":[],

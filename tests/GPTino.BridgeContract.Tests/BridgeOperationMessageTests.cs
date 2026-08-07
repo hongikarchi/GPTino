@@ -9,7 +9,7 @@ public sealed class BridgeOperationMessageTests
     {
         var request = BridgeOperationRequest.Create(
             "op-1",
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.move",
             BridgeOperationAccess.Write,
             4,
@@ -24,7 +24,7 @@ public sealed class BridgeOperationMessageTests
     {
         var request = BridgeOperationRequest.Create(
             "op-2",
-            BridgeAdapterOwner.Wireify,
+            BridgeAdapterOwner.Script,
             "python.inspect",
             BridgeOperationAccess.Read,
             4,
@@ -39,7 +39,7 @@ public sealed class BridgeOperationMessageTests
         var componentId = Guid.NewGuid();
         var request = BridgeOperationRequest.Create(
             "op-3",
-            BridgeAdapterOwner.Wireify,
+            BridgeAdapterOwner.Script,
             "python.setSource",
             BridgeOperationAccess.Write,
             8,

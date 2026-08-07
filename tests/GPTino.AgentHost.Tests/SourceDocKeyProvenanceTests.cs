@@ -1,7 +1,7 @@
 using System.Text.Json;
 using GPTino.AgentHost.Runtime;
 using GPTino.BridgeContract;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.AgentHost.Tests;
 
@@ -75,9 +75,9 @@ public sealed class SourceDocKeyProvenanceTests
         var frozen = new byte[] { 1 };
         var operations = new[]
         {
-            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.CordycepsRhino, "rhino.delete", deleteCovered, frozen, "s1"),
-            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.CordycepsRhino, "rhino.delete", deleteWrongFp, frozen, "s2"),
-            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.CordycepsRhino, "rhino.fixEndpointPair", fixPair, frozen, "s3"),
+            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.RhinoScene, "rhino.delete", deleteCovered, frozen, "s1"),
+            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.RhinoScene, "rhino.delete", deleteWrongFp, frozen, "s2"),
+            new LiveDocumentBackend.PreparedOperation(null!, BridgeAdapterOwner.RhinoScene, "rhino.fixEndpointPair", fixPair, frozen, "s3"),
         };
         var grant = new Dictionary<Guid, string>
         {
@@ -159,11 +159,11 @@ public sealed class SourceDocKeyProvenanceTests
         var operations = new[]
         {
             new LiveDocumentBackend.PreparedOperation(
-                null!, BridgeAdapterOwner.CordycepsRhino, "rhino.upsert", upsertArguments, frozen, "sha-upsert"),
+                null!, BridgeAdapterOwner.RhinoScene, "rhino.upsert", upsertArguments, frozen, "sha-upsert"),
             new LiveDocumentBackend.PreparedOperation(
-                null!, BridgeAdapterOwner.CordycepsRhino, "rhino.createPrimitive", primitiveArguments, frozen, "sha-prim"),
+                null!, BridgeAdapterOwner.RhinoScene, "rhino.createPrimitive", primitiveArguments, frozen, "sha-prim"),
             new LiveDocumentBackend.PreparedOperation(
-                null!, BridgeAdapterOwner.CordycepsCanvas, "canvas.setWire", wireArguments, frozen, "sha-wire"),
+                null!, BridgeAdapterOwner.Canvas, "canvas.setWire", wireArguments, frozen, "sha-wire"),
         };
 
         var injected = LiveDocumentBackend.InjectRhinoUpsertSourceDocKey(operations, "abcdef0123456789");

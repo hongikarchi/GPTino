@@ -1,9 +1,12 @@
 namespace GPTino.Contracts;
 
+// Agent-facing owner names ride change_submit payloads as camelCase strings
+// ("script" / "canvas" / "rhinoBridge"); legacy "wireify" / "cordyceps" spellings from
+// stored jobs are still accepted on read (see LegacyAdapterOwnerConverter).
 public enum AdapterOwner
 {
-    Wireify,
-    Cordyceps,
+    Script,
+    Canvas,
     RhinoBridge,
 }
 

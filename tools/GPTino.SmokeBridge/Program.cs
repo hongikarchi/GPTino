@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using GPTino.BridgeContract;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 const string BridgeSecretEnvironment = "GPTINO_BRIDGE_SECRET";
 const string FingerprintEnvironment = "GPTINO_SMOKE_FINGERPRINT";
@@ -43,7 +43,7 @@ try
         new RegisterDocumentRequest(
             "gptino-smoke-bridge",
             "0.1.0",
-            [BridgeAdapterOwner.CordycepsCanvas]),
+            [BridgeAdapterOwner.Canvas]),
         target);
     await connection.SendAsync(registration);
     var registered = await connection.ReceiveAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15));
@@ -63,7 +63,7 @@ try
     if (!string.Equals(registrationResult.InstanceId, "gptino-smoke-bridge", StringComparison.Ordinal) ||
         !string.Equals(registrationResult.TargetKey, target.StableTargetKey(), StringComparison.Ordinal) ||
         registrationResult.Generation != target.Generation ||
-        !registrationResult.AvailableAdapters.SequenceEqual([BridgeAdapterOwner.CordycepsCanvas]))
+        !registrationResult.AvailableAdapters.SequenceEqual([BridgeAdapterOwner.Canvas]))
     {
         throw new BridgeProtocolException(
             "smoke_registration_payload",
@@ -105,7 +105,7 @@ try
             throw new SmokeProtocolViolationException("multiple-requests");
         }
         if (frame.CorrelationId is not null ||
-            request.Owner != BridgeAdapterOwner.CordycepsCanvas ||
+            request.Owner != BridgeAdapterOwner.Canvas ||
             request.Access != BridgeOperationAccess.Read ||
             !string.Equals(request.Operation, "canvas.snapshot", StringComparison.Ordinal) ||
             request.BaseSnapshotRevision != 0 ||

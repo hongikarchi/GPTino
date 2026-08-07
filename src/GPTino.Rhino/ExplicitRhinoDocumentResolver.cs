@@ -1,11 +1,11 @@
 using System.Diagnostics;
 using GPTino.BridgeContract;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.Rhino;
 
 /// <summary>Resolves only the serial carried by the request and never consults RhinoDoc.ActiveDoc.</summary>
-public sealed class ExplicitRhinoDocumentResolver : ICordycepsDocumentResolver<global::Rhino.RhinoDoc>
+public sealed class ExplicitRhinoDocumentResolver : ICanvasSceneDocumentResolver<global::Rhino.RhinoDoc>
 {
     public global::Rhino.RhinoDoc Resolve(DocumentTarget target)
     {

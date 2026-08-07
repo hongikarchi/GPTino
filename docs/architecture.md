@@ -23,8 +23,8 @@ Codex threads   |      SQLite chat/session state
  mutually authenticated named pipe (protocol v2 / HMAC-SHA-256)
           /                    \
  Grasshopper bridge          Rhino bridge
- Wireify-owned Python        Cordyceps-owned scene
- Cordyceps canvas/topology   operations
+ Script-owned components     RhinoScene-owned
+ Canvas-owned topology       scene operations
 ```
 
 ## File-pair lifecycle
@@ -92,22 +92,24 @@ A model saying that work succeeded has no effect on job state.
 
 ## Adapter ownership
 
-- Wireify semantics own Python source, runtime selection, parameter schema,
-  socket typing, execution, and runtime messages.
-- Cordyceps semantics own Grasshopper canvas objects, layout, groups, wire
-  topology, snapshots, recovery boundaries, and Rhino scene mutations.
+- Script semantics (behavior derived from upstream Wireify) own script-component
+  source, runtime selection, parameter schema, socket typing, execution, and
+  runtime messages.
+- Canvas and RhinoScene semantics (behavior derived from upstream Cordyceps) own
+  Grasshopper canvas objects, layout, groups, wire topology, snapshots, recovery
+  boundaries, and Rhino scene mutations.
 - GPTino ports the required behavior into its own assemblies. End users do not
   install Wireify or Cordyceps and do not configure their ports.
 
 The exact supported operation and payload contract is documented in
 [operation-contract.md](operation-contract.md).
 
-Source, I/O, and value mutations of one Python component share Wireify's whole
-component fingerprint. Competing jobs therefore conflict, while consecutive
+Source, I/O, and value mutations of one Python component share the Script
+domain's whole-component fingerprint. Competing jobs therefore conflict, while consecutive
 mutations inside one ChangeSet carry the previous operation's verified
 after-fingerprint forward. Because a Grasshopper solve can change runtime
 messages, that ChangeSet may write only one Python component and cannot mix in
-another kind of write. Layout remains a separate Cordyceps domain in other jobs.
+another kind of write. Layout remains a separate Canvas domain in other jobs.
 
 ## Model selection
 

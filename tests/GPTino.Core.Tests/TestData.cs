@@ -22,7 +22,7 @@ internal static class TestData
         return new(
             Guid.NewGuid().ToString("N"),
             kind,
-            AdapterOwner.Cordyceps,
+            AdapterOwner.Canvas,
             isRead ? [resource] : [],
             isRead ? [] : [resource],
             reversible);

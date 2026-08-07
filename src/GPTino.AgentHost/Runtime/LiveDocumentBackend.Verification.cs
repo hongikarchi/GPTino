@@ -14,10 +14,10 @@ using GPTino.AgentHost.Hosting;
 using GPTino.AgentHost.Security;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 using GPTino.Core;
 using GPTino.History;
-using GPTino.WireifyAdapter;
+using GPTino.ScriptAdapter;
 
 namespace GPTino.AgentHost.Runtime;
 

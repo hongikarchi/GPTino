@@ -1,5 +1,5 @@
 using GPTino.AgentHost.Runtime;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.AgentHost.Tests;
 

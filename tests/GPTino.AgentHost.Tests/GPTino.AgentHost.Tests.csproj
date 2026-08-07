@@ -16,6 +16,6 @@
     <ProjectReference Include="..\..\src\GPTino.AgentHost\GPTino.AgentHost.csproj" />
     <ProjectReference Include="..\..\src\GPTino.BridgeContract\GPTino.BridgeContract.csproj" />
     <ProjectReference Include="..\..\src\GPTino.Contracts\GPTino.Contracts.csproj" />
-    <ProjectReference Include="..\..\src\GPTino.CordycepsAdapter\GPTino.CordycepsAdapter.csproj" />
+    <ProjectReference Include="..\..\src\GPTino.CanvasSceneAdapter\GPTino.CanvasSceneAdapter.csproj" />
   </ItemGroup>
 </Project>

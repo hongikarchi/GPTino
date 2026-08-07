@@ -2,12 +2,12 @@ using System.Text.Json;
 using GPTino.AgentHost.Api;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.WireifyAdapter;
+using GPTino.ScriptAdapter;
 
 namespace GPTino.AgentHost.Tests;
 
 [Collection(LiveDocumentBackendCollection.Name)]
-public sealed class WireifyFingerprintSequenceTests
+public sealed class ScriptFingerprintSequenceTests
 {
     private const string InitialFingerprint = "python-f0";
 
@@ -17,8 +17,8 @@ public sealed class WireifyFingerprintSequenceTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         await using var responder = harness.StartResponder();
         var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Mixed writes"));
@@ -54,7 +54,7 @@ public sealed class WireifyFingerprintSequenceTests
         var canvasOperation = new TypedOperation(
             "mixed-canvas",
             OperationKind.MoveComponent,
-            AdapterOwner.Cordyceps,
+            AdapterOwner.Canvas,
             [],
             [layoutResource],
             Reversible: true,
@@ -83,8 +83,8 @@ public sealed class WireifyFingerprintSequenceTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         await using var responder = harness.StartResponder();
         var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Two Python components"));
@@ -122,15 +122,15 @@ public sealed class WireifyFingerprintSequenceTests
     [Theory]
     [InlineData("unexpected-before", "python-f1")]
     [InlineData(InitialFingerprint, "")]
-    public async Task InvalidWireifyFingerprintResponseRequiresRecovery(
+    public async Task InvalidScriptFingerprintResponseRequiresRecovery(
         string responseBefore,
         string responseAfter)
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         await using var responder = harness.StartResponder(responseFactory: request => request.Operation switch
         {
@@ -208,7 +208,7 @@ public sealed class WireifyFingerprintSequenceTests
             new TypedOperation(
                 operationId,
                 OperationKind.UpdatePythonSource,
-                AdapterOwner.Wireify,
+                AdapterOwner.Script,
                 [],
                 [resource],
                 Reversible: true,
@@ -246,7 +246,7 @@ public sealed class WireifyFingerprintSequenceTests
                 changeSet,
                 expectedSnapshotId = snapshotId,
                 idempotencyKey,
-                summary = "Wireify fingerprint sequence regression"
+                summary = "Script fingerprint sequence regression"
             },
             BridgeProtocol.JsonOptions);
 

@@ -35,9 +35,9 @@ internal static class DynamicToolSpecs
         - updateRhinoLayerProperties -> rhino.updateLayer {operationId,layerId,expectedFingerprint,argbColor?,visible?,locked?} — presentation only; rename/re-parent are NOT available (they rewrite descendant paths and break GH name filters). writeSet resource kind is rhinoLayer.
         - deleteRhinoLayer -> rhino.deleteLayer {operationId,layerId,expectedFingerprint} — only an empty leaf layer (no objects incl. hidden and block members, no children, not current); emptiness is re-proved at execution. writeSet resource kind is rhinoLayer.
         - saveRhinoLayerState -> rhino.layerState {operationId,action:save|restore|delete,name} — named layer states; save one BEFORE a layer sweep so the whole sweep is revertible without touching geometry. Declares ONE write of kind rhinoLayerTable whose id is the projectId you already put in the ChangeSet envelope (the Rhino document's identity — the layer table is Rhino's, so sibling .gh documents share one CAS domain and Rhino-only work needs no .gh at all) and whose expectedFingerprint is the table fingerprint from rhino_layers (a restore rewrites every layer, so the whole table is the CAS domain).
-        - reads use {objectId} for canvas/Rhino or {componentId} for Wireify
+        - reads use {objectId} for canvas/Rhino or {componentId} for script components
         DECLARATIONS:
-        - owner follows from the operation kind, never from you: every rhino.* is RhinoBridge, every python.* is Wireify, every canvas.* is Cordyceps. A mismatch is rejected before anything runs.
+        - owner follows from the operation kind, never from you: every rhino.* is rhinoBridge, every python.* is script, every canvas.* is canvas. A mismatch is rejected before anything runs.
         - Every operation read needs a readSet fingerprint; every write needs an exact writeSet expectation. Unused expectations and payload-unrelated writes are rejected. Typed reads keep writes empty; a read-only ChangeSet keeps writeSet empty.
         - Resource ids: field='*'; lowercase D-format UUIDs (8-4-4-4-12) for object resources. A wire's writeSet id is the exact string sourceObjectId/sourceParameterId>targetObjectId/targetParameterId in N format (32 hex, no dashes) — same guids as the payload. If a payload-alignment error reports the expected id, declare exactly that string and resubmit.
         - Write domains are exact: move/layout=grasshopperComponentLayout; slider setValue=grasshopperComponentValue; component create/delete=grasshopperComponent; wire=grasshopperWire; group=grasshopperGroup; python source|schema-or-typing|execute=grasshopperComponentSource|grasshopperComponentIo|grasshopperComponentValue; every Rhino mutation=rhinoObject. Two operations in one ChangeSet cannot write overlapping domains.
@@ -72,7 +72,7 @@ internal static class DynamicToolSpecs
                             scopes = new
                             {
                                 type = "array",
-                                description = "Optional reads. Omit (empty) or include \"canvas\" for a full-document orientation read (all component resources + the whole canvas). Give ONLY targeted scopes — wireify:<component-guid>, wireify-messages:<component-guid>, rhino:<object-guid> — to inspect just those and skip the heavy full-document dump (use this on large definitions).",
+                                description = "Optional reads. Omit (empty) or include \"canvas\" for a full-document orientation read (all component resources + the whole canvas). Give ONLY targeted scopes — script:<component-guid>, script-messages:<component-guid>, rhino:<object-guid> — to inspect just those and skip the heavy full-document dump (use this on large definitions).",
                                 items = new { type = "string" }
                             },
                             knownSnapshotId = NullableString("Return unchanged=true when this still identifies the current snapshot.")
@@ -626,7 +626,7 @@ internal static class DynamicToolSpecs
                 "referenceRhinoObjects", "fixRhinoEndpointPair", "purgeTableEntries",
                 "moveObjectsToLayer", "updateRhinoLayerProperties", "deleteRhinoLayer",
                 "saveRhinoLayerState", "ensureRhinoLayer"),
-            owner = Enum("wireify", "cordyceps", "rhinoBridge"),
+            owner = Enum("script", "canvas", "rhinoBridge"),
             reads = new { type = "array", items = ResourceAddressSchema() },
             writes = new { type = "array", items = ResourceAddressSchema() },
             reversible = new { type = "boolean" },

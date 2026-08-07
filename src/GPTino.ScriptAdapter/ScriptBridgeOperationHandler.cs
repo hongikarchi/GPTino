@@ -1,17 +1,17 @@
 using GPTino.BridgeContract;
 
-namespace GPTino.WireifyAdapter;
+namespace GPTino.ScriptAdapter;
 
-public sealed class WireifyBridgeOperationHandler : IBridgeOperationHandler
+public sealed class ScriptBridgeOperationHandler : IBridgeOperationHandler
 {
-    private readonly IWireifyDocumentAdapter _adapter;
+    private readonly IScriptDocumentAdapter _adapter;
 
-    public WireifyBridgeOperationHandler(IWireifyDocumentAdapter adapter)
+    public ScriptBridgeOperationHandler(IScriptDocumentAdapter adapter)
     {
         _adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
     }
 
-    public BridgeAdapterOwner Owner => BridgeAdapterOwner.Wireify;
+    public BridgeAdapterOwner Owner => BridgeAdapterOwner.Script;
 
     public async Task<BridgeOperationResponse> HandleAsync(
         DocumentTarget target,
@@ -30,8 +30,8 @@ public sealed class WireifyBridgeOperationHandler : IBridgeOperationHandler
             "python.execute" => await ExecuteAsync(target, request, cancellationToken).ConfigureAwait(false),
             "python.runtimeMessages" => await RuntimeMessagesAsync(target, request, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
-                "unknown_wireify_operation",
-                $"Unknown Wireify operation '{request.Operation}'."),
+                "unknown_script_operation",
+                $"Unknown script operation '{request.Operation}'."),
         };
     }
 
@@ -174,7 +174,7 @@ public sealed class WireifyBridgeOperationHandler : IBridgeOperationHandler
     private async Task<BridgeOperationResponse> MutationResponseAsync(
         DocumentTarget target,
         BridgeOperationRequest request,
-        WireifyMutationResult result,
+        ScriptMutationResult result,
         string beforeFingerprint,
         CancellationToken cancellationToken)
     {
@@ -217,7 +217,7 @@ public sealed class WireifyBridgeOperationHandler : IBridgeOperationHandler
     {
         if (request.Owner != Owner)
         {
-            throw new BridgeProtocolException("adapter_owner", "Wireify handler received another owner's request.");
+            throw new BridgeProtocolException("adapter_owner", "Script handler received another owner's request.");
         }
     }
 

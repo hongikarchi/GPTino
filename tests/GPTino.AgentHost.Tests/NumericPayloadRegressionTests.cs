@@ -2,7 +2,7 @@ using System.Text.Json;
 using GPTino.AgentHost.Api;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.AgentHost.Tests;
 
@@ -41,7 +41,7 @@ public sealed class NumericPayloadRegressionTests
             new TypedOperation(
                 "signed-argb",
                 OperationKind.SetGroup,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 true,
@@ -99,7 +99,7 @@ public sealed class NumericPayloadRegressionTests
             new TypedOperation(
                 "exponent-argb",
                 OperationKind.SetGroup,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 true,
@@ -157,7 +157,7 @@ public sealed class NumericPayloadRegressionTests
             new TypedOperation(
                 "negative-zero-move",
                 OperationKind.MoveComponent,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 true,

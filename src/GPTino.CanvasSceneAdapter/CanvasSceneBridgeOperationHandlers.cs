@@ -1,17 +1,17 @@
 using GPTino.BridgeContract;
 
-namespace GPTino.CordycepsAdapter;
+namespace GPTino.CanvasSceneAdapter;
 
-public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHandler
+public sealed class CanvasBridgeOperationHandler : IBridgeOperationHandler
 {
-    private readonly ICordycepsCanvasAdapter _adapter;
+    private readonly ICanvasAdapter _adapter;
 
-    public CordycepsCanvasBridgeOperationHandler(ICordycepsCanvasAdapter adapter)
+    public CanvasBridgeOperationHandler(ICanvasAdapter adapter)
     {
         _adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
     }
 
-    public BridgeAdapterOwner Owner => BridgeAdapterOwner.CordycepsCanvas;
+    public BridgeAdapterOwner Owner => BridgeAdapterOwner.Canvas;
 
     public async Task<BridgeOperationResponse> HandleAsync(
         DocumentTarget target,
@@ -35,8 +35,8 @@ public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHand
             "canvas.listReferencedRhinoIds" => await ListReferencedRhinoIdsAsync(target, request, cancellationToken).ConfigureAwait(false),
             "canvas.focusObjects" => await FocusObjectsAsync(target, request, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
-                "unknown_cordyceps_canvas_operation",
-                $"Unknown Cordyceps canvas operation '{request.Operation}'."),
+                "unknown_canvas_operation",
+                $"Unknown canvas operation '{request.Operation}'."),
         };
     }
 
@@ -179,16 +179,16 @@ public sealed class CordycepsCanvasBridgeOperationHandler : IBridgeOperationHand
     private sealed record ObjectIdArguments(Guid ObjectId);
 }
 
-public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandler
+public sealed class RhinoSceneBridgeOperationHandler : IBridgeOperationHandler
 {
-    private readonly ICordycepsRhinoSceneAdapter _adapter;
+    private readonly IRhinoSceneAdapter _adapter;
 
-    public CordycepsRhinoBridgeOperationHandler(ICordycepsRhinoSceneAdapter adapter)
+    public RhinoSceneBridgeOperationHandler(IRhinoSceneAdapter adapter)
     {
         _adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
     }
 
-    public BridgeAdapterOwner Owner => BridgeAdapterOwner.CordycepsRhino;
+    public BridgeAdapterOwner Owner => BridgeAdapterOwner.RhinoScene;
 
     public async Task<BridgeOperationResponse> HandleAsync(
         DocumentTarget target,
@@ -223,8 +223,8 @@ public sealed class CordycepsRhinoBridgeOperationHandler : IBridgeOperationHandl
             "rhino.purgeTableEntries" => await PurgeTableEntriesAsync(target, request, cancellationToken).ConfigureAwait(false),
             "rhino.moveObjectsToLayer" => await MoveObjectsToLayerAsync(target, request, cancellationToken).ConfigureAwait(false),
             _ => throw new BridgeProtocolException(
-                "unknown_cordyceps_rhino_operation",
-                $"Unknown Cordyceps Rhino operation '{request.Operation}'."),
+                "unknown_rhino_scene_operation",
+                $"Unknown Rhino scene operation '{request.Operation}'."),
         };
     }
 

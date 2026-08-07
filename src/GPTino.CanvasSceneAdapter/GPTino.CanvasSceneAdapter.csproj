@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <Description>Typed Cordyceps-owned canvas topology, layout, snapshot, and Rhino scene operations.</Description>
+    <Description>Typed canvas topology, layout, snapshot, and Rhino scene operations for GPTino.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../GPTino.BridgeContract/GPTino.BridgeContract.csproj" />

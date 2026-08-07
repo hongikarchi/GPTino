@@ -6,11 +6,11 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\GPTino.BridgeContract\GPTino.BridgeContract.csproj" />
-    <ProjectReference Include="..\GPTino.CordycepsAdapter\GPTino.CordycepsAdapter.csproj" />
+    <ProjectReference Include="..\GPTino.CanvasSceneAdapter\GPTino.CanvasSceneAdapter.csproj" />
     <ProjectReference Include="..\GPTino.Contracts\GPTino.Contracts.csproj" />
     <ProjectReference Include="..\GPTino.Core\GPTino.Core.csproj" />
     <ProjectReference Include="..\GPTino.History\GPTino.History.csproj" />
-    <ProjectReference Include="..\GPTino.WireifyAdapter\GPTino.WireifyAdapter.csproj" />
+    <ProjectReference Include="..\GPTino.ScriptAdapter\GPTino.ScriptAdapter.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" />

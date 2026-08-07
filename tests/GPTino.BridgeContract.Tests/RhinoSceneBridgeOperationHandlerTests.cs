@@ -1,9 +1,9 @@
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 using System.Text.Json;
 
 namespace GPTino.BridgeContract.Tests;
 
-public sealed class CordycepsRhinoBridgeOperationHandlerTests
+public sealed class RhinoSceneBridgeOperationHandlerTests
 {
     [Fact]
     public void ListPayload_OmittedFiltersUseBoundedDefaults()
@@ -43,14 +43,14 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
                 },
                 "list-fingerprint"),
         };
-        var handler = new CordycepsRhinoBridgeOperationHandler(adapter);
+        var handler = new RhinoSceneBridgeOperationHandler(adapter);
         var arguments = new RhinoListObjectsRequest(
             Limit: 1,
             LayerFullPath: "Building::Walls",
             GeometryType: "Brep");
         var request = BridgeOperationRequest.Create(
             "list-1",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.list",
             BridgeOperationAccess.Read,
             2,
@@ -72,7 +72,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
         {
             MutationResult = Mutation("create-1", objectId, before: null, after: "created"),
         };
-        var handler = new CordycepsRhinoBridgeOperationHandler(adapter);
+        var handler = new RhinoSceneBridgeOperationHandler(adapter);
         var arguments = new CreateRhinoPrimitiveRequest(
             "create-1",
             objectId,
@@ -82,7 +82,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
             Attributes: new RhinoPrimitiveAttributes(Name: "Control Point"));
         var request = BridgeOperationRequest.Create(
             "create-1",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.createPrimitive",
             BridgeOperationAccess.Write,
             2,
@@ -101,7 +101,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
     {
         var objectId = Guid.Parse("660eb647-3699-4f8c-a9dc-bfeb010f5d0f");
         var adapter = new FakeRhinoSceneAdapter();
-        var handler = new CordycepsRhinoBridgeOperationHandler(adapter);
+        var handler = new RhinoSceneBridgeOperationHandler(adapter);
         var arguments = new CreateRhinoPrimitiveRequest(
             "payload-id",
             objectId,
@@ -110,7 +110,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
             Point: new RhinoPointPrimitive(new RhinoPoint3d(1, 2, 3)));
         var request = BridgeOperationRequest.Create(
             "envelope-id",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.createPrimitive",
             BridgeOperationAccess.Write,
             2,
@@ -132,7 +132,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
         {
             MutationResult = Mutation("transform-1", objectId, "before", "after"),
         };
-        var handler = new CordycepsRhinoBridgeOperationHandler(adapter);
+        var handler = new RhinoSceneBridgeOperationHandler(adapter);
         var arguments = new TransformRhinoObjectRequest(
             "transform-1",
             objectId,
@@ -140,7 +140,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
             Translation(10, 20, 30));
         var request = BridgeOperationRequest.Create(
             "transform-1",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.transform",
             BridgeOperationAccess.Write,
             2,
@@ -163,7 +163,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
         {
             MutationResult = Mutation("transform-1", objectId, "before", "after"),
         };
-        var handler = new CordycepsRhinoBridgeOperationHandler(adapter);
+        var handler = new RhinoSceneBridgeOperationHandler(adapter);
         var arguments = new TransformRhinoObjectRequest(
             "transform-1",
             objectId,
@@ -171,7 +171,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
             Translation(10, 20, 30));
         var request = BridgeOperationRequest.Create(
             "transform-1",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.transform",
             BridgeOperationAccess.Write,
             2,
@@ -209,10 +209,10 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
                 ExistingFingerprint: null,
                 IsValid: true),
         };
-        var handler = new CordycepsRhinoBridgeOperationHandler(adapter);
+        var handler = new RhinoSceneBridgeOperationHandler(adapter);
         var request = BridgeOperationRequest.Create(
             "validate-1",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.validateUpsert",
             BridgeOperationAccess.Read,
             2,
@@ -241,10 +241,10 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
             "{}",
             ExpectedFingerprint: null);
         var adapter = new FakeRhinoSceneAdapter();
-        var handler = new CordycepsRhinoBridgeOperationHandler(adapter);
+        var handler = new RhinoSceneBridgeOperationHandler(adapter);
         var request = BridgeOperationRequest.Create(
             "validate-write",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.validateUpsert",
             BridgeOperationAccess.Write,
             2,
@@ -269,7 +269,7 @@ public sealed class CordycepsRhinoBridgeOperationHandlerTests
         string after) =>
         new(operationId, Changed: true, before, after, objectId);
 
-    private sealed class FakeRhinoSceneAdapter : ICordycepsRhinoSceneAdapter
+    private sealed class FakeRhinoSceneAdapter : IRhinoSceneAdapter
     {
         public RhinoSceneListResult ListResult { get; set; } = new(
             100,

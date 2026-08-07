@@ -3,7 +3,7 @@ using GPTino.AgentHost.Api;
 using GPTino.AgentHost.Runtime;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.AgentHost.Tests;
 
@@ -327,7 +327,7 @@ public sealed class CanvasAutoPlacementTests
                 new TypedOperation(
                     "create-auto",
                     OperationKind.CreateComponent,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     Array.Empty<ResourceAddress>(),
                     [resource],
                     true,
@@ -386,7 +386,7 @@ public sealed class CanvasAutoPlacementTests
                 new TypedOperation(
                     "create-auto-exec",
                     OperationKind.CreateComponent,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     Array.Empty<ResourceAddress>(),
                     [resource],
                     true,
@@ -448,7 +448,7 @@ public sealed class CanvasAutoPlacementTests
                 new TypedOperation(
                     "create-bad",
                     OperationKind.CreateComponent,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     Array.Empty<ResourceAddress>(),
                     [resource],
                     true,
@@ -548,12 +548,12 @@ public sealed class CanvasAutoPlacementTests
             new TypedOperation(
                 operationId,
                 OperationKind.ReferenceRhinoObjects,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 Array.Empty<ResourceAddress>(),
                 [resource],
                 true,
                 $"operations/{operationId}.json"),
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.referenceRhinoObjects",
             arguments,
             Array.Empty<byte>(),
@@ -590,12 +590,12 @@ public sealed class CanvasAutoPlacementTests
             new TypedOperation(
                 operationId,
                 OperationKind.CreateComponent,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 Array.Empty<ResourceAddress>(),
                 [resource],
                 true,
                 $"operations/{operationId}.json"),
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.create",
             arguments,
             Array.Empty<byte>(),

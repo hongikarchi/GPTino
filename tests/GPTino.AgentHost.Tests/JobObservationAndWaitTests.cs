@@ -67,7 +67,7 @@ public sealed class JobObservationAndWaitTests
             new TypedOperation(
                 "wait-slider",
                 OperationKind.SetValue,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 Reversible: true,
@@ -168,7 +168,7 @@ public sealed class JobObservationAndWaitTests
             new TypedOperation(
                 "quality-slider",
                 OperationKind.SetValue,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 Reversible: true,
@@ -227,7 +227,7 @@ public sealed class JobObservationAndWaitTests
             new TypedOperation(
                 "slow-slider",
                 OperationKind.SetValue,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 Reversible: true,

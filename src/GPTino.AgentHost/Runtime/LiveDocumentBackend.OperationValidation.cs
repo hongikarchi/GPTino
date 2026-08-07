@@ -14,10 +14,10 @@ using GPTino.AgentHost.Hosting;
 using GPTino.AgentHost.Security;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 using GPTino.Core;
 using GPTino.History;
-using GPTino.WireifyAdapter;
+using GPTino.ScriptAdapter;
 
 namespace GPTino.AgentHost.Runtime;
 
@@ -30,10 +30,10 @@ public sealed partial class LiveDocumentBackend
         {
             OperationKind.UpdatePythonSource or OperationKind.SetComponentIo or
                 OperationKind.ConvertSocket or OperationKind.ExecutePython or
-                OperationKind.ReadRuntimeMessages => AdapterOwner.Wireify,
+                OperationKind.ReadRuntimeMessages => AdapterOwner.Script,
             _ when IsRhinoOperation(operation.Kind) => AdapterOwner.RhinoBridge,
             OperationKind.Read => operation.Owner,
-            _ => AdapterOwner.Cordyceps
+            _ => AdapterOwner.Canvas
         };
         if (operation.Owner != expected)
         {
@@ -42,9 +42,9 @@ public sealed partial class LiveDocumentBackend
         }
         return operation.Owner switch
         {
-            AdapterOwner.Wireify => BridgeAdapterOwner.Wireify,
-            AdapterOwner.Cordyceps => BridgeAdapterOwner.CordycepsCanvas,
-            AdapterOwner.RhinoBridge => BridgeAdapterOwner.CordycepsRhino,
+            AdapterOwner.Script => BridgeAdapterOwner.Script,
+            AdapterOwner.Canvas => BridgeAdapterOwner.Canvas,
+            AdapterOwner.RhinoBridge => BridgeAdapterOwner.RhinoScene,
             _ => throw new InvalidOperationException($"Unsupported adapter owner '{operation.Owner}'.")
         };
     }
@@ -89,7 +89,7 @@ public sealed partial class LiveDocumentBackend
             OperationKind.EnsureRhinoLayer => "rhino.ensureLayer",
             OperationKind.UpdateRhinoLayer => throw new InvalidOperationException(
                 "UpdateRhinoLayer is reserved until deterministic layer inspection is available."),
-            OperationKind.Read when operation.Owner == AdapterOwner.Wireify => "python.inspect",
+            OperationKind.Read when operation.Owner == AdapterOwner.Script => "python.inspect",
             OperationKind.Read when operation.Owner == AdapterOwner.RhinoBridge => "rhino.inspect",
             OperationKind.Read => "canvas.inspect",
             _ => throw new InvalidOperationException(

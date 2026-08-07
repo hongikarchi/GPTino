@@ -1,8 +1,8 @@
 using GPTino.BridgeContract;
 
-namespace GPTino.CordycepsAdapter;
+namespace GPTino.CanvasSceneAdapter;
 
-public interface ICordycepsDocumentResolver<out TDocument>
+public interface ICanvasSceneDocumentResolver<out TDocument>
     where TDocument : class
 {
     TDocument Resolve(DocumentTarget target);
@@ -11,12 +11,12 @@ public interface ICordycepsDocumentResolver<out TDocument>
 /// <summary>
 /// Forces every canvas call through an explicit target resolver. No active-canvas fallback exists.
 /// </summary>
-public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAdapter
+public abstract class DocumentBoundCanvasAdapter<TDocument> : ICanvasAdapter
     where TDocument : class
 {
-    private readonly ICordycepsDocumentResolver<TDocument> _resolver;
+    private readonly ICanvasSceneDocumentResolver<TDocument> _resolver;
 
-    protected DocumentBoundCanvasAdapter(ICordycepsDocumentResolver<TDocument> resolver)
+    protected DocumentBoundCanvasAdapter(ICanvasSceneDocumentResolver<TDocument> resolver)
     {
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
     }
@@ -92,12 +92,12 @@ public abstract class DocumentBoundCanvasAdapter<TDocument> : ICordycepsCanvasAd
 /// <summary>
 /// Forces every Rhino scene call through an explicit target resolver. No active-doc fallback exists.
 /// </summary>
-public abstract class DocumentBoundRhinoSceneAdapter<TRhinoDocument> : ICordycepsRhinoSceneAdapter
+public abstract class DocumentBoundRhinoSceneAdapter<TRhinoDocument> : IRhinoSceneAdapter
     where TRhinoDocument : class
 {
-    private readonly ICordycepsDocumentResolver<TRhinoDocument> _resolver;
+    private readonly ICanvasSceneDocumentResolver<TRhinoDocument> _resolver;
 
-    protected DocumentBoundRhinoSceneAdapter(ICordycepsDocumentResolver<TRhinoDocument> resolver)
+    protected DocumentBoundRhinoSceneAdapter(ICanvasSceneDocumentResolver<TRhinoDocument> resolver)
     {
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
     }

@@ -2,7 +2,7 @@ using System.Text.Json;
 using GPTino.AgentHost.Api;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.AgentHost.Tests;
 

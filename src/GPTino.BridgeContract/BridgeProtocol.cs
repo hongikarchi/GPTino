@@ -22,7 +22,10 @@ public static class BridgeProtocol
     // v12: rhino.structuralExtract read operation (structural member axis extraction). Purely
     //      additive, but a new host calling an old plugin would fail mid-feature with an unknown
     //      operation instead of at connect — the bump keeps mixed installs failing loudly.
-    public const int Version = 12;
+    // v13: adapter-owner rename (wireify → script, cordycepsCanvas → canvas, cordycepsRhino →
+    //      rhinoScene) changed the BridgeAdapterOwner wire strings; a mixed install would
+    //      misroute every operation, so it must fail at connect.
+    public const int Version = 13;
 
     public const int DefaultMaximumFrameBytes = 8 * 1024 * 1024;
 
@@ -37,6 +40,9 @@ public static class BridgeProtocol
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
             WriteIndented = false,
         };
+        // Registered before the general enum converter so it wins for AdapterOwner: stored
+        // ChangeSets (live-jobs.db) and pre-upgrade sessions may still carry legacy owner names.
+        options.Converters.Add(new GPTino.Contracts.LegacyAdapterOwnerConverter());
         options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
         return options;
     }

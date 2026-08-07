@@ -83,7 +83,7 @@
 ### Phase 1 — 데이터 플로우 읽기 + 캔버스 데이터 레이어 (중)
 
 **체감**: 참조/bake 가시성 + 끊어진 참조 경고. **내용**:
-- `canvas.listReferencedRhinoIds` (Cordyceps read): 열린 GH doc의 파라미터가 들고 있는
+- `canvas.listReferencedRhinoIds` (Canvas read): 열린 GH doc의 파라미터가 들고 있는
   ReferenceID(Rhino GUID) 열거. 현재는 쓰기 경로(`referenceRhinoObjects`)만 있고 열람이 없다.
   **curator purge 가드의 선행 조건이기도 하다.**
 - `data.flowSummary`: doc별 {referenceCount, missingReferenceCount, bakeCount, observedAt,

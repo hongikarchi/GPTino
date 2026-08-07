@@ -1,17 +1,17 @@
 using GPTino.BridgeContract;
 
-namespace GPTino.WireifyAdapter;
+namespace GPTino.ScriptAdapter;
 
 /// <summary>
 /// Base class that forces concrete adapters to resolve the exact requested document before work.
 /// It intentionally provides no active-document resolver.
 /// </summary>
-public abstract class DocumentBoundWireifyAdapter<TDocument> : IWireifyDocumentAdapter
+public abstract class DocumentBoundScriptAdapter<TDocument> : IScriptDocumentAdapter
     where TDocument : class
 {
-    private readonly IWireifyDocumentResolver<TDocument> _resolver;
+    private readonly IScriptDocumentResolver<TDocument> _resolver;
 
-    protected DocumentBoundWireifyAdapter(IWireifyDocumentResolver<TDocument> resolver)
+    protected DocumentBoundScriptAdapter(IScriptDocumentResolver<TDocument> resolver)
     {
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
     }
@@ -22,19 +22,19 @@ public abstract class DocumentBoundWireifyAdapter<TDocument> : IWireifyDocumentA
         CancellationToken cancellationToken = default) =>
         ReadPythonComponentCoreAsync(Resolve(target), componentId, cancellationToken);
 
-    public Task<WireifyMutationResult> SetSourceAsync(
+    public Task<ScriptMutationResult> SetSourceAsync(
         DocumentTarget target,
         SetPythonSourceRequest request,
         CancellationToken cancellationToken = default) =>
         SetSourceCoreAsync(Resolve(target), request, cancellationToken);
 
-    public Task<WireifyMutationResult> SetParameterSchemaAsync(
+    public Task<ScriptMutationResult> SetParameterSchemaAsync(
         DocumentTarget target,
         SetParameterSchemaRequest request,
         CancellationToken cancellationToken = default) =>
         SetParameterSchemaCoreAsync(Resolve(target), request, cancellationToken);
 
-    public Task<WireifyMutationResult> SetInputTypingAsync(
+    public Task<ScriptMutationResult> SetInputTypingAsync(
         DocumentTarget target,
         SetInputTypingRequest request,
         CancellationToken cancellationToken = default) =>
@@ -63,17 +63,17 @@ public abstract class DocumentBoundWireifyAdapter<TDocument> : IWireifyDocumentA
         Guid componentId,
         CancellationToken cancellationToken);
 
-    protected abstract Task<WireifyMutationResult> SetSourceCoreAsync(
+    protected abstract Task<ScriptMutationResult> SetSourceCoreAsync(
         TDocument document,
         SetPythonSourceRequest request,
         CancellationToken cancellationToken);
 
-    protected abstract Task<WireifyMutationResult> SetParameterSchemaCoreAsync(
+    protected abstract Task<ScriptMutationResult> SetParameterSchemaCoreAsync(
         TDocument document,
         SetParameterSchemaRequest request,
         CancellationToken cancellationToken);
 
-    protected abstract Task<WireifyMutationResult> SetInputTypingCoreAsync(
+    protected abstract Task<ScriptMutationResult> SetInputTypingCoreAsync(
         TDocument document,
         SetInputTypingRequest request,
         CancellationToken cancellationToken);
@@ -109,7 +109,7 @@ public abstract class DocumentBoundWireifyAdapter<TDocument> : IWireifyDocumentA
     }
 }
 
-public interface IWireifyDocumentResolver<out TDocument>
+public interface IScriptDocumentResolver<out TDocument>
     where TDocument : class
 {
     TDocument Resolve(DocumentTarget target);

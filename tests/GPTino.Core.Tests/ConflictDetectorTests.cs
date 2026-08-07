@@ -95,7 +95,7 @@ public sealed class ConflictDetectorTests
     }
 
     [Fact]
-    public void ComponentParentConflictsWithLayoutAndWireifyFingerprintSiblingsConflict()
+    public void ComponentParentConflictsWithLayoutAndScriptFingerprintSiblingsConflict()
     {
         var componentId = Guid.NewGuid().ToString("D");
         var parent = new ResourceAddress(ResourceKind.GrasshopperComponent, componentId);

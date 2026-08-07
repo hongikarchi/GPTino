@@ -1,9 +1,9 @@
 using GPTino.BridgeContract;
 
-namespace GPTino.CordycepsAdapter;
+namespace GPTino.CanvasSceneAdapter;
 
 /// <summary>Owns supported Rhino scene objects and tables for one explicit Rhino document.</summary>
-public interface ICordycepsRhinoSceneAdapter
+public interface IRhinoSceneAdapter
 {
     Task<RhinoSceneListResult> ListObjectsAsync(
         DocumentTarget target,

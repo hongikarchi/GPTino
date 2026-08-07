@@ -14,10 +14,10 @@ using GPTino.AgentHost.Hosting;
 using GPTino.AgentHost.Security;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 using GPTino.Core;
 using GPTino.History;
-using GPTino.WireifyAdapter;
+using GPTino.ScriptAdapter;
 
 namespace GPTino.AgentHost.Runtime;
 
@@ -657,7 +657,7 @@ public sealed partial class LiveDocumentBackend
                     PythonStateWrite(item.Operation)?.Id != group.Key))
             {
                 throw new InvalidOperationException(
-                    $"Wireify mutations for Python component '{group.Key}' must be contiguous within a ChangeSet.");
+                    $"Script mutations for component '{group.Key}' must be contiguous within a ChangeSet.");
             }
         }
     }
@@ -666,7 +666,7 @@ public sealed partial class LiveDocumentBackend
     /// Script-content operations are the ones whose Error diagnostics describe the SCRIPT (compile
     /// or runtime failures) rather than the operation: the write itself landed deterministically.
     /// Keyed on OperationKind — the typed contract surface — not on bridge op names or plugin
-    /// diagnostic codes. Covers the whole python-state family: the Wireify adapter emits Error
+    /// diagnostic codes. Covers the whole python-state family: the script adapter emits Error
     /// diagnostics only from component runtime messages (script content), while operation-level
     /// failures arrive as thrown bridge errors and still abort. Live round R3 confirmed compile
     /// errors surface on setComponentIo responses (the schema write triggers the solve).

@@ -4,7 +4,7 @@ using GPTino.AgentHost.Data;
 using GPTino.AgentHost.Runtime;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.AgentHost.Tests;
 
@@ -27,8 +27,8 @@ public sealed class PreflightAndRecoveryManifestTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         var writeOps = new List<string>();
         await using var responder = harness.StartResponder(responseFactory: request =>
@@ -78,7 +78,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "omit-out-schema",
                     OperationKind.SetComponentIo,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [ioResource],
                     Reversible: true,
@@ -118,8 +118,8 @@ public sealed class PreflightAndRecoveryManifestTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         var writeOps = new List<string>();
         await using var responder = harness.StartResponder(responseFactory: request =>
@@ -169,7 +169,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "keep-out-schema",
                     OperationKind.SetComponentIo,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [ioResource],
                     Reversible: true,
@@ -206,8 +206,8 @@ public sealed class PreflightAndRecoveryManifestTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         var writeOps = new List<string>();
         await using var responder = harness.StartResponder(responseFactory: request =>
@@ -255,7 +255,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "reference-rhino",
                     OperationKind.ReferenceRhinoObjects,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     [],
                     [componentResource],
                     Reversible: false,
@@ -395,8 +395,8 @@ public sealed class PreflightAndRecoveryManifestTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         var inputParameterId = Guid.Parse("66666666-6666-6666-6666-666666666666");
         var wrongParameterId = Guid.Parse("77777777-7777-7777-7777-777777777777");
@@ -447,7 +447,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "bad-typing",
                     OperationKind.ConvertSocket,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [ioResource],
                     Reversible: true,
@@ -484,8 +484,8 @@ public sealed class PreflightAndRecoveryManifestTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         var writeOps = new List<string>();
         await using var responder = harness.StartResponder(responseFactory: request =>
@@ -538,7 +538,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "reserved-out",
                     OperationKind.SetComponentIo,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [ioResource],
                     Reversible: true,
@@ -572,8 +572,8 @@ public sealed class PreflightAndRecoveryManifestTests
         await using var harness = await LiveDocumentBackendHarness.CreateAsync(
             availableAdapters:
             [
-                BridgeAdapterOwner.CordycepsCanvas,
-                BridgeAdapterOwner.Wireify
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
             ]);
         var writeOps = new List<string>();
         await using var responder = harness.StartResponder(responseFactory: request =>
@@ -626,7 +626,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "unsafe-name",
                     OperationKind.SetComponentIo,
-                    AdapterOwner.Wireify,
+                    AdapterOwner.Script,
                     [],
                     [ioResource],
                     Reversible: true,
@@ -758,7 +758,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "first-slider",
                     OperationKind.SetValue,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     [],
                     [firstResource],
                     Reversible: true,
@@ -766,7 +766,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "second-slider",
                     OperationKind.SetValue,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     [],
                     [secondResource],
                     Reversible: true,
@@ -774,7 +774,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     "third-move",
                     OperationKind.MoveComponent,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     [],
                     [layoutResource],
                     Reversible: true,
@@ -838,7 +838,7 @@ public sealed class PreflightAndRecoveryManifestTests
         TypedOperation Operation(string id) => new(
             id,
             OperationKind.SetValue,
-            AdapterOwner.Cordyceps,
+            AdapterOwner.Canvas,
             [],
             [],
             Reversible: true,
@@ -946,7 +946,7 @@ public sealed class PreflightAndRecoveryManifestTests
                 new TypedOperation(
                     operationId,
                     OperationKind.ConnectWire,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     [],
                     [wireResource],
                     Reversible: true,

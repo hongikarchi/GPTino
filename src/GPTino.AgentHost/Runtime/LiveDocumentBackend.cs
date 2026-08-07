@@ -14,10 +14,10 @@ using GPTino.AgentHost.Hosting;
 using GPTino.AgentHost.Security;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 using GPTino.Core;
 using GPTino.History;
-using GPTino.WireifyAdapter;
+using GPTino.ScriptAdapter;
 
 namespace GPTino.AgentHost.Runtime;
 
@@ -292,7 +292,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         // The full per-domain resources list and the whole-canvas dump are the heavy part of the
         // payload. Return them only for a full-document read — an empty scopes array (the default
         // orientation read) or one that explicitly asks for "canvas". When the caller narrows to
-        // targeted inspection scopes (wireify:<guid> / rhino:<guid>), omit the full document so a
+        // targeted inspection scopes (script:<guid> / rhino:<guid>), omit the full document so a
         // large definition's unrelated JSON does not crowd the model's context.
         var wantsFullDocument = scopes.Length == 0 ||
             scopes.Any(scope => string.Equals(scope, "canvas", StringComparison.OrdinalIgnoreCase));
@@ -320,7 +320,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         CancellationToken cancellationToken) =>
         ReadBridgeQueryAsync(
             RequireDefaultTargetState(),
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.catalog",
             arguments,
             cancellationToken);
@@ -330,7 +330,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         CancellationToken cancellationToken) =>
         ReadBridgeQueryAsync(
             RequireDefaultTargetState(),
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.list",
             arguments,
             cancellationToken);
@@ -371,7 +371,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             : ResolveSessionTargetState(session);
         return ReadBridgeQueryAsync(
             targetState,
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.inspectOutputs",
             WithMassProperties(arguments),
             cancellationToken);
@@ -653,7 +653,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     public Task<object> ReadRhinoAuditAsync(JsonElement arguments, CancellationToken cancellationToken) =>
         ReadBridgeQueryAsync(
             RequireDefaultTargetState(),
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.audit",
             arguments,
             cancellationToken);
@@ -665,7 +665,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     public Task<object> ReadStructuralExtractAsync(JsonElement arguments, CancellationToken cancellationToken) =>
         ReadBridgeQueryAsync(
             RequireDefaultTargetState(),
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.structuralExtract",
             arguments,
             cancellationToken);
@@ -682,7 +682,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     public Task<object> FocusRhinoObjectsAsync(JsonElement arguments, CancellationToken cancellationToken) =>
         ReadBridgeQueryAsync(
             RequireDefaultTargetState(),
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.focusObjects",
             arguments,
             cancellationToken);
@@ -696,7 +696,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     public Task<object> FocusCanvasObjectsAsync(JsonElement arguments, CancellationToken cancellationToken) =>
         ReadBridgeQueryAsync(
             RequireDefaultTargetState(),
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.focusObjects",
             arguments,
             cancellationToken);
@@ -706,7 +706,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         using var empty = JsonDocument.Parse("{}");
         return ReadBridgeQueryAsync(
             RequireDefaultTargetState(),
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.listLayers",
             empty.RootElement.Clone(),
             cancellationToken);
@@ -738,10 +738,10 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         }
         using var documentRead = await _documentGate.EnterReadAsync(cancellationToken).ConfigureAwait(false);
         var references = await SendDataFlowReadAsync(
-            targetState, BridgeAdapterOwner.CordycepsCanvas, "canvas.listReferencedRhinoIds", cancellationToken)
+            targetState, BridgeAdapterOwner.Canvas, "canvas.listReferencedRhinoIds", cancellationToken)
             .ConfigureAwait(false);
         var stamped = await SendDataFlowReadAsync(
-            targetState, BridgeAdapterOwner.CordycepsRhino, "rhino.listStampedObjects", cancellationToken)
+            targetState, BridgeAdapterOwner.RhinoScene, "rhino.listStampedObjects", cancellationToken)
             .ConfigureAwait(false);
         var revision = targetState.Snapshot?.State.Revision ?? 0;
         var observedAt = DateTimeOffset.UtcNow;
@@ -849,7 +849,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         // Each bridge read takes the document gate for just its own round trip: holding it across
         // the whole sweep would make a writer arriving mid-refresh wait for every remaining doc.
         var stamped = await SendDataFlowReadGatedAsync(
-            targets[0], BridgeAdapterOwner.CordycepsRhino, "rhino.listStampedObjects", cancellationToken)
+            targets[0], BridgeAdapterOwner.RhinoScene, "rhino.listStampedObjects", cancellationToken)
             .ConfigureAwait(false);
         var changed = false;
         var liveKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -858,7 +858,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             cancellationToken.ThrowIfCancellationRequested();
             liveKeys.Add(targetState.DocKey);
             var references = await SendDataFlowReadGatedAsync(
-                targetState, BridgeAdapterOwner.CordycepsCanvas, "canvas.listReferencedRhinoIds", cancellationToken)
+                targetState, BridgeAdapterOwner.Canvas, "canvas.listReferencedRhinoIds", cancellationToken)
                 .ConfigureAwait(false);
             changed |= UpdateDataFlowSummary(
                 targetState.DocKey,
@@ -1018,16 +1018,16 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         var prefix = scope[..separator].ToLowerInvariant();
         var (owner, operation, arguments) = prefix switch
         {
-            "wireify" => (
-                BridgeAdapterOwner.Wireify,
+            "script" => (
+                BridgeAdapterOwner.Script,
                 "python.inspect",
                 JsonSerializer.SerializeToElement(new { componentId = objectId }, BridgeProtocol.JsonOptions)),
-            "wireify-messages" => (
-                BridgeAdapterOwner.Wireify,
+            "script-messages" => (
+                BridgeAdapterOwner.Script,
                 "python.runtimeMessages",
                 JsonSerializer.SerializeToElement(new { componentId = objectId }, BridgeProtocol.JsonOptions)),
             "rhino" => (
-                BridgeAdapterOwner.CordycepsRhino,
+                BridgeAdapterOwner.RhinoScene,
                 "rhino.inspect",
                 JsonSerializer.SerializeToElement(new { objectId }, BridgeProtocol.JsonOptions)),
             _ => throw new InvalidOperationException($"Unsupported snapshot scope owner '{prefix}'.")
@@ -1071,11 +1071,11 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         {
             throw new InvalidOperationException($"Invalid table scope '{scope}'.");
         }
-        RequireAdapter(targetState, BridgeAdapterOwner.CordycepsRhino);
+        RequireAdapter(targetState, BridgeAdapterOwner.RhinoScene);
         using var empty = JsonDocument.Parse("{}");
         var request = new BridgeOperationRequest(
             $"read-{Guid.NewGuid():N}",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.listLayers",
             BridgeOperationAccess.Read,
             targetState.Snapshot?.State.Revision ?? 0,
@@ -1097,7 +1097,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         };
         return new ScopedInspection(
             scope,
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.listLayers",
             fingerprint,
             response.Result.Clone(),
@@ -1208,7 +1208,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 new TypedOperation(
                     operationId,
                     OperationKind.MoveComponent,
-                    AdapterOwner.Cordyceps,
+                    AdapterOwner.Canvas,
                     Array.Empty<ResourceAddress>(),
                     writes,
                     Reversible: true,
@@ -1912,7 +1912,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 var access = OperationSemantics.IsWrite(operation.Kind)
                     ? BridgeOperationAccess.Write
                     : BridgeOperationAccess.Read;
-                var pythonWrite = bridgeOwner == BridgeAdapterOwner.Wireify &&
+                var pythonWrite = bridgeOwner == BridgeAdapterOwner.Script &&
                     access == BridgeOperationAccess.Write
                     ? PythonStateWrite(operation)
                     : null;
@@ -1972,11 +1972,11 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                         string.IsNullOrWhiteSpace(response.AfterFingerprint))
                     {
                         throw new InvalidOperationException(
-                            $"Wireify operation '{operation.OperationId}' returned an invalid fingerprint chain.");
+                            $"Script operation '{operation.OperationId}' returned an invalid fingerprint chain.");
                     }
                     rollingPythonFingerprints[pythonWrite.Id] = response.AfterFingerprint;
                 }
-                if (bridgeOwner is BridgeAdapterOwner.Wireify or BridgeAdapterOwner.CordycepsRhino)
+                if (bridgeOwner is BridgeAdapterOwner.Script or BridgeAdapterOwner.RhinoScene)
                 {
                     // A multi-object operation reports ONE aggregate AfterFingerprint, which is not
                     // any object's real fingerprint. Batch results carry per-item fingerprints;
@@ -2946,11 +2946,11 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 return CaptureCanvaslessSnapshot(targetState);
             }
 
-            RequireAdapter(targetState, BridgeAdapterOwner.CordycepsCanvas);
+            RequireAdapter(targetState, BridgeAdapterOwner.Canvas);
             var currentTarget = targetState.Target;
             var request = BridgeOperationRequest.Create(
                 $"snapshot-{Guid.NewGuid():N}",
-                BridgeAdapterOwner.CordycepsCanvas,
+                BridgeAdapterOwner.Canvas,
                 "canvas.snapshot",
                 BridgeOperationAccess.Read,
                 targetState.Snapshot?.State.Revision ?? 0,
@@ -3166,10 +3166,10 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         CancellationToken cancellationToken)
     {
         var objectId = Guid.Parse(resource.Id);
-        RequireAdapter(targetState, BridgeAdapterOwner.CordycepsRhino);
+        RequireAdapter(targetState, BridgeAdapterOwner.RhinoScene);
         var request = new BridgeOperationRequest(
             $"absence-{Guid.NewGuid():N}",
-            BridgeAdapterOwner.CordycepsRhino,
+            BridgeAdapterOwner.RhinoScene,
             "rhino.list",
             BridgeOperationAccess.Read,
             targetState.Snapshot?.State.Revision ?? 0,
@@ -3193,7 +3193,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         ResourceKind.GrasshopperComponentSource or
         ResourceKind.GrasshopperComponentIo or
         ResourceKind.GrasshopperComponentValue => Guid.TryParse(resource.Id, out var componentId)
-            ? $"wireify:{componentId:D}"
+            ? $"script:{componentId:D}"
             : null,
         ResourceKind.RhinoObject or
         ResourceKind.RhinoObjectGeometry or
@@ -3379,7 +3379,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                     $"Operation '{item.Operation.OperationId}' has an empty Rhino upsert payload.");
             var request = new BridgeOperationRequest(
                 item.Operation.OperationId,
-                BridgeAdapterOwner.CordycepsRhino,
+                BridgeAdapterOwner.RhinoScene,
                 "rhino.validateUpsert",
                 BridgeOperationAccess.Read,
                 snapshotRevision,
@@ -4297,7 +4297,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             }
             if (!targetState.Adapters.Contains(owner))
             {
-                // Name the cause, not the plumbing: "no adapter 'CordycepsCanvas'" reads like a
+                // Name the cause, not the plumbing: "no adapter 'Canvas'" reads like a
                 // broken bridge, when the truth is simply that no definition is open — a state the
                 // reader can act on (open one, or do Rhino-side work instead).
                 if (!targetState.Target.HasGrasshopper)
@@ -4825,7 +4825,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 // going through ReadBridgeQueryAsync (which enters the read gate) would deadlock.
                 var request = new BridgeOperationRequest(
                     $"read-{Guid.NewGuid():N}",
-                    BridgeAdapterOwner.CordycepsCanvas,
+                    BridgeAdapterOwner.Canvas,
                     "canvas.inspectOutputs",
                     BridgeOperationAccess.Read,
                     after.State.Revision,

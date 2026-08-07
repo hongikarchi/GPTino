@@ -1,12 +1,12 @@
 using GPTino.BridgeContract;
 
-namespace GPTino.CordycepsAdapter;
+namespace GPTino.CanvasSceneAdapter;
 
 /// <summary>
 /// Owns Grasshopper canvas structure, topology, layout, groups, and snapshots.
-/// Python source and parameter typing are deliberately absent; those belong to Wireify.
+/// Python source and parameter typing are deliberately absent; those belong to the Script domain.
 /// </summary>
-public interface ICordycepsCanvasAdapter
+public interface ICanvasAdapter
 {
     Task<CanvasSnapshot> CaptureSnapshotAsync(
         DocumentTarget target,

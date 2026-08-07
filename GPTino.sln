@@ -8,7 +8,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.BridgeContract", "sr
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Contracts", "src\GPTino.Contracts\GPTino.Contracts.csproj", "{AAAEEC1E-867A-4A62-95B8-971F6DD9EEB7}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.CordycepsAdapter", "src\GPTino.CordycepsAdapter\GPTino.CordycepsAdapter.csproj", "{38D1EBE4-628C-4ED7-B0D2-34DBE149B0AD}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.CanvasSceneAdapter", "src\GPTino.CanvasSceneAdapter\GPTino.CanvasSceneAdapter.csproj", "{38D1EBE4-628C-4ED7-B0D2-34DBE149B0AD}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Core", "src\GPTino.Core\GPTino.Core.csproj", "{BB68F20F-CFA2-405A-BBF7-97F91319E21C}"
 EndProject
@@ -20,7 +20,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Rhino", "src\GPTino.
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.Terminal", "src\GPTino.Terminal\GPTino.Terminal.csproj", "{26B16756-FBBD-43ED-B8C2-9A1A56ACBD96}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.WireifyAdapter", "src\GPTino.WireifyAdapter\GPTino.WireifyAdapter.csproj", "{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.ScriptAdapter", "src\GPTino.ScriptAdapter\GPTino.ScriptAdapter.csproj", "{4EE6C75D-E8D1-4751-876C-A1FD50292AA4}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GPTino.SmokeBridge", "tools\GPTino.SmokeBridge\GPTino.SmokeBridge.csproj", "{1F7F4CB6-A495-4D87-A132-21B9C48CC8DA}"
 EndProject

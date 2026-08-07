@@ -1,29 +1,29 @@
 using GPTino.BridgeContract;
 
-namespace GPTino.WireifyAdapter;
+namespace GPTino.ScriptAdapter;
 
 /// <summary>
 /// Owns Python source, parameter schemas and typing, execution, and runtime errors.
-/// Canvas topology and layout are deliberately absent; those belong to Cordyceps.
+/// Canvas topology and layout are deliberately absent; those belong to the Canvas domain.
 /// </summary>
-public interface IWireifyDocumentAdapter
+public interface IScriptDocumentAdapter
 {
     Task<PythonComponentState> ReadPythonComponentAsync(
         DocumentTarget target,
         Guid componentId,
         CancellationToken cancellationToken = default);
 
-    Task<WireifyMutationResult> SetSourceAsync(
+    Task<ScriptMutationResult> SetSourceAsync(
         DocumentTarget target,
         SetPythonSourceRequest request,
         CancellationToken cancellationToken = default);
 
-    Task<WireifyMutationResult> SetParameterSchemaAsync(
+    Task<ScriptMutationResult> SetParameterSchemaAsync(
         DocumentTarget target,
         SetParameterSchemaRequest request,
         CancellationToken cancellationToken = default);
 
-    Task<WireifyMutationResult> SetInputTypingAsync(
+    Task<ScriptMutationResult> SetInputTypingAsync(
         DocumentTarget target,
         SetInputTypingRequest request,
         CancellationToken cancellationToken = default);
@@ -100,7 +100,7 @@ public sealed record ExecutePythonComponentRequest(
     bool ExpireUpstream,
     bool RecomputeDocument);
 
-public sealed record WireifyMutationResult(
+public sealed record ScriptMutationResult(
     string OperationId,
     bool Changed,
     string BeforeFingerprint,

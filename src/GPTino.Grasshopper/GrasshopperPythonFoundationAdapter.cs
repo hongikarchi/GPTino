@@ -5,7 +5,7 @@ using System.Collections;
 using System.Reflection;
 using System.Text;
 using GPTino.BridgeContract;
-using GPTino.WireifyAdapter;
+using GPTino.ScriptAdapter;
 using Grasshopper.Kernel;
 
 namespace GPTino.Grasshopper;
@@ -17,7 +17,7 @@ namespace GPTino.Grasshopper;
 /// same RhinoCodePlatform.GH.IScriptComponent surface: TryGetSource/SetSource plus
 /// IScriptObject.ReBuild; IronPython 2 keeps its legacy Code property.
 /// </summary>
-public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAdapter<GH_Document>
+public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdapter<GH_Document>
 {
     private static readonly Guid Cpython3ComponentGuid = new("719467e6-7cf5-4848-99b0-c5dd57e5442c");
     private static readonly Guid IronPython2ComponentGuid = new("410755b1-224a-4c1e-a407-bf32fb45ea7e");
@@ -51,7 +51,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         return Task.FromResult(ReadState(ResolveComponent(document, componentId)));
     }
 
-    protected override Task<WireifyMutationResult> SetSourceCoreAsync(
+    protected override Task<ScriptMutationResult> SetSourceCoreAsync(
         GH_Document document,
         SetPythonSourceRequest request,
         CancellationToken cancellationToken)
@@ -96,7 +96,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         var source = EnsureLanguageDirective(request.Source, before.Runtime);
         if (string.Equals(before.Source, source, StringComparison.Ordinal))
         {
-            return Task.FromResult(new WireifyMutationResult(
+            return Task.FromResult(new ScriptMutationResult(
                 request.OperationId,
                 Changed: false,
                 PythonComponentFingerprint.Compute(before),
@@ -142,7 +142,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         component.ExpireSolution(recompute: false);
 
         var after = ReadState(component);
-        return Task.FromResult(new WireifyMutationResult(
+        return Task.FromResult(new ScriptMutationResult(
             request.OperationId,
             Changed: true,
             PythonComponentFingerprint.Compute(before),
@@ -150,7 +150,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
             after.RuntimeMessages));
     }
 
-    protected override Task<WireifyMutationResult> SetParameterSchemaCoreAsync(
+    protected override Task<ScriptMutationResult> SetParameterSchemaCoreAsync(
         GH_Document document,
         SetParameterSchemaRequest request,
         CancellationToken cancellationToken)
@@ -188,7 +188,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         if (inputs.Count == requestedInputs.Count && outputs.Count == requestedOutputs.Count &&
             initialPlans.All(plan => plan.IsNoOp))
         {
-            return Task.FromResult(new WireifyMutationResult(
+            return Task.FromResult(new ScriptMutationResult(
                 request.OperationId,
                 Changed: false,
                 PythonComponentFingerprint.Compute(before),
@@ -231,7 +231,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         component.ExpireSolution(recompute: false);
         document.NewSolution(expireAllObjects: false);
         var after = ReadState(component);
-        return Task.FromResult(new WireifyMutationResult(
+        return Task.FromResult(new ScriptMutationResult(
             request.OperationId,
             !string.Equals(
                 PythonComponentFingerprint.Compute(before),
@@ -242,7 +242,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
             after.RuntimeMessages));
     }
 
-    protected override Task<WireifyMutationResult> SetInputTypingCoreAsync(
+    protected override Task<ScriptMutationResult> SetInputTypingCoreAsync(
         GH_Document document,
         SetInputTypingRequest request,
         CancellationToken cancellationToken)
@@ -265,7 +265,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         var plan = PrepareSchema(new[] { input }, new[] { desired }).Single();
         if (plan.IsNoOp)
         {
-            return Task.FromResult(new WireifyMutationResult(
+            return Task.FromResult(new ScriptMutationResult(
                 request.OperationId,
                 Changed: false,
                 PythonComponentFingerprint.Compute(before),
@@ -291,7 +291,7 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundWireifyAda
         component.ExpireSolution(recompute: false);
         document.NewSolution(expireAllObjects: false);
         var after = ReadState(component);
-        return Task.FromResult(new WireifyMutationResult(
+        return Task.FromResult(new ScriptMutationResult(
             request.OperationId,
             Changed: true,
             PythonComponentFingerprint.Compute(before),

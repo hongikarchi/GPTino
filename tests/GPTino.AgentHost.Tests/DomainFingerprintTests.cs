@@ -2,7 +2,7 @@ using System.Text.Json;
 using GPTino.AgentHost.Api;
 using GPTino.BridgeContract;
 using GPTino.Contracts;
-using GPTino.CordycepsAdapter;
+using GPTino.CanvasSceneAdapter;
 
 namespace GPTino.AgentHost.Tests;
 
@@ -52,7 +52,7 @@ public sealed class DomainFingerprintTests
             new TypedOperation(
                 "domain-slider",
                 OperationKind.SetValue,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 Reversible: true,
@@ -111,7 +111,7 @@ public sealed class DomainFingerprintTests
             new TypedOperation(
                 "stale-slider",
                 OperationKind.SetValue,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 Reversible: true,
@@ -188,7 +188,7 @@ public sealed class DomainFingerprintTests
             new TypedOperation(
                 "create-slider",
                 OperationKind.CreateComponent,
-                AdapterOwner.Cordyceps,
+                AdapterOwner.Canvas,
                 [],
                 [resource],
                 Reversible: false,

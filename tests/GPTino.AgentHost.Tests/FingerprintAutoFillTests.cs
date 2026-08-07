@@ -241,7 +241,7 @@ public sealed class FingerprintAutoFillTests
         var operation = new TypedOperation(
             "op-1",
             OperationKind.SetValue,
-            AdapterOwner.Cordyceps,
+            AdapterOwner.Canvas,
             Array.Empty<ResourceAddress>(),
             new[] { resource },
             Reversible: false);
@@ -249,7 +249,7 @@ public sealed class FingerprintAutoFillTests
         using var document = JsonDocument.Parse(json);
         return new LiveDocumentBackend.PreparedOperation(
             operation,
-            BridgeAdapterOwner.CordycepsCanvas,
+            BridgeAdapterOwner.Canvas,
             "canvas.setNumberSlider",
             document.RootElement.Clone(),
             Array.Empty<byte>(),
