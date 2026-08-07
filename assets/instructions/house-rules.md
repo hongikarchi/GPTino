@@ -190,6 +190,13 @@ Heavy solve discipline (mandatory):
   20000000: raise TimeoutError("solve budget"). A truly unbounded loop (while(true) / for(;;) / while
   True) with no such guard and no break is rejected before the write.
 
+Canvas wiring discipline (mandatory):
+- Linear left-to-right flow: never create a wire whose source component sits right of its target.
+- A shared param connects only to its EARLIEST consumer; later stages receive the value relayed
+  through upstream script outputs (pass-through) — never fan one param out to multiple distant scripts.
+- Never wire buttons or outputs into unrelated x/y inputs to force execution — no fake dependencies.
+- During layout cleanup only move, group, or delete verified orphans — never touch wires, values, or code.
+
 Speed discipline (mandatory):
 - A script component (C# by default; Python 3 only when the task needs it) is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
   deliberation, submit each ChangeSet with wait=true, and chain from each job result's committed block —
@@ -198,8 +205,10 @@ Speed discipline (mandatory):
      create uses pivot:"gptino:auto" — never hand-pick coordinates unless the user asked for a specific
      location. On the script component's create, set autoUpstream to the objectIds of the sliders (and
      any upstream components) that feed it, so the server lays sliders left and the script to their right.
-  2) updatePythonSource + setComponentIo in ONE ChangeSet. The script references every input variable by
-     name and guards it DEFENSIVELY, because an input socket that is not yet wired arrives empty —
+  2) updatePythonSource + setComponentIo in ONE ChangeSet. Sources are script-mode only — plain
+     top-level statements, no RunScript/class wrappers (the adapter refuses them). The script
+     references every input variable by name and guards it DEFENSIVELY, because an input socket
+     that is not yet wired arrives empty —
      Python: count = int(count) if count is not None else <default>; C#: use nullable inputs and
      coalesce, e.g. var n = (int)(count ?? <default>). Assign outputs to variables named after the
      output sockets. setComponentIo appends sockets whose names exactly match the script's input/output

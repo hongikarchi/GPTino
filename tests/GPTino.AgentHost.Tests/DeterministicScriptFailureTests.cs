@@ -435,6 +435,318 @@ public sealed class DeterministicScriptFailureTests
         }
     }
 
+    [Fact]
+    public async Task VerifiedRollbackWithNoCompletedOpsFailsDeterministically()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
+            ]);
+        await using var responder = harness.StartResponder(
+            responseFactory: request => request.Operation == "python.inspect"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    new { componentId = request.Arguments.GetProperty("componentId").GetGuid() },
+                    afterFingerprint: InitialFingerprint)
+                : null,
+            failureFactory: request => request.Operation == "python.setSource"
+                ? new BridgeFailure(
+                    "mutation_rolled_back",
+                    "RhinoCode did not retain the requested executable source. The component was " +
+                    "verifiably restored to its pre-write source — fix the payload and resubmit.",
+                    Retryable: true)
+                : null);
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Verified rollback"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var sourceResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentSource,
+            harness.CanvasObjectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "rolled-back-source.json",
+            new
+            {
+                bridgeOperation = "python.setSource",
+                arguments = new
+                {
+                    operationId = "rolled-back-source",
+                    componentId = harness.CanvasObjectId,
+                    expectedSourceSha256 = "gptino:auto",
+                    source = "a = x",
+                    runtime = PythonRuntime.Cpython3,
+                    expireSolution = false
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [new ResourceExpectation(sourceResource, InitialFingerprint)],
+            [
+                new TypedOperation(
+                    "rolled-back-source",
+                    OperationKind.UpdatePythonSource,
+                    AdapterOwner.Script,
+                    [],
+                    [sourceResource],
+                    Reversible: true,
+                    artifact)
+            ],
+            [],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "rolled-back-source"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString();
+
+        // The adapter PROVED the rollback restored the pre-write source and no sibling op landed:
+        // deterministic Failed the session can iterate on, never a RecoveryRequired review.
+        Assert.Equal("failed", state);
+        Assert.Contains("verifiably restored", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Unknown outcome", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task VerifiedRollbackAfterACompletedOpStaysRecoveryRequired()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
+            ]);
+        await using var responder = harness.StartResponder(
+            responseFactory: request => request.Operation switch
+            {
+                "python.inspect" => BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    new { componentId = request.Arguments.GetProperty("componentId").GetGuid() },
+                    afterFingerprint: InitialFingerprint),
+                "python.setSource" => BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: true,
+                    new { applied = true },
+                    beforeFingerprint: InitialFingerprint,
+                    afterFingerprint: "python-f1"),
+                _ => null
+            },
+            failureFactory: request => request.Operation == "python.execute"
+                ? new BridgeFailure(
+                    "mutation_rolled_back",
+                    "The execute failed and was verifiably rolled back.",
+                    Retryable: true)
+                : null);
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Batch rollback"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var sourceResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentSource,
+            harness.CanvasObjectId.ToString("D"));
+        var valueResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentValue,
+            harness.CanvasObjectId.ToString("D"));
+        var sourceArtifact = await harness.WritePayloadAsync(
+            session,
+            "batch-source.json",
+            new
+            {
+                bridgeOperation = "python.setSource",
+                arguments = new
+                {
+                    operationId = "set-source",
+                    componentId = harness.CanvasObjectId,
+                    expectedSourceSha256 = "gptino:auto",
+                    source = "a = x",
+                    runtime = PythonRuntime.Cpython3,
+                    expireSolution = false
+                }
+            });
+        var executeArtifact = await harness.WritePayloadAsync(
+            session,
+            "batch-execute.json",
+            new
+            {
+                bridgeOperation = "python.execute",
+                arguments = new
+                {
+                    operationId = "execute-script",
+                    componentId = harness.CanvasObjectId,
+                    expireUpstream = false,
+                    recomputeDocument = false
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [
+                new ResourceExpectation(sourceResource, InitialFingerprint),
+                new ResourceExpectation(valueResource, InitialFingerprint)
+            ],
+            [
+                new TypedOperation(
+                    "set-source",
+                    OperationKind.UpdatePythonSource,
+                    AdapterOwner.Script,
+                    [],
+                    [sourceResource],
+                    Reversible: true,
+                    sourceArtifact),
+                new TypedOperation(
+                    "execute-script",
+                    OperationKind.ExecutePython,
+                    AdapterOwner.Script,
+                    [],
+                    [valueResource],
+                    Reversible: true,
+                    executeArtifact)
+            ],
+            [new VerificationPredicate("No runtime errors", PredicateKind.RuntimeErrorAbsent, null, null)],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "batch-rollback"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString();
+
+        // The earlier source write LANDED: even a verified rollback of the second op cannot make
+        // the batch a clean Failed — the document must still be reviewed. But the manifest stops
+        // claiming the rolled-back op's outcome is unknown — and it must say the op DID write
+        // and was rolled back, never "refused before write" (that label is a lie for a rollback).
+        Assert.Equal("recoveryrequired", state);
+        Assert.Contains("Applied: set-source", message, StringComparison.Ordinal);
+        Assert.Contains(
+            "execute-script (write rolled back — no net change)",
+            message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("refused before write", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task VerifiedRollbackAfterACompletedReadStillFailsDeterministically()
+    {
+        // A ChangeSet may legally carry read operations. A completed READ proves nothing changed,
+        // so a verified rollback of the only WRITE must still classify as a deterministic Failed
+        // — not RecoveryRequired just because completedOperationIds is non-empty.
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
+            ]);
+        await using var responder = harness.StartResponder(
+            responseFactory: request => request.Operation == "python.inspect"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    new { componentId = request.Arguments.GetProperty("componentId").GetGuid() },
+                    afterFingerprint: InitialFingerprint)
+                : null,
+            failureFactory: request => request.Operation == "python.setSource"
+                ? new BridgeFailure(
+                    "mutation_rolled_back",
+                    "RhinoCode did not retain the requested executable source. The component was " +
+                    "verifiably restored to its pre-write source — fix the payload and resubmit.",
+                    Retryable: true)
+                : null);
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Read then rollback"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var sourceResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentSource,
+            harness.CanvasObjectId.ToString("D"));
+        var inspectArtifact = await harness.WritePayloadAsync(
+            session,
+            "read-inspect.json",
+            new
+            {
+                bridgeOperation = "python.inspect",
+                arguments = new
+                {
+                    componentId = harness.CanvasObjectId
+                }
+            });
+        var sourceArtifact = await harness.WritePayloadAsync(
+            session,
+            "read-then-rolled-back-source.json",
+            new
+            {
+                bridgeOperation = "python.setSource",
+                arguments = new
+                {
+                    operationId = "rolled-back-source",
+                    componentId = harness.CanvasObjectId,
+                    expectedSourceSha256 = "gptino:auto",
+                    source = "a = x",
+                    runtime = PythonRuntime.Cpython3,
+                    expireSolution = false
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [new ResourceExpectation(sourceResource, InitialFingerprint)],
+            [new ResourceExpectation(sourceResource, InitialFingerprint)],
+            [
+                new TypedOperation(
+                    "inspect-source",
+                    OperationKind.Read,
+                    AdapterOwner.Script,
+                    [sourceResource],
+                    [],
+                    Reversible: true,
+                    inspectArtifact),
+                new TypedOperation(
+                    "rolled-back-source",
+                    OperationKind.UpdatePythonSource,
+                    AdapterOwner.Script,
+                    [],
+                    [sourceResource],
+                    Reversible: true,
+                    sourceArtifact)
+            ],
+            [],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "read-then-rollback"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString();
+
+        // The read completed, but no WRITE landed and the rollback was verified: deterministic
+        // Failed the session can iterate on, never a RecoveryRequired review.
+        Assert.Equal("failed", state);
+        Assert.Contains("verifiably restored", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Unknown outcome", message, StringComparison.Ordinal);
+    }
+
     private static CanvasSnapshot TwoInputScriptSnapshot(LiveDocumentBackendHarness harness)
     {
         CanvasParameterState Param(string name, CanvasParameterDirection direction) => new(

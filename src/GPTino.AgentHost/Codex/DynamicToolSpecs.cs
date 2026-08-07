@@ -15,11 +15,11 @@ internal static class DynamicToolSpecs
         - moveComponent/setLayout -> canvas.move {operationId,pivots:{guid:{x,y}},expectedFingerprints:{guid:sha256}}
         - setValue -> canvas.setNumberSlider {operationId,objectId,expectedFingerprint,value,minimum,maximum,decimalPlaces} (Number Slider only)
         - connectWire/disconnectWire -> canvas.setWire {operationId,wire:{sourceObjectId,sourceParameterId,targetObjectId,targetParameterId},action:connect|disconnect,rejectCycles:true}
-        - createComponent -> canvas.create {operationId,objectId,componentTypeId,pivot:"gptino:auto",autoUpstream:[objectId,...],nickName} — ALWAYS use pivot:"gptino:auto" and list in autoUpstream the objectIds of the components/sliders that will feed this one; the server computes a clean, non-overlapping downstream position (sources left, results right). autoUpstream is optional and valid ONLY with the sentinel. Hand-pick pivot:{x,y} ONLY when the user asked for a specific location (an explicit point must NOT carry autoUpstream).
+        - createComponent -> canvas.create {operationId,objectId,componentTypeId,pivot:"gptino:auto",autoUpstream:[objectId,...],nickName} — ALWAYS use pivot:"gptino:auto" and list in autoUpstream the objectIds of the components/sliders that will feed this one; the server computes a clean, non-overlapping downstream position (sources left, results right). autoUpstream is optional and valid ONLY with the sentinel. Hand-pick pivot:{x,y} ONLY when the user asked for a specific location (an explicit point must NOT carry autoUpstream). componentTypeId must come from the well-known GUID table (gh-authoring skill) or a component_catalog lookup in this session — never write a type GUID from memory.
         - referenceRhinoObjects -> canvas.referenceRhinoObjects {operationId,objectId,rhinoObjectIds:[guid,...],paramType:curve|brep|mesh|surface|point|geometry,pivot:"gptino:auto",nickName} — creates a typed GH parameter that PERSISTENTLY REFERENCES existing Rhino objects by GUID (a live reference, not a baked copy). This is how "use the curves/geometry I selected in Rhino" becomes an editable definition: reference the selected object ids here, then wire this parameter downstream — never re-author the geometry in a script. writeSet is grasshopperComponent with gptino:absent, exactly like createComponent (it creates a new canvas object at objectId). Pick paramType to match the selection; "geometry" accepts mixed types.
         - deleteComponent -> canvas.delete {operationId,objectId,expectedFingerprint}
         - setGroup -> canvas.setGroup {operationId,groupId,name,objectIds,argbColor}
-        - updatePythonSource -> python.setSource {operationId,componentId,expectedSourceSha256,source,runtime:csharp|cpython3|ironPython2,expireSolution} — the python.* operations drive every Rhino 8 script component regardless of language; runtime must match the component that was created. Use expectedSourceSha256:"gptino:auto" (a fresh component's seeded template hash is unknowable; the fingerprint chain still guards concurrent edits) — pass a concrete sha only to assert a specific prior source
+        - updatePythonSource -> python.setSource {operationId,componentId,expectedSourceSha256,source,runtime:csharp|cpython3|ironPython2,expireSolution} — the python.* operations drive every Rhino 8 script component regardless of language; runtime must match the component that was created. source must be Rhino 8 SCRIPT-MODE text — plain top-level statements only, no class/GH_ScriptInstance/RunScript wrapper; declare sockets via setComponentIo and read/assign socket-named variables. Use expectedSourceSha256:"gptino:auto" (a fresh component's seeded template hash is unknowable; the fingerprint chain still guards concurrent edits) — pass a concrete sha only to assert a specific prior source
         - setComponentIo -> python.setSchema {operationId,componentId,inputs,outputs,preserveIncidentWires}. Appends sockets only (removal unsupported): list every existing socket in order, then appended ones. Each socket is {name,access,typeHint?} — OMIT parameterId and nickName (server-assigned and reconciled by position; nickname defaults to the name; missing typeHint defaults to a generic object socket). Scalars fed by sliders stay generic (coerce in-script); any socket carrying GEOMETRY between components needs the geometry type hint (point3d, vector3d, line, curve, plane, mesh, brep, surface, geometry, ...) on BOTH ends or the receiver gets an untyped/Guid value.
         - convertSocket -> python.setTyping {operationId,componentId,inputParameterId,typeHint,access:item|list|tree}
         - executePython -> python.execute {operationId,componentId,expireUpstream,recomputeDocument}
@@ -81,7 +81,7 @@ internal static class DynamicToolSpecs
                     }),
                 Function(
                     "component_catalog",
-                    "Look up a component's type GUID in the installed Grasshopper catalog when you do not already know it. Skip this for well-known GUIDs (the script/slider/panel types in the gh-authoring skill); only search for unknown types, or when a create is rejected for an unknown GUID. Parallel-safe and read-only.",
+                    "Look up a component's type GUID in the installed Grasshopper catalog. Use the well-known GUID table (gh-authoring skill) for the types it lists; for ANY other type a component_catalog lookup is MANDATORY before canvas.create — creates with unverified GUIDs are refused. Never write a type GUID from memory. Parallel-safe and read-only.",
                     new
                     {
                         type = "object",
@@ -692,7 +692,7 @@ internal static class DynamicToolSpecs
     private static object RollbackSchema() => new
     {
         type = "object",
-        description = "Optional provenance-only before image in this alpha; a failed live write is marked recoveryRequired rather than silently rolled back.",
+        description = "Optional provenance-only before image in this alpha; failed writes that were verifiably rolled back (or refused before any write) are reported as failed with an explanatory message; recoveryRequired remains for genuinely unknown outcomes.",
         properties = new
         {
             resource = ResourceAddressSchema(),

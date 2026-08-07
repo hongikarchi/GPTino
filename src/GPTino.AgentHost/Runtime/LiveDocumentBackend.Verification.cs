@@ -423,7 +423,9 @@ public sealed partial class LiveDocumentBackend
     internal static (string Message, IReadOnlyList<JobDiagnostic> Diagnostics) BuildRecoveryManifest(
         IReadOnlyList<TypedOperation> operations,
         IReadOnlyList<string> completedOperationIds,
-        string? inFlightOperationId)
+        string? inFlightOperationId,
+        bool inFlightRefusedBeforeWrite = false,
+        bool inFlightRolledBack = false)
     {
         var completed = new HashSet<string>(completedOperationIds, StringComparer.Ordinal);
         var notDispatched = operations
@@ -434,9 +436,20 @@ public sealed partial class LiveDocumentBackend
         var applied = completedOperationIds.Count > 0
             ? string.Join(", ", completedOperationIds)
             : "none";
+        // When the in-flight failure carried a refusal or verified-rollback code, the adapter
+        // PROVED the operation left no net change — reporting it as "unknown" would send the
+        // session on a needless document review. The two proofs stay labeled distinctly: a
+        // refusal never touched the document, while a verified rollback DID write and then
+        // restored the pre-write state.
+        var rolledBack = inFlightOperationId is not null && inFlightRolledBack;
+        var refused = inFlightOperationId is not null && inFlightRefusedBeforeWrite && !rolledBack;
         var unknown = inFlightOperationId is null
             ? "none"
-            : $"{inFlightOperationId} (in flight at failure)";
+            : rolledBack
+                ? $"{inFlightOperationId} (write rolled back — no net change)"
+                : refused
+                    ? $"{inFlightOperationId} (refused before write — no change applied)"
+                    : $"{inFlightOperationId} (in flight at failure)";
         var pending = notDispatched.Length > 0 ? string.Join(", ", notDispatched) : "none";
         var message = $"Applied: {applied}. Unknown outcome: {unknown}. Not dispatched: {pending}.";
         var manifestDiagnostics = new List<JobDiagnostic>
@@ -445,7 +458,11 @@ public sealed partial class LiveDocumentBackend
             new(
                 inFlightOperationId ?? string.Empty,
                 BridgeDiagnosticSeverity.Information,
-                "recovery_unknown",
+                rolledBack
+                    ? "recovery_rolled_back"
+                    : refused
+                        ? "recovery_refused_before_write"
+                        : "recovery_unknown",
                 unknown),
             new(string.Empty, BridgeDiagnosticSeverity.Information, "recovery_not_dispatched", pending),
         };

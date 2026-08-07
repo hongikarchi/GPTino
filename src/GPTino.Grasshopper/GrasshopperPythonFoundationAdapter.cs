@@ -35,6 +35,11 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
     // Must match the executor's recognized refusal codes (LiveDocumentBackend.PreconditionRefusedFailureCode)
     // so a clean refusal classifies as a deterministic Failed, not RecoveryRequired.
     private const string PreconditionRefusedCode = "precondition_refused";
+    // Bridge failure code for a mutation that failed AND whose in-place rollback was VERIFIED by
+    // reading the restored source back (byte-identical to the pre-write source). Must match the
+    // executor's recognized codes (LiveDocumentBackend.MutationRolledBackFailureCode) so a verified
+    // rollback with no sibling write classifies as a deterministic Failed, not RecoveryRequired.
+    private const string MutationRolledBackCode = "mutation_rolled_back";
     private const string ScriptParameterInterface = "RhinoCodePlatform.GH.IScriptParameter";
 
     public GrasshopperPythonFoundationAdapter(ExplicitGrasshopperDocumentResolver resolver)
@@ -89,11 +94,25 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
         }
         if (before.Runtime != request.Runtime)
         {
-            throw new NotSupportedException(
+            // Deterministic PRE-WRITE refusal (nothing touched yet): classify as a clean Failed.
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
                 "Changing the script runtime is not safe in-place; create the intended script component first.");
         }
 
         var source = EnsureLanguageDirective(request.Source, before.Runtime);
+        // In-process backstop for the executor's SDK-source preflight (kept in lockstep with
+        // LiveDocumentBackend.LooksLikeSdkComponentSource): an SDK-class C# source never compiles
+        // in a Rhino 8 script component, and the failure used to surface only AFTER the write
+        // landed. Refuse it here, before any mutation, as a clean precondition_refused.
+        if (before.Runtime == PythonRuntime.Csharp && LooksLikeSdkComponentSource(source))
+        {
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
+                "C# sources must be Rhino 8 script-mode: plain top-level statements, no " +
+                "class/GH_ScriptInstance/RunScript wrapper. Declare sockets with setComponentIo " +
+                "and read/assign socket-named variables. See the gh-csharp-cookbook skill.");
+        }
         if (string.Equals(before.Source, source, StringComparison.Ordinal))
         {
             return Task.FromResult(new ScriptMutationResult(
@@ -128,6 +147,35 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
                     "Python source update failed and its in-place rollback also failed; use Grasshopper Undo.",
                     mutationFailure,
                     rollbackFailure);
+            }
+
+            // Verify the rollback with the same cheap reflection read the write path uses (no
+            // NewSolution/ExpireSolution — nothing recomputes here). Only a byte-identical
+            // restoration may claim mutation_rolled_back (the executor classifies it as a clean
+            // Failed when no sibling write landed); anything unverifiable keeps the honest
+            // RecoveryRequired rethrow below. A forward-rebuild TimeoutException is NEVER
+            // verifiable: Rebuild's task.Wait gave up while the rebuild Task kept running, and
+            // that zombie can still mutate compile state AFTER a source-text read-back matches —
+            // so a timed-out mutation always keeps the rethrow.
+            if (mutationFailure is not TimeoutException)
+            {
+                string? restored = null;
+                try
+                {
+                    restored = ReadExecutableSource(component, before.Runtime);
+                }
+                catch
+                {
+                    // Read-back unavailable: the rollback cannot be verified — fall through to rethrow.
+                }
+                if (string.Equals(restored, before.Source, StringComparison.Ordinal))
+                {
+                    throw new BridgeProtocolException(
+                        MutationRolledBackCode,
+                        $"{mutationFailure.Message}. The component was verifiably restored to its " +
+                        "pre-write source — fix the payload and resubmit.",
+                        mutationFailure);
+                }
             }
 
             throw;
@@ -257,9 +305,11 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
 
         var component = ResolveComponent(document, request.ComponentId);
         var before = ReadState(component);
+        // PRE-WRITE refusal: the socket does not exist, nothing was touched — precondition_refused.
         var input = ReadParameterObjects(component, "Inputs")
             .SingleOrDefault(item => item.ParameterId == request.InputParameterId)
-            ?? throw new KeyNotFoundException(
+            ?? throw new BridgeProtocolException(
+                PreconditionRefusedCode,
                 $"Python input {request.InputParameterId:D} was not found.");
         var current = ToParameter(input);
         var desired = current with { TypeHint = request.TypeHint, Access = request.Access };
@@ -351,19 +401,24 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
             ReadMessages(ResolveComponent(document, componentId)));
     }
 
+    // Every throw below is a deterministic PRE-WRITE refusal (ResolveComponent runs before any
+    // mutation in every Core method): precondition_refused so the executor classifies a clean Failed.
     private static IGH_DocumentObject ResolveComponent(GH_Document document, Guid componentId)
     {
         if (componentId == Guid.Empty)
         {
-            throw new InvalidOperationException("ComponentId is required.");
+            throw new BridgeProtocolException(PreconditionRefusedCode, "ComponentId is required.");
         }
         var component = document.FindObject(componentId, true)
-            ?? throw new KeyNotFoundException($"Grasshopper object {componentId:D} was not found.");
+            ?? throw new BridgeProtocolException(
+                PreconditionRefusedCode,
+                $"Grasshopper object {componentId:D} was not found.");
         var runtime = RuntimeOf(component);
         if (runtime is PythonRuntime.Cpython3 or PythonRuntime.Csharp &&
             FindInterface(component, ScriptComponentInterface) is null)
         {
-            throw new NotSupportedException(
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
                 $"Grasshopper object {componentId:D} is not a supported Rhino 8 script component.");
         }
         return component;
@@ -383,7 +438,10 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
         {
             return PythonRuntime.Csharp;
         }
-        throw new NotSupportedException(
+        // PRE-WRITE refusal: ComponentGuid is immutable, so this can only ever fire before a
+        // mutation (a component that resolved a runtime pre-write resolves the same one after).
+        throw new BridgeProtocolException(
+            PreconditionRefusedCode,
             $"Grasshopper object {component.InstanceGuid:D} is not a supported script component " +
             "(Python 3, IronPython 2, or C#).");
     }
@@ -543,6 +601,179 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
             : directive + "\n" + source;
     }
 
+    // SDK-style C# component source detector — kept in LOCKSTEP with the executor's preflight
+    // (LiveDocumentBackend.LooksLikeSdkComponentSource; duplicated because the AgentHost and this
+    // plugin share no project reference). Conservative by design: only a class declaration whose
+    // base TYPE is GH_ScriptInstance/GH_Component (never a mere generic argument such as
+    // IComparer<GH_Component>), or a modifier-prefixed 'void RunScript(' SDK signature, matches —
+    // plain top-level script-mode statements (including a local 'void RunScript()' helper
+    // function) never do. Comments (line and block) and string literals are stripped first so a
+    // commented-out or quoted wrapper (or the '// #! csharp' directive) never trips it.
+    private static readonly System.Text.RegularExpressions.Regex SdkClassBaseListPattern = new(
+        @"\bclass\s+\w+\s*:\s*([^{;]+)",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex SdkBaseTypeNamePattern = new(
+        @"\b(GH_ScriptInstance|GH_Component)\b",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex SdkRunScriptSignaturePattern = new(
+        @"\b(private|public|protected|internal|override)\s+(static\s+)?void\s+RunScript\s*\(",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static bool LooksLikeSdkComponentSource(string source)
+    {
+        if (string.IsNullOrEmpty(source))
+        {
+            return false;
+        }
+        var text = StripCommentsAndStringLiterals(source);
+        if (SdkRunScriptSignaturePattern.IsMatch(text))
+        {
+            return true;
+        }
+        foreach (System.Text.RegularExpressions.Match declaration in SdkClassBaseListPattern.Matches(text))
+        {
+            if (BaseListNamesSdkType(declaration.Groups[1].Value))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // True only when GH_ScriptInstance/GH_Component appears in the segment BEFORE the first '<'
+    // of a base entry (entries split on top-level commas) — i.e. as the base TYPE itself. A
+    // generic ARGUMENT (IComparer<GH_Component>) sits behind a '<' and never matches.
+    private static bool BaseListNamesSdkType(string baseList)
+    {
+        var depth = 0;
+        var entryStart = 0;
+        for (var index = 0; index <= baseList.Length; index++)
+        {
+            if (index < baseList.Length)
+            {
+                var current = baseList[index];
+                if (current == '<')
+                {
+                    depth++;
+                    continue;
+                }
+                if (current == '>')
+                {
+                    depth = Math.Max(0, depth - 1);
+                    continue;
+                }
+                if (current != ',' || depth != 0)
+                {
+                    continue;
+                }
+            }
+            var entry = baseList[entryStart..index];
+            var angle = entry.IndexOf('<');
+            if (SdkBaseTypeNamePattern.IsMatch(angle >= 0 ? entry[..angle] : entry))
+            {
+                return true;
+            }
+            entryStart = index + 1;
+        }
+        return false;
+    }
+
+    // Replaces //-line and /* */ block comments plus string literals ("..." with \" escapes,
+    // verbatim @"..."/$@"..." with "" escapes) and char literals with spaces, so quoted or
+    // commented SDK shapes never reach the patterns. Newlines are preserved through line
+    // comments to keep the remaining code line-shaped.
+    private static string StripCommentsAndStringLiterals(string source)
+    {
+        var stripped = new StringBuilder(source.Length);
+        var index = 0;
+        while (index < source.Length)
+        {
+            var current = source[index];
+            var next = index + 1 < source.Length ? source[index + 1] : '\0';
+            if (current == '/' && next == '/')
+            {
+                while (index < source.Length && source[index] != '\n')
+                {
+                    index++;
+                }
+                continue;
+            }
+            if (current == '/' && next == '*')
+            {
+                index += 2;
+                while (index + 1 < source.Length && !(source[index] == '*' && source[index + 1] == '/'))
+                {
+                    index++;
+                }
+                index = Math.Min(source.Length, index + 2);
+                stripped.Append(' ');
+                continue;
+            }
+            if (current == '\'')
+            {
+                // Char literal — it may contain a raw or escaped quote that would otherwise open
+                // a phantom string.
+                index++;
+                while (index < source.Length && source[index] != '\'' && source[index] != '\n')
+                {
+                    index += source[index] == '\\' ? 2 : 1;
+                }
+                if (index < source.Length && source[index] == '\'')
+                {
+                    index++;
+                }
+                stripped.Append(' ');
+                continue;
+            }
+            if (current == '"')
+            {
+                var lookback = index - 1;
+                while (lookback >= 0 && source[lookback] == '$')
+                {
+                    lookback--;
+                }
+                var verbatim = lookback >= 0 && source[lookback] == '@';
+                index++;
+                if (verbatim)
+                {
+                    while (index < source.Length)
+                    {
+                        if (source[index] != '"')
+                        {
+                            index++;
+                            continue;
+                        }
+                        if (index + 1 < source.Length && source[index + 1] == '"')
+                        {
+                            index += 2;
+                            continue;
+                        }
+                        index++;
+                        break;
+                    }
+                }
+                else
+                {
+                    while (index < source.Length && source[index] != '"' && source[index] != '\n')
+                    {
+                        index += source[index] == '\\' ? 2 : 1;
+                    }
+                    if (index < source.Length && source[index] == '"')
+                    {
+                        index++;
+                    }
+                }
+                stripped.Append(' ');
+                continue;
+            }
+            stripped.Append(current);
+            index++;
+        }
+        return stripped.ToString();
+    }
+
     private static IReadOnlyList<ScriptParameterObject> ReadParameterObjects(
         object component,
         string property)
@@ -599,6 +830,8 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
             item.GrasshopperParameter?.Optional ?? false);
     }
 
+    // Only called from SetParameterSchemaCoreAsync BEFORE its UndoUtil record: every throw is a
+    // deterministic PRE-WRITE refusal — precondition_refused so the executor classifies a clean Failed.
     private static void ValidateSchema(
         IReadOnlyList<PythonParameter> inputs,
         IReadOnlyList<PythonParameter> outputs)
@@ -606,28 +839,33 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
         var all = inputs.Concat(outputs).ToArray();
         if (all.Any(parameter => parameter.ParameterId == Guid.Empty))
         {
-            throw new InvalidOperationException("Every existing socket must retain its non-empty ParameterId.");
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
+                "Every existing socket must retain its non-empty ParameterId.");
         }
         if (all.GroupBy(parameter => parameter.ParameterId).Any(group => group.Count() != 1))
         {
-            throw new InvalidOperationException("Socket ParameterIds must be unique.");
+            throw new BridgeProtocolException(PreconditionRefusedCode, "Socket ParameterIds must be unique.");
         }
         foreach (var parameter in all)
         {
             if (!IsPythonIdentifier(parameter.Name))
             {
-                throw new InvalidOperationException(
+                throw new BridgeProtocolException(
+                    PreconditionRefusedCode,
                     $"'{parameter.Name}' is not a safe Python variable name.");
             }
             if (string.IsNullOrWhiteSpace(parameter.NickName))
             {
-                throw new InvalidOperationException("Socket NickName is required.");
+                throw new BridgeProtocolException(PreconditionRefusedCode, "Socket NickName is required.");
             }
             _ = ResolveSafeType(parameter.TypeHint, allowObject: true);
         }
         if (all.GroupBy(parameter => parameter.Name, StringComparer.Ordinal).Any(group => group.Count() != 1))
         {
-            throw new InvalidOperationException("Python socket variable names must be unique.");
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
+                "Python socket variable names must be unique.");
         }
     }
 
@@ -720,6 +958,8 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
                 index < actual.Count ? parameter with { ParameterId = actual[index].ParameterId } : parameter)
             .ToArray();
 
+    // Only called from SetParameterSchemaCoreAsync BEFORE its UndoUtil record: every throw is a
+    // deterministic PRE-WRITE refusal — precondition_refused so the executor classifies a clean Failed.
     private static void ValidateAppendOnlySchema(
         IReadOnlyList<ScriptParameterObject> actual,
         IReadOnlyList<PythonParameter> requested,
@@ -727,14 +967,16 @@ public sealed class GrasshopperPythonFoundationAdapter : DocumentBoundScriptAdap
     {
         if (requested.Count < actual.Count)
         {
-            throw new NotSupportedException(
+            throw new BridgeProtocolException(
+                PreconditionRefusedCode,
                 $"Removing Python {side} sockets is not supported by the foundation adapter.");
         }
         for (var index = 0; index < actual.Count; index++)
         {
             if (actual[index].ParameterId != requested[index].ParameterId)
             {
-                throw new InvalidOperationException(
+                throw new BridgeProtocolException(
+                    PreconditionRefusedCode,
                     $"Existing Python {side} socket identity changed at schema position {index}.");
             }
         }

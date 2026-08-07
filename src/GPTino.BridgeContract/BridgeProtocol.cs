@@ -25,7 +25,13 @@ public static class BridgeProtocol
     // v13: adapter-owner rename (wireify → script, cordycepsCanvas → canvas, cordycepsRhino →
     //      rhinoScene) changed the BridgeAdapterOwner wire strings; a mixed install would
     //      misroute every operation, so it must fail at connect.
-    public const int Version = 13;
+    // v14: canvas.catalog GUID-lookup semantics became load-bearing — the AgentHost's
+    //      canvas.create preflight rejects a create when a GUID catalog query returns an
+    //      explicit empty Matches list, which only a plugin with the GUID catalog branch can
+    //      answer honestly. An older plugin fuzzy-matches the GUID string to zero results
+    //      (SUCCESS + empty Matches), which would false-reject every valid create; mixed
+    //      installs must fail loudly at connect. AgentHost and plugin ship in one Yak package.
+    public const int Version = 14;
 
     public const int DefaultMaximumFrameBytes = 8 * 1024 * 1024;
 

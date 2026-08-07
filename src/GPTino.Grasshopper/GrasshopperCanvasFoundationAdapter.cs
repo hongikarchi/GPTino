@@ -194,8 +194,12 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             var state = ToObjectState(existing, BuildParameterOwners(document));
             if (state.ComponentTypeId != request.ComponentTypeId)
             {
-                throw new InvalidOperationException(
-                    $"Object {request.ObjectId:D} already exists with another component type.");
+                // Deterministic PRE-WRITE refusal (nothing touched yet): classify as a clean
+                // Failed via precondition_refused, not a RecoveryRequired review.
+                throw new BridgeProtocolException(
+                    PreconditionRefusedCode,
+                    $"Object {request.ObjectId:D} already exists with another component type " +
+                    $"({state.ComponentTypeId:D}).");
             }
             return Task.FromResult(new CanvasMutationResult(
                 request.OperationId,
@@ -205,9 +209,15 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
                 new[] { request.ObjectId }));
         }
 
+        // PRE-WRITE refusal (backstop for the executor's canvas.create catalog preflight): a type
+        // GUID the component server cannot emit means nothing was touched — precondition_refused,
+        // with the same lookup recipe the preflight gives.
         var documentObject = global::Grasshopper.Instances.ComponentServer.EmitObject(request.ComponentTypeId)
-            ?? throw new KeyNotFoundException(
-                $"Grasshopper component type {request.ComponentTypeId:D} is not installed.");
+            ?? throw new BridgeProtocolException(
+                PreconditionRefusedCode,
+                $"Grasshopper component type {request.ComponentTypeId:D} is not installed. Look the " +
+                "GUID up with a component_catalog name search (or use the well-known GUID table in " +
+                "the gh-authoring skill) and resubmit — never write a type GUID from memory.");
         if (request.ObjectId != Guid.Empty)
         {
             documentObject.NewInstanceGuid(request.ObjectId);
@@ -688,8 +698,11 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         {
             throw new InvalidOperationException("ObjectId and ExpectedFingerprint are required for deletion.");
         }
+        // PRE-WRITE refusal: the target does not exist, nothing was touched — precondition_refused.
         var documentObject = document.FindObject(request.ObjectId, true)
-            ?? throw new KeyNotFoundException($"Grasshopper object {request.ObjectId:D} was not found.");
+            ?? throw new BridgeProtocolException(
+                PreconditionRefusedCode,
+                $"Grasshopper object {request.ObjectId:D} was not found.");
         // Delete guards on the STRUCTURE fingerprint: deleting a component the user merely moved
         // or value-tweaked is still their intent; rewiring or renaming it is a real conflict.
         var beforeState = ToObjectState(documentObject, BuildParameterOwners(document));
@@ -744,8 +757,12 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             .Select(pair =>
             {
                 RequireFinite(pair.Value, $"Pivot for {pair.Key:D}");
+                // PRE-WRITE refusal: the whole batch is resolved before any pivot changes, so a
+                // missing object means nothing was touched — precondition_refused.
                 var documentObject = document.FindObject(pair.Key, true)
-                    ?? throw new KeyNotFoundException($"Grasshopper object {pair.Key:D} was not found.");
+                    ?? throw new BridgeProtocolException(
+                        PreconditionRefusedCode,
+                        $"Grasshopper object {pair.Key:D} was not found.");
                 var state = ToObjectState(documentObject, BuildParameterOwners(document));
                 var expected = request.ExpectedFingerprints[pair.Key];
                 // Moves guard on the LAYOUT fingerprint only: a concurrent value or wiring edit
@@ -835,8 +852,10 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
             throw new InvalidOperationException("The Number Slider value request is invalid.");
         }
 
+        // PRE-WRITE refusal: wrong target type, nothing was touched — precondition_refused.
         var slider = document.FindObject(request.ObjectId, true) as GH_NumberSlider
-            ?? throw new InvalidOperationException(
+            ?? throw new BridgeProtocolException(
+                PreconditionRefusedCode,
                 $"Grasshopper object {request.ObjectId:D} is not a Number Slider.");
         var beforeState = ToObjectState(slider, BuildParameterOwners(document));
         // Value writes guard on the VALUE fingerprint only: moving the slider around the canvas
@@ -1374,6 +1393,15 @@ public sealed class GrasshopperCanvasFoundationAdapter : DocumentBoundCanvasAdap
         if (query.Length == 0)
         {
             return 5;
+        }
+
+        // A GUID query is an exact component-TYPE lookup (used by the executor's canvas.create
+        // preflight to verify a type id is actually installed before any write, and by sessions
+        // pasting a type id): only the proxy whose Guid equals it matches — never a fuzzy text
+        // match. Obsolete filtering stays in the caller (includeObsolete), unchanged.
+        if (Guid.TryParse(query, out var guidQuery))
+        {
+            return proxy.Guid == guidQuery ? 0 : null;
         }
 
         var description = proxy.Desc;

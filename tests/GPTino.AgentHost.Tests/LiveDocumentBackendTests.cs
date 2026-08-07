@@ -2021,13 +2021,15 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
     public FakeBridgeResponder StartResponder(
         TimeSpan? writeDelay = null,
         int automaticSnapshotResponses = int.MaxValue,
-        Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory = null) =>
+        Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory = null,
+        Func<BridgeOperationRequest, BridgeFailure?>? failureFactory = null) =>
         FakeBridgeResponder.Start(
             RequireConnection(),
             CreateSnapshotFor,
             writeDelay,
             automaticSnapshotResponses,
-            responseFactory);
+            responseFactory,
+            failureFactory);
 
     public async Task<LiveDocumentBackend> StartRecoveryReaderAsync()
     {
@@ -2246,6 +2248,7 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
     private readonly TimeSpan _writeDelay;
     private readonly int _automaticSnapshotResponses;
     private readonly Func<BridgeOperationRequest, BridgeOperationResponse?>? _responseFactory;
+    private readonly Func<BridgeOperationRequest, BridgeFailure?>? _failureFactory;
     private readonly CancellationTokenSource _stopping = new();
     private readonly ConcurrentBag<Task> _handlers = [];
     private readonly Channel<ObservedBridgeRequest> _snapshotRequests =
@@ -2264,13 +2267,15 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
         Func<DocumentRuntime, CanvasSnapshot> snapshotProvider,
         TimeSpan writeDelay,
         int automaticSnapshotResponses,
-        Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory)
+        Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory,
+        Func<BridgeOperationRequest, BridgeFailure?>? failureFactory)
     {
         _connection = connection;
         _snapshotProvider = snapshotProvider;
         _writeDelay = writeDelay;
         _automaticSnapshotResponses = automaticSnapshotResponses;
         _responseFactory = responseFactory;
+        _failureFactory = failureFactory;
         _loop = Task.Run(ReceiveLoopAsync);
     }
 
@@ -2315,13 +2320,15 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
         Func<DocumentRuntime, CanvasSnapshot> snapshotProvider,
         TimeSpan? writeDelay = null,
         int automaticSnapshotResponses = int.MaxValue,
-        Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory = null) =>
+        Func<BridgeOperationRequest, BridgeOperationResponse?>? responseFactory = null,
+        Func<BridgeOperationRequest, BridgeFailure?>? failureFactory = null) =>
         new(
             connection,
             snapshotProvider,
             writeDelay ?? TimeSpan.Zero,
             automaticSnapshotResponses,
-            responseFactory);
+            responseFactory,
+            failureFactory);
 
     public Task<ObservedBridgeRequest> WaitForSnapshotRequestAsync() =>
         _snapshotRequests.Reader.ReadAsync(_stopping.Token).AsTask()
@@ -2425,6 +2432,23 @@ internal sealed class FakeBridgeResponder : IAsyncDisposable
             if (isWrite && _writeDelay > TimeSpan.Zero)
             {
                 await Task.Delay(_writeDelay, _stopping.Token);
+            }
+            // A failure factory simulates the plugin's coded bridge.failure error frames (the
+            // path GptinoRuntimeHost takes for BridgeProtocolException), so tests can exercise
+            // failure-code classification (precondition_refused, mutation_rolled_back, ...).
+            if (_failureFactory?.Invoke(request) is { } failure)
+            {
+                var errorFrame = BridgeFrame.Create(
+                    BridgeMessageKind.Error,
+                    "bridge.failure",
+                    failure,
+                    frame.Target!,
+                    frame.MessageId) with
+                {
+                    ErrorCode = failure.Code
+                };
+                await _connection.SendAsync(errorFrame, _stopping.Token);
+                return;
             }
             var customResponse = _responseFactory?.Invoke(request);
             var operationResponse = customResponse ?? (string.Equals(

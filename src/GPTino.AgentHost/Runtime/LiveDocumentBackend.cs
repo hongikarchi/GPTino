@@ -554,6 +554,15 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     /// </summary>
     private const string PreconditionRefusedFailureCode = "precondition_refused";
 
+    /// <summary>
+    /// Deterministic POST-write failure whose in-place rollback the adapter VERIFIED by reading
+    /// the restored state back (GrasshopperPythonFoundationAdapter.MutationRolledBackCode —
+    /// duplicated here because the AgentHost does not reference the Grasshopper plugin assembly).
+    /// With no completed sibling operation and no live change there is nothing left to review:
+    /// classify as a deterministic Failed the session can act on, not RecoveryRequired.
+    /// </summary>
+    private const string MutationRolledBackFailureCode = "mutation_rolled_back";
+
     // Destructive rhino ops that honor the user-approval flag; the flag is injected ONLY when the
     // grant covers the op's target object at its exact audited fingerprint.
     private static readonly string[] ApprovableOperations =
@@ -1811,6 +1820,11 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         // genuinely unknown (its write may or may not have landed) — the manifest reports it as
         // unknown, never as failed.
         var completedOperationIds = new List<string>();
+        // Verified-rollback classification must ignore completed READ operations (a ChangeSet may
+        // legally carry reads): only a completed WRITE proves an earlier document mutation. Kept
+        // as a separate counter — completedOperationIds still feeds the recovery manifest, whose
+        // Applied list must keep showing reads.
+        var completedWriteOperationCount = 0;
         string? inFlightOperationId = null;
         try
         {
@@ -1885,6 +1899,13 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 execution.Token).ConfigureAwait(false);
             PreflightPythonSchemas(preparedOperations, before);
             PreflightDeterministicAdapterRejections(preparedOperations, before);
+            // After the synchronous rejections so the cheaper, more specific instance/type
+            // confusion guard wins over the catalog lookup for the same bogus GUID.
+            await PreflightCanvasCreateComponentTypesAsync(
+                targetState,
+                preparedOperations,
+                before.State.Revision,
+                execution.Token).ConfigureAwait(false);
 
             // Server-owned deterministic placement: rewrite every canvas.create whose model pivot is the
             // "gptino:auto" sentinel into a concrete, non-overlapping pivot computed against the live
@@ -2002,6 +2023,10 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                         $"Operation '{operation.OperationId}' reported {error.Code}: {error.Message}");
                 }
                 completedOperationIds.Add(operation.OperationId);
+                if (access == BridgeOperationAccess.Write)
+                {
+                    completedWriteOperationCount++;
+                }
                 inFlightOperationId = null;
             }
 
@@ -2154,7 +2179,16 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             var approvalRefusal =
                 exception is BridgeProtocolException { Code: ApprovalRequiredFailureCode or PreconditionRefusedFailureCode } &&
                 !liveChanged;
-            var state = !approvalRefusal && (liveChanged || writeMayHaveChanged)
+            // A VERIFIED rollback (the adapter proved the pre-write state was restored via
+            // read-back) with no completed sibling WRITE and no live change is a deterministic
+            // Failed the session can act on. Completed READS don't count — they prove nothing
+            // changed. A batch-middle failure — any completed write — stays RecoveryRequired:
+            // earlier writes landed and must be reviewed.
+            var verifiedRollback =
+                exception is BridgeProtocolException { Code: MutationRolledBackFailureCode } &&
+                completedWriteOperationCount == 0 &&
+                !liveChanged;
+            var state = !(approvalRefusal || verifiedRollback) && (liveChanged || writeMayHaveChanged)
                 ? JobState.RecoveryRequired
                 : JobState.Failed;
             var message = exception.Message;
@@ -2162,11 +2196,22 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             {
                 // The recovery manifest turns "review the document state" into a deterministic
                 // worklist: which operations verifiably applied, which one was in flight (outcome
-                // honestly unknown — never reported as failed), and which never dispatched.
+                // honestly unknown — never reported as failed), and which never dispatched. A
+                // refusal code on the in-flight operation proves it never wrote; a verified
+                // rollback proves it wrote and was restored — either way the manifest stops
+                // claiming its outcome is unknown, with each proof labeled honestly.
                 var manifest = BuildRecoveryManifest(
                     job.ChangeSet.Operations,
                     completedOperationIds,
-                    inFlightOperationId);
+                    inFlightOperationId,
+                    inFlightRefusedBeforeWrite: exception is BridgeProtocolException
+                    {
+                        Code: ApprovalRequiredFailureCode or PreconditionRefusedFailureCode
+                    },
+                    inFlightRolledBack: exception is BridgeProtocolException
+                    {
+                        Code: MutationRolledBackFailureCode
+                    });
                 message = $"{message} {manifest.Message}";
                 diagnostics.AddRange(manifest.Diagnostics);
             }
@@ -3419,6 +3464,81 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         }
     }
 
+    // A fabricated component-type GUID used to surface only when the adapter's EmitObject returned
+    // null AT EXECUTE TIME — after sibling writes in the same ChangeSet had landed — dead-ending the
+    // job in RecoveryRequired. Verify every canvas.create type id against the live component catalog
+    // (one GUID-query read per distinct id) BEFORE any write, so a made-up GUID is a clean
+    // deterministic Failed with an actionable lookup recipe. The well-known Rhino 8 script-component
+    // type ids ship with Rhino and are skipped. STRICTLY NARROWER: only an explicit empty match list
+    // rejects — a failed or unparseable catalog read (older plugin without GUID catalog queries)
+    // logs and passes the create through to the adapter's own EmitObject backstop.
+    private async Task PreflightCanvasCreateComponentTypesAsync(
+        TargetState targetState,
+        IReadOnlyList<PreparedOperation> prepared,
+        long snapshotRevision,
+        CancellationToken cancellationToken)
+    {
+        // Distinct type ids, each remembering the first operation that requested it.
+        var componentTypeIds = new Dictionary<Guid, string>();
+        foreach (var item in prepared.Where(item =>
+                     string.Equals(item.BridgeOperation, "canvas.create", StringComparison.Ordinal)))
+        {
+            if (!TryReadCreateComponentTypeId(
+                    item.Arguments,
+                    item.Operation.OperationId,
+                    out var componentTypeId) ||
+                IsScriptComponentType(componentTypeId))
+            {
+                continue;
+            }
+            componentTypeIds.TryAdd(componentTypeId, item.Operation.OperationId);
+        }
+        foreach (var (componentTypeId, operationId) in componentTypeIds)
+        {
+            ComponentCatalogSearchResult? catalog;
+            try
+            {
+                var request = new BridgeOperationRequest(
+                    operationId,
+                    BridgeAdapterOwner.Canvas,
+                    "canvas.catalog",
+                    BridgeOperationAccess.Read,
+                    snapshotRevision,
+                    ExpectedFingerprint: null,
+                    WriterLeaseToken: null,
+                    JsonSerializer.SerializeToElement(
+                        new ComponentCatalogSearchRequest(
+                            componentTypeId.ToString("D"),
+                            Limit: 1,
+                            IncludeObsolete: true),
+                        BridgeProtocol.JsonOptions));
+                request.Validate();
+                var response = await SendOperationAsync(targetState.Target, request, cancellationToken)
+                    .ConfigureAwait(false);
+                catalog = response.Result.Deserialize<ComponentCatalogSearchResult>(BridgeProtocol.JsonOptions);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Version-skew guard: a failed catalog read must never turn valid creates into
+                // false declines — the adapter's EmitObject refusal still backstops execute time.
+                _logger.LogWarning(
+                    exception,
+                    "canvas.create type preflight skipped: catalog read for {ComponentTypeId} failed.",
+                    componentTypeId);
+                continue;
+            }
+            if (catalog?.Matches is not { Count: 0 })
+            {
+                continue;
+            }
+            throw new InvalidOperationException(
+                $"Operation '{operationId}': Grasshopper component type {componentTypeId:D} is not " +
+                "installed. Rejected before any write. Look the GUID up with a component_catalog name " +
+                "search (or use the well-known GUID table in the gh-authoring skill) and resubmit — " +
+                "never write a type GUID from memory.");
+        }
+    }
+
     // A setComponentIo schema is append-only: the adapter rejects a socket-count reduction with a
     // NotSupportedException at execute time, which — because the same ChangeSet's source write has
     // already landed — dead-ends the job in RecoveryRequired. Catch it here, BEFORE any write, by
@@ -3583,6 +3703,9 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 case "canvas.setWire":
                     PreflightWireEndpoints(item, prepared, before);
                     break;
+                case "canvas.create":
+                    PreflightCreateTypeInstanceConfusion(item, before);
+                    break;
                 case "python.setTyping":
                     PreflightTypingTarget(item, prepared, before);
                     break;
@@ -3594,6 +3717,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                     break;
                 case "python.setSource":
                     PreflightSourceBudgetGuard(item);
+                    PreflightSdkSourceGuard(item);
                     break;
             }
         }
@@ -3707,6 +3831,221 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             }
         }
         return false;
+    }
+
+    // SDK-style C# sources (a GH_ScriptInstance/GH_Component class wrapper or a RunScript method)
+    // never compile in a Rhino 8 script component — RhinoCode takes plain top-level statements —
+    // and the failure used to surface only AFTER the source write landed, dead-ending the job.
+    // Reject the payload BEFORE any write. The declared runtime gates the check: the detector
+    // applies ONLY when the payload explicitly declares runtime 'csharp'. When it is absent or
+    // different, skip — the adapter refuses a missing/mismatched runtime pre-write anyway
+    // (precondition_refused), and the C#-shaped patterns CAN collide with Python-ish text (e.g.
+    // 'class MyHelper:' next to a bare GH_Component mention), so guessing here would risk
+    // false-rejecting a valid Python source.
+    private static void PreflightSdkSourceGuard(PreparedOperation item)
+    {
+        if (!item.Arguments.TryGetProperty("source", out var sourceElement) ||
+            sourceElement.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+        var source = sourceElement.GetString();
+        if (string.IsNullOrEmpty(source))
+        {
+            return;
+        }
+        if (!item.Arguments.TryGetProperty("runtime", out var runtimeElement) ||
+            runtimeElement.ValueKind != JsonValueKind.String ||
+            !string.Equals(runtimeElement.GetString(), "csharp", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (!LooksLikeSdkComponentSource(source))
+        {
+            return;
+        }
+        throw new InvalidOperationException(
+            $"Operation '{item.Operation.OperationId}': C# sources must be Rhino 8 script-mode: " +
+            "plain top-level statements, no class/GH_ScriptInstance/RunScript wrapper. Declare " +
+            "sockets with setComponentIo and read/assign socket-named variables. Rejected before " +
+            "any write. See the gh-csharp-cookbook skill.");
+    }
+
+    // Kept in LOCKSTEP with GrasshopperPythonFoundationAdapter.LooksLikeSdkComponentSource (the
+    // adapter's in-process backstop; duplicated because the AgentHost does not reference the
+    // Grasshopper plugin assembly). Conservative by design: only a class declaration whose base
+    // TYPE is GH_ScriptInstance/GH_Component (never a mere generic argument such as
+    // IComparer<GH_Component>), or a modifier-prefixed 'void RunScript(' SDK signature, matches —
+    // plain top-level script-mode statements (including a local 'void RunScript()' helper
+    // function) never do. Comments (line and block) and string literals are stripped first so a
+    // commented-out or quoted wrapper (or the '// #! csharp' directive) never trips it.
+    private static readonly System.Text.RegularExpressions.Regex SdkClassBaseListPattern = new(
+        @"\bclass\s+\w+\s*:\s*([^{;]+)",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex SdkBaseTypeNamePattern = new(
+        @"\b(GH_ScriptInstance|GH_Component)\b",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex SdkRunScriptSignaturePattern = new(
+        @"\b(private|public|protected|internal|override)\s+(static\s+)?void\s+RunScript\s*\(",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// Pure detector for SDK-class C# component source (vs. Rhino 8 script-mode top-level
+    /// statements). Unit-tested without a live document.
+    /// </summary>
+    internal static bool LooksLikeSdkComponentSource(string source)
+    {
+        if (string.IsNullOrEmpty(source))
+        {
+            return false;
+        }
+        var text = StripCommentsAndStringLiterals(source);
+        if (SdkRunScriptSignaturePattern.IsMatch(text))
+        {
+            return true;
+        }
+        foreach (System.Text.RegularExpressions.Match declaration in SdkClassBaseListPattern.Matches(text))
+        {
+            if (BaseListNamesSdkType(declaration.Groups[1].Value))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // True only when GH_ScriptInstance/GH_Component appears in the segment BEFORE the first '<'
+    // of a base entry (entries split on top-level commas) — i.e. as the base TYPE itself. A
+    // generic ARGUMENT (IComparer<GH_Component>) sits behind a '<' and never matches.
+    private static bool BaseListNamesSdkType(string baseList)
+    {
+        var depth = 0;
+        var entryStart = 0;
+        for (var index = 0; index <= baseList.Length; index++)
+        {
+            if (index < baseList.Length)
+            {
+                var current = baseList[index];
+                if (current == '<')
+                {
+                    depth++;
+                    continue;
+                }
+                if (current == '>')
+                {
+                    depth = Math.Max(0, depth - 1);
+                    continue;
+                }
+                if (current != ',' || depth != 0)
+                {
+                    continue;
+                }
+            }
+            var entry = baseList[entryStart..index];
+            var angle = entry.IndexOf('<');
+            if (SdkBaseTypeNamePattern.IsMatch(angle >= 0 ? entry[..angle] : entry))
+            {
+                return true;
+            }
+            entryStart = index + 1;
+        }
+        return false;
+    }
+
+    // Replaces //-line and /* */ block comments plus string literals ("..." with \" escapes,
+    // verbatim @"..."/$@"..." with "" escapes) and char literals with spaces, so quoted or
+    // commented SDK shapes never reach the patterns. Newlines are preserved through line
+    // comments to keep the remaining code line-shaped.
+    private static string StripCommentsAndStringLiterals(string source)
+    {
+        var stripped = new StringBuilder(source.Length);
+        var index = 0;
+        while (index < source.Length)
+        {
+            var current = source[index];
+            var next = index + 1 < source.Length ? source[index + 1] : '\0';
+            if (current == '/' && next == '/')
+            {
+                while (index < source.Length && source[index] != '\n')
+                {
+                    index++;
+                }
+                continue;
+            }
+            if (current == '/' && next == '*')
+            {
+                index += 2;
+                while (index + 1 < source.Length && !(source[index] == '*' && source[index + 1] == '/'))
+                {
+                    index++;
+                }
+                index = Math.Min(source.Length, index + 2);
+                stripped.Append(' ');
+                continue;
+            }
+            if (current == '\'')
+            {
+                // Char literal — it may contain a raw or escaped quote that would otherwise open
+                // a phantom string.
+                index++;
+                while (index < source.Length && source[index] != '\'' && source[index] != '\n')
+                {
+                    index += source[index] == '\\' ? 2 : 1;
+                }
+                if (index < source.Length && source[index] == '\'')
+                {
+                    index++;
+                }
+                stripped.Append(' ');
+                continue;
+            }
+            if (current == '"')
+            {
+                var lookback = index - 1;
+                while (lookback >= 0 && source[lookback] == '$')
+                {
+                    lookback--;
+                }
+                var verbatim = lookback >= 0 && source[lookback] == '@';
+                index++;
+                if (verbatim)
+                {
+                    while (index < source.Length)
+                    {
+                        if (source[index] != '"')
+                        {
+                            index++;
+                            continue;
+                        }
+                        if (index + 1 < source.Length && source[index + 1] == '"')
+                        {
+                            index += 2;
+                            continue;
+                        }
+                        index++;
+                        break;
+                    }
+                }
+                else
+                {
+                    while (index < source.Length && source[index] != '"' && source[index] != '\n')
+                    {
+                        index += source[index] == '\\' ? 2 : 1;
+                    }
+                    if (index < source.Length && source[index] == '"')
+                    {
+                        index++;
+                    }
+                }
+                stripped.Append(' ');
+                continue;
+            }
+            stripped.Append(current);
+            index++;
+        }
+        return stripped.ToString();
     }
 
     // The GH document solves on Rhino's single UI thread, so a script whose loop count is driven by
@@ -3858,6 +4197,74 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         {
             return false;
         }
+    }
+
+    // Shared componentTypeId reader for the canvas.create preflights. A componentTypeId that is
+    // present but not a GUID string would silently skip both guards and die at adapter
+    // deserialization AFTER sibling writes landed — the exact mid-batch dead-end (FIX A) the
+    // preflights exist to prevent — so a present-but-malformed value is rejected here with an
+    // actionable message instead. NOTE: JsonElement.TryGetGuid THROWS InvalidOperationException
+    // on non-string kinds (null/number/...), so ValueKind is checked first. Returns false only
+    // when the property is absent entirely (left for payload validation to report).
+    internal static bool TryReadCreateComponentTypeId(
+        JsonElement arguments,
+        string operationId,
+        out Guid componentTypeId)
+    {
+        componentTypeId = Guid.Empty;
+        if (!arguments.TryGetProperty("componentTypeId", out var typeElement))
+        {
+            return false;
+        }
+        if (typeElement.ValueKind != JsonValueKind.String ||
+            !typeElement.TryGetGuid(out componentTypeId))
+        {
+            var actual = typeElement.ValueKind == JsonValueKind.String
+                ? $"'{typeElement.GetString()}'"
+                : $"a JSON {typeElement.ValueKind.ToString().ToLowerInvariant()}";
+            throw new InvalidOperationException(
+                $"Operation '{operationId}': componentTypeId must be a GUID string, but the " +
+                $"payload carries {actual}. Rejected before any write. Use the component TYPE id " +
+                "from a component_catalog search (or the well-known GUID table in the " +
+                "gh-authoring skill) and resubmit.");
+        }
+        return true;
+    }
+
+    // Instance/type confusion guard: a canvas.create whose componentTypeId is actually the id of
+    // an EXISTING canvas object is a deterministic execute-time failure (EmitObject cannot emit an
+    // instance id) that used to dead-end mid-batch. The snapshot proves the confusion and names
+    // the object's real TYPE id, so one retry can fix it. STRICTLY NARROWER: ids minted for
+    // objects created inside this same ChangeSet are absent from the snapshot and pass through.
+    private static void PreflightCreateTypeInstanceConfusion(
+        PreparedOperation item,
+        SnapshotEnvelope before)
+    {
+        if (!TryReadCreateComponentTypeId(
+                item.Arguments,
+                item.Operation.OperationId,
+                out var componentTypeId))
+        {
+            return;
+        }
+        var existing = before.Canvas.Objects.FirstOrDefault(obj => obj.ObjectId == componentTypeId);
+        if (existing is null)
+        {
+            return;
+        }
+        if (existing.ComponentTypeId == componentTypeId)
+        {
+            // The object's OWN type id equals the requested GUID: the GUID is provably a real
+            // component TYPE id (a previous create in this session used a type GUID as its
+            // objectId). Rejecting here would refuse a perfectly legitimate create.
+            return;
+        }
+        throw new InvalidOperationException(
+            $"Operation '{item.Operation.OperationId}': {componentTypeId:D} is the instance id of " +
+            $"canvas object \"{existing.Name}\" — its component TYPE id is " +
+            $"{existing.ComponentTypeId:D}. Did you mean that? Rejected before any write; " +
+            "componentTypeId must be a component TYPE id (from component_catalog), never a canvas " +
+            "object id.");
     }
 
     private static void PreflightWireEndpoints(

@@ -25,10 +25,11 @@ Reference notes, not fixed code. Design logic stays yours; these save discovery 
 | Python 3 Script (Rhino 8 CPython) | `719467e6-7cf5-4848-99b0-c5dd57e5442c` |
 | Number Slider | `57da07bd-ecab-415d-9d86-af36d7073abc` |
 | Panel | `59e0b89a-e487-49f8-bab8-b5bab16be14c` |
+| Boolean Toggle | `2e78987b-9dfb-42a2-8b76-3923ac8bd91a` |
+| Button (bake trigger) | `a8b97322-2d53-47cd-905e-b932c3ccd74e` |
 
-For Button (bake trigger), Boolean Toggle, and anything else, resolve the GUID with one
-component_catalog search. If a create is rejected for an unknown GUID, fall back to
-component_catalog — installed sets vary.
+For anything else, resolve the GUID with one component_catalog search. If a create is
+rejected for an unknown GUID, fall back to component_catalog — installed sets vary.
 
 ## Input access decision rules (item/list/tree)
 

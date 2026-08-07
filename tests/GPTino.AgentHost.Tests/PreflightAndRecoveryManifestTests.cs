@@ -657,6 +657,847 @@ public sealed class PreflightAndRecoveryManifestTests
     }
 
     [Fact]
+    public async Task FabricatedComponentTypeIdFailsBeforeAnyWriteWithCatalogRecipe()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var fabricatedTypeId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return request.Operation == "canvas.catalog"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    new ComponentCatalogSearchResult(
+                        harness.Target.GrasshopperDocumentId!.Value,
+                        request.Arguments.GetProperty("query").GetString() ?? string.Empty,
+                        1,
+                        Array.Empty<CanvasComponentCatalogItem>()))
+                : null;
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Fabricated type"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var objectId = Guid.NewGuid();
+        var resource = new ResourceAddress(ResourceKind.GrasshopperComponent, objectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "fabricated-create.json",
+            new
+            {
+                bridgeOperation = "canvas.create",
+                arguments = new
+                {
+                    operationId = "fabricated-create",
+                    objectId,
+                    componentTypeId = fabricatedTypeId,
+                    pivot = new { x = 10.0, y = 20.0 },
+                    nickName = "Fabricated"
+                }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "fabricated-create",
+                OperationKind.CreateComponent,
+                AdapterOwner.Canvas,
+                [],
+                [resource],
+                Reversible: true,
+                artifact),
+            [new ResourceExpectation(resource, ResourceExpectation.AbsentFingerprint)]);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "fabricated-create"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString();
+
+        // The catalog returned zero matches for the GUID query: a clean deterministic Failed
+        // before any write, with the lookup recipe.
+        Assert.Equal("failed", state);
+        Assert.Contains($"{fabricatedTypeId:D} is not installed", message, StringComparison.Ordinal);
+        Assert.Contains("component_catalog", message, StringComparison.Ordinal);
+        Assert.Contains("never write a type GUID from memory", message, StringComparison.Ordinal);
+        lock (writeOps)
+        {
+            Assert.Empty(writeOps);
+        }
+    }
+
+    [Fact]
+    public async Task WellKnownScriptComponentTypeIdSkipsTheCatalogRead()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var writeOps = new List<string>();
+        var catalogReads = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            if (request.Operation == "canvas.catalog")
+            {
+                lock (catalogReads) { catalogReads.Add(request.OperationId); }
+            }
+            return null;
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Script create"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var objectId = Guid.NewGuid();
+        var resource = new ResourceAddress(ResourceKind.GrasshopperComponent, objectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "script-create.json",
+            new
+            {
+                bridgeOperation = "canvas.create",
+                arguments = new
+                {
+                    operationId = "script-create",
+                    objectId,
+                    componentTypeId = Cpython3TypeId,
+                    pivot = new { x = 10.0, y = 20.0 },
+                    nickName = "Script"
+                }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "script-create",
+                OperationKind.CreateComponent,
+                AdapterOwner.Canvas,
+                [],
+                [resource],
+                Reversible: true,
+                artifact),
+            [new ResourceExpectation(resource, ResourceExpectation.AbsentFingerprint)]);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "script-create"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        _ = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString() ?? string.Empty;
+
+        // Rhino 8 ships the script components: no catalog round trip, and the create dispatched.
+        lock (catalogReads)
+        {
+            Assert.Empty(catalogReads);
+        }
+        lock (writeOps)
+        {
+            Assert.Contains("canvas.create", writeOps);
+        }
+        Assert.DoesNotContain("is not installed", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InstanceIdUsedAsComponentTypeIdFailsWithTheRealTypeId()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return null;
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Confused ids"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var objectId = Guid.NewGuid();
+        var resource = new ResourceAddress(ResourceKind.GrasshopperComponent, objectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "confused-create.json",
+            new
+            {
+                bridgeOperation = "canvas.create",
+                arguments = new
+                {
+                    operationId = "confused-create",
+                    objectId,
+                    // The INSTANCE id of the existing snapshot object, not a component type id.
+                    componentTypeId = harness.CanvasObjectId,
+                    pivot = new { x = 10.0, y = 20.0 },
+                    nickName = "Confused"
+                }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "confused-create",
+                OperationKind.CreateComponent,
+                AdapterOwner.Canvas,
+                [],
+                [resource],
+                Reversible: true,
+                artifact),
+            [new ResourceExpectation(resource, ResourceExpectation.AbsentFingerprint)]);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "confused-create"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString();
+
+        Assert.Equal("failed", state);
+        Assert.Contains($"{harness.CanvasObjectId:D} is the instance id", message, StringComparison.Ordinal);
+        // The guard names the object's REAL component type id so one retry can fix the payload.
+        Assert.Contains(
+            "its component TYPE id is 29322931-96ae-4d34-874b-a722bc3a0e4a",
+            message,
+            StringComparison.Ordinal);
+        Assert.Contains("Rejected before any write", message, StringComparison.Ordinal);
+        lock (writeOps)
+        {
+            Assert.Empty(writeOps);
+        }
+    }
+
+    [Fact]
+    public async Task CatalogReadFailureSkipsTheCreatePreflightAndDispatchesTheCreate()
+    {
+        // Version-skew guard: a FAILED catalog read (older plugin, transient error) must never
+        // turn a valid create into a false decline — the preflight logs and passes the create
+        // through to the adapter's own EmitObject backstop.
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var typeId = Guid.Parse("1a1b7bfe-6c93-42ac-a297-53d16059bcfa");
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(
+            responseFactory: request =>
+            {
+                if (request.Access == BridgeOperationAccess.Write)
+                {
+                    lock (writeOps) { writeOps.Add(request.Operation); }
+                }
+                return null;
+            },
+            failureFactory: request => request.Operation == "canvas.catalog"
+                ? new BridgeFailure(
+                    "bridge_operation_failed",
+                    "Simulated catalog failure (e.g. an older plugin without GUID queries).",
+                    Retryable: false)
+                : null);
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Catalog down"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var objectId = Guid.NewGuid();
+        var resource = new ResourceAddress(ResourceKind.GrasshopperComponent, objectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "catalog-down-create.json",
+            new
+            {
+                bridgeOperation = "canvas.create",
+                arguments = new
+                {
+                    operationId = "catalog-down-create",
+                    objectId,
+                    componentTypeId = typeId,
+                    pivot = new { x = 10.0, y = 20.0 },
+                    nickName = "Resilient"
+                }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "catalog-down-create",
+                OperationKind.CreateComponent,
+                AdapterOwner.Canvas,
+                [],
+                [resource],
+                Reversible: true,
+                artifact),
+            [new ResourceExpectation(resource, ResourceExpectation.AbsentFingerprint)]);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "catalog-down-create"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        _ = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString() ?? string.Empty;
+
+        lock (writeOps)
+        {
+            Assert.Contains("canvas.create", writeOps);
+        }
+        Assert.DoesNotContain("is not installed", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CatalogMatchPassesTheCreatePreflightAndDispatchesTheCreate()
+    {
+        // Positive pass path: the GUID lookup finds the type installed — no rejection, the
+        // create reaches the bridge.
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var typeId = Guid.Parse("2b8ef15a-6522-4076-b71e-2e7d54ea3251");
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return request.Operation == "canvas.catalog"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    new ComponentCatalogSearchResult(
+                        harness.Target.GrasshopperDocumentId!.Value,
+                        request.Arguments.GetProperty("query").GetString() ?? string.Empty,
+                        1,
+                        [
+                            new CanvasComponentCatalogItem(
+                                typeId,
+                                "Voronoi",
+                                "Vor",
+                                "Mesh",
+                                "Triangulation",
+                                "Planar voronoi diagram",
+                                "primary",
+                                Obsolete: false)
+                        ]))
+                : null;
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Catalog match"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var objectId = Guid.NewGuid();
+        var resource = new ResourceAddress(ResourceKind.GrasshopperComponent, objectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "catalog-match-create.json",
+            new
+            {
+                bridgeOperation = "canvas.create",
+                arguments = new
+                {
+                    operationId = "catalog-match-create",
+                    objectId,
+                    componentTypeId = typeId,
+                    pivot = new { x = 10.0, y = 20.0 },
+                    nickName = "Voronoi"
+                }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "catalog-match-create",
+                OperationKind.CreateComponent,
+                AdapterOwner.Canvas,
+                [],
+                [resource],
+                Reversible: true,
+                artifact),
+            [new ResourceExpectation(resource, ResourceExpectation.AbsentFingerprint)]);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "catalog-match-create"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        _ = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString() ?? string.Empty;
+
+        lock (writeOps)
+        {
+            Assert.Contains("canvas.create", writeOps);
+        }
+        Assert.DoesNotContain("is not installed", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TypeGuidPreviouslyUsedAsAnObjectIdStillCreatesThatType()
+    {
+        // A snapshot object whose ObjectId AND own ComponentTypeId both equal the requested
+        // componentTypeId proves the GUID IS a real type id (a previous create used the type
+        // GUID as its objectId). The instance/type confusion guard must not reject the create.
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        var typeId = Guid.Parse("3c17f9a4-0f3b-4b8a-9c26-56cf03bd7c99");
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return request.Operation switch
+            {
+                "canvas.snapshot" => BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    TypeIdAsInstanceIdSnapshot(harness, typeId)),
+                "canvas.catalog" => BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    new ComponentCatalogSearchResult(
+                        harness.Target.GrasshopperDocumentId!.Value,
+                        request.Arguments.GetProperty("query").GetString() ?? string.Empty,
+                        1,
+                        [
+                            new CanvasComponentCatalogItem(
+                                typeId,
+                                "Voronoi",
+                                "Vor",
+                                "Mesh",
+                                "Triangulation",
+                                "Planar voronoi diagram",
+                                "primary",
+                                Obsolete: false)
+                        ])),
+                _ => null
+            };
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Type as instance"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var objectId = Guid.NewGuid();
+        var resource = new ResourceAddress(ResourceKind.GrasshopperComponent, objectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "type-as-instance-create.json",
+            new
+            {
+                bridgeOperation = "canvas.create",
+                arguments = new
+                {
+                    operationId = "type-as-instance-create",
+                    objectId,
+                    componentTypeId = typeId,
+                    pivot = new { x = 120.0, y = 20.0 },
+                    nickName = "Voronoi2"
+                }
+            });
+        var changeSet = harness.CreateCustomChangeSet(
+            session,
+            snapshot.Revision,
+            new TypedOperation(
+                "type-as-instance-create",
+                OperationKind.CreateComponent,
+                AdapterOwner.Canvas,
+                [],
+                [resource],
+                Reversible: true,
+                artifact),
+            [new ResourceExpectation(resource, ResourceExpectation.AbsentFingerprint)]);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "type-as-instance-create"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        _ = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString() ?? string.Empty;
+
+        lock (writeOps)
+        {
+            Assert.Contains("canvas.create", writeOps);
+        }
+        Assert.DoesNotContain("is the instance id", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MalformedComponentTypeIdStringIsRejectedWithARecipe()
+    {
+        var arguments = JsonSerializer.SerializeToElement(
+            new { componentTypeId = "voronoi-not-a-guid" },
+            BridgeProtocol.JsonOptions);
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LiveDocumentBackend.TryReadCreateComponentTypeId(arguments, "bad-create", out _));
+
+        Assert.Contains("'bad-create'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'voronoi-not-a-guid'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Rejected before any write", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("component_catalog", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NonStringComponentTypeIdIsRejectedInsteadOfThrowingFromTryGetGuid()
+    {
+        // JsonElement.TryGetGuid THROWS on non-string kinds; the reader must check ValueKind
+        // first and produce the same clear preflight rejection.
+        foreach (var payload in new object[]
+                 {
+                     new { componentTypeId = (string?)null },
+                     new { componentTypeId = 42 }
+                 })
+        {
+            var arguments = JsonSerializer.SerializeToElement(payload, BridgeProtocol.JsonOptions);
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                LiveDocumentBackend.TryReadCreateComponentTypeId(arguments, "bad-create", out _));
+            Assert.Contains("Rejected before any write", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("a JSON", exception.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void ValidAndAbsentComponentTypeIdsPassTheReader()
+    {
+        var valid = JsonSerializer.SerializeToElement(
+            new { componentTypeId = "0f8fad5b-d9cb-469f-a165-70867728950e" },
+            BridgeProtocol.JsonOptions);
+        Assert.True(LiveDocumentBackend.TryReadCreateComponentTypeId(valid, "ok-create", out var parsed));
+        Assert.Equal(Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"), parsed);
+
+        var absent = JsonSerializer.SerializeToElement(new { }, BridgeProtocol.JsonOptions);
+        Assert.False(LiveDocumentBackend.TryReadCreateComponentTypeId(absent, "ok-create", out _));
+    }
+
+    [Fact]
+    public async Task SdkStyleCSharpSourceFailsBeforeAnyWrite()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
+            ]);
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return request.Operation == "canvas.snapshot"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    CSharpScriptSnapshot(harness, inputs: ["x"], outputs: ["out"]))
+                : null;
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("SDK source"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var sourceResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentSource,
+            harness.CanvasObjectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "sdk-source.json",
+            new
+            {
+                bridgeOperation = "python.setSource",
+                arguments = new
+                {
+                    operationId = "sdk-source",
+                    componentId = harness.CanvasObjectId,
+                    expectedSourceSha256 = "gptino:auto",
+                    source = "using Rhino.Geometry;\n" +
+                        "public class Script_Instance : GH_ScriptInstance\n{\n" +
+                        "    private void RunScript(double x, ref object a)\n    {\n" +
+                        "        a = x * 2;\n    }\n}",
+                    runtime = "csharp",
+                    expireSolution = false
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [new ResourceExpectation(sourceResource, InitialFingerprint)],
+            [
+                new TypedOperation(
+                    "sdk-source",
+                    OperationKind.UpdatePythonSource,
+                    AdapterOwner.Script,
+                    [],
+                    [sourceResource],
+                    Reversible: true,
+                    artifact)
+            ],
+            [],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "sdk-source"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString();
+
+        Assert.Equal("failed", state);
+        Assert.Contains("script-mode", message, StringComparison.Ordinal);
+        Assert.Contains("Rejected before any write", message, StringComparison.Ordinal);
+        Assert.Contains("gh-csharp-cookbook", message, StringComparison.Ordinal);
+        lock (writeOps)
+        {
+            Assert.Empty(writeOps);
+        }
+    }
+
+    [Fact]
+    public async Task PythonishSourceWithGhComponentMentionIsNotSdkRejected()
+    {
+        // The SDK detector's patterns are C#-shaped but CAN collide with Python text (a Python
+        // 'class X:' header followed by a GH_Component mention). The guard must apply ONLY when
+        // the payload explicitly declares runtime csharp — a cpython3 write sails through.
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync(
+            availableAdapters:
+            [
+                BridgeAdapterOwner.Canvas,
+                BridgeAdapterOwner.Script
+            ]);
+        var writeOps = new List<string>();
+        await using var responder = harness.StartResponder(responseFactory: request =>
+        {
+            if (request.Access == BridgeOperationAccess.Write)
+            {
+                lock (writeOps) { writeOps.Add(request.Operation); }
+            }
+            return request.Operation switch
+            {
+                "python.inspect" => BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: false,
+                    new { componentId = request.Arguments.GetProperty("componentId").GetGuid() },
+                    afterFingerprint: InitialFingerprint),
+                "python.setSource" => BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: true,
+                    new { applied = true },
+                    beforeFingerprint: InitialFingerprint,
+                    afterFingerprint: "python-f1"),
+                _ => null
+            };
+        });
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Pythonish source"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var sourceResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentSource,
+            harness.CanvasObjectId.ToString("D"));
+        var artifact = await harness.WritePayloadAsync(
+            session,
+            "pythonish-source.json",
+            new
+            {
+                bridgeOperation = "python.setSource",
+                arguments = new
+                {
+                    operationId = "pythonish-source",
+                    componentId = harness.CanvasObjectId,
+                    expectedSourceSha256 = "gptino:auto",
+                    source = "import Rhino.Geometry as rg\n" +
+                        "class MyHelper:\n" +
+                        "    pass\n" +
+                        "GH_Component = None\n" +
+                        "a = x",
+                    runtime = "cpython3",
+                    expireSolution = false
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [new ResourceExpectation(sourceResource, InitialFingerprint)],
+            [
+                new TypedOperation(
+                    "pythonish-source",
+                    OperationKind.UpdatePythonSource,
+                    AdapterOwner.Script,
+                    [],
+                    [sourceResource],
+                    Reversible: true,
+                    artifact)
+            ],
+            [],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "pythonish-source"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        _ = await harness.WaitForJobStateAsync(jobId);
+        var message = (await harness.ReadJobViewAsync(jobId)).GetProperty("message").GetString() ?? string.Empty;
+
+        // The write reached the bridge — the SDK guard did not misfire on the Python text.
+        lock (writeOps)
+        {
+            Assert.Contains("python.setSource", writeOps);
+        }
+        Assert.DoesNotContain("script-mode", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BatchMiddleRefusalManifestSaysRefusedBeforeWriteInsteadOfUnknown()
+    {
+        await using var harness = await LiveDocumentBackendHarness.CreateAsync();
+        harness.IncludeNumberSliderValue = true;
+        await using var responder = harness.StartResponder(
+            responseFactory: request => request.OperationId == "first-slider"
+                ? BridgeOperationResponse.Create(
+                    request.OperationId,
+                    changed: true,
+                    new { applied = true },
+                    beforeFingerprint: harness.ObjectFingerprint,
+                    afterFingerprint: "slider-after")
+                : null,
+            failureFactory: request => request.OperationId == "second-slider"
+                ? new BridgeFailure(
+                    "precondition_refused",
+                    "The Number Slider value changed after the request snapshot.",
+                    Retryable: true)
+                : null);
+        var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Refused manifest"));
+        var snapshot = await harness.CaptureSnapshotViewAsync();
+        var firstResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentValue,
+            harness.CanvasObjectId.ToString("D"));
+        var secondResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentValue,
+            harness.SecondCanvasObjectId.ToString("D"));
+        var layoutResource = new ResourceAddress(
+            ResourceKind.GrasshopperComponentLayout,
+            harness.CanvasObjectId.ToString("D"));
+        var firstArtifact = await harness.WritePayloadAsync(
+            session,
+            "refused-first-slider.json",
+            new
+            {
+                bridgeOperation = "canvas.setNumberSlider",
+                arguments = new
+                {
+                    operationId = "first-slider",
+                    objectId = harness.CanvasObjectId,
+                    expectedFingerprint = harness.ObjectFingerprint,
+                    value = 10m,
+                    minimum = 0m,
+                    maximum = 100m,
+                    decimalPlaces = 0
+                }
+            });
+        var secondArtifact = await harness.WritePayloadAsync(
+            session,
+            "refused-second-slider.json",
+            new
+            {
+                bridgeOperation = "canvas.setNumberSlider",
+                arguments = new
+                {
+                    operationId = "second-slider",
+                    objectId = harness.SecondCanvasObjectId,
+                    expectedFingerprint = harness.SecondObjectFingerprint,
+                    value = 20m,
+                    minimum = 0m,
+                    maximum = 100m,
+                    decimalPlaces = 0
+                }
+            });
+        var thirdArtifact = await harness.WritePayloadAsync(
+            session,
+            "refused-third-move.json",
+            new
+            {
+                bridgeOperation = "canvas.move",
+                arguments = new
+                {
+                    operationId = "third-move",
+                    pivots = new Dictionary<Guid, object>
+                    {
+                        [harness.CanvasObjectId] = new { x = 42, y = 24 }
+                    },
+                    expectedFingerprints = new Dictionary<Guid, string>
+                    {
+                        [harness.CanvasObjectId] = harness.ObjectFingerprint
+                    }
+                }
+            });
+        var changeSet = new ChangeSet(
+            Guid.NewGuid(),
+            harness.Target.ProjectId,
+            session.Id,
+            snapshot.Revision,
+            null,
+            [],
+            [],
+            [
+                new ResourceExpectation(firstResource, harness.ObjectFingerprint),
+                new ResourceExpectation(secondResource, harness.SecondObjectFingerprint),
+                new ResourceExpectation(layoutResource, harness.ObjectFingerprint)
+            ],
+            [
+                new TypedOperation(
+                    "first-slider",
+                    OperationKind.SetValue,
+                    AdapterOwner.Canvas,
+                    [],
+                    [firstResource],
+                    Reversible: true,
+                    firstArtifact),
+                new TypedOperation(
+                    "second-slider",
+                    OperationKind.SetValue,
+                    AdapterOwner.Canvas,
+                    [],
+                    [secondResource],
+                    Reversible: true,
+                    secondArtifact),
+                new TypedOperation(
+                    "third-move",
+                    OperationKind.MoveComponent,
+                    AdapterOwner.Canvas,
+                    [],
+                    [layoutResource],
+                    Reversible: true,
+                    thirdArtifact)
+            ],
+            [new VerificationPredicate("No runtime errors", PredicateKind.RuntimeErrorAbsent, null, null)],
+            [],
+            DateTimeOffset.UtcNow);
+
+        var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
+            session,
+            Submission(changeSet, snapshot.Id, "refused-manifest"),
+            CancellationToken.None));
+        var jobId = submitted.GetProperty("jobId").GetGuid();
+        var state = await harness.WaitForJobStateAsync(jobId);
+        var jobView = await harness.ReadJobViewAsync(jobId);
+        var message = jobView.GetProperty("message").GetString();
+
+        // The first op landed live, so the job still needs review — but the refused op verifiably
+        // wrote nothing: the manifest must say so instead of claiming its outcome is unknown.
+        Assert.Equal("recoveryrequired", state);
+        Assert.Contains(
+            "Applied: first-slider. Unknown outcome: second-slider (refused before write — " +
+            "no change applied). Not dispatched: third-move.",
+            message,
+            StringComparison.Ordinal);
+        var diagnostics = jobView.GetProperty("diagnostics").EnumerateArray().ToArray();
+        Assert.Contains(diagnostics, item =>
+            item.GetProperty("code").GetString() == "recovery_refused_before_write" &&
+            item.GetProperty("message").GetString() ==
+                "second-slider (refused before write — no change applied)");
+    }
+
+    [Fact]
     public async Task MidChangeSetFailureReportsAppliedUnknownAndNotDispatchedManifest()
     {
         await using var harness = await LiveDocumentBackendHarness.CreateAsync();
@@ -861,6 +1702,50 @@ public sealed class PreflightAndRecoveryManifestTests
     }
 
     [Fact]
+    public void RecoveryManifestLabelsRolledBackWriteDistinctFromRefusal()
+    {
+        TypedOperation Operation(string id) => new(
+            id,
+            OperationKind.SetValue,
+            AdapterOwner.Canvas,
+            [],
+            [],
+            Reversible: true,
+            "artifact.json");
+        var operations = new[] { Operation("a"), Operation("b") };
+
+        // A verified rollback DID write and restored the pre-write state: its label must say so
+        // and carry its own diagnostic code.
+        var (rolledBackMessage, rolledBackDiagnostics) = LiveDocumentBackend.BuildRecoveryManifest(
+            operations,
+            ["a"],
+            "b",
+            inFlightRefusedBeforeWrite: false,
+            inFlightRolledBack: true);
+        Assert.Contains(
+            "b (write rolled back — no net change)",
+            rolledBackMessage,
+            StringComparison.Ordinal);
+        Assert.Contains(rolledBackDiagnostics, item =>
+            item.Code == "recovery_rolled_back" &&
+            item.Message == "b (write rolled back — no net change)");
+
+        // A pre-write refusal keeps its original label and code.
+        var (refusedMessage, refusedDiagnostics) = LiveDocumentBackend.BuildRecoveryManifest(
+            operations,
+            ["a"],
+            "b",
+            inFlightRefusedBeforeWrite: true);
+        Assert.Contains(
+            "b (refused before write — no change applied)",
+            refusedMessage,
+            StringComparison.Ordinal);
+        Assert.Contains(refusedDiagnostics, item =>
+            item.Code == "recovery_refused_before_write" &&
+            item.Message == "b (refused before write — no change applied)");
+    }
+
+    [Fact]
     public void CommitQualityCountsWarningsAndEmptyOutputsExcludingConsole()
     {
         var diagnostics = new[]
@@ -1013,6 +1898,32 @@ public sealed class PreflightAndRecoveryManifestTests
         return new CanvasSnapshot(
             harness.Target.GrasshopperDocumentId!.Value,
             "python-script-document-v1",
+            [component],
+            Array.Empty<WireState>(),
+            Array.Empty<GroupState>());
+    }
+
+    /// <summary>
+    /// One canvas object whose ObjectId AND ComponentTypeId are both the given type GUID — the
+    /// shape left behind when a previous create used a component TYPE id as its objectId.
+    /// </summary>
+    private static CanvasSnapshot TypeIdAsInstanceIdSnapshot(
+        LiveDocumentBackendHarness harness,
+        Guid typeId)
+    {
+        var component = new CanvasObjectState(
+            typeId,
+            typeId,
+            "Voronoi",
+            new CanvasPoint(10, 20),
+            new CanvasSize(90, 40),
+            InitialFingerprint)
+        {
+            StructureFingerprint = InitialFingerprint,
+        };
+        return new CanvasSnapshot(
+            harness.Target.GrasshopperDocumentId!.Value,
+            "type-as-instance-document-v1",
             [component],
             Array.Empty<WireState>(),
             Array.Empty<GroupState>());

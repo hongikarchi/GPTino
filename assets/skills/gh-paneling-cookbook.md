@@ -3,9 +3,10 @@ Surface paneling C# idioms — isotrim UV grid, attractor-driven openings, and t
 # Paneling cookbook (C# script components)
 
 Vetted RhinoCommon idioms for the recurring facade-paneling chain. Each block is a stage
-component body (see gh-csharp-cookbook.md for the RunScript scaffold, defensive input
-coalescing, and Parallel.For crash rules). Author them as a staged chain: Grid -> Openings ->
-Solids, each its own component, outputs feeding the next stage's inputs.
+component body (see gh-csharp-cookbook.md for the script-mode scaffold — top-level statements,
+no RunScript wrapper — plus defensive input coalescing and Parallel.For crash rules). Author
+them as a staged chain: Grid -> Openings -> Solids, each its own component, outputs feeding
+the next stage's inputs.
 
 All calls are RhinoCommon; `RhinoDoc.ActiveDoc.ModelAbsoluteTolerance` is unavailable on worker
 threads — pass a tolerance in or use a constant like `tol = 0.001`.
