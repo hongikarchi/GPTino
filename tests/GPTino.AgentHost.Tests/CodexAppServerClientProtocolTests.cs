@@ -708,8 +708,11 @@ public sealed class CodexAppServerClientProtocolTests
             () => InvokeProcessOutputAsync(client, request.RootElement, generation.Value));
         try
         {
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
-            await dispatch.WaitAsync(TimeSpan.FromSeconds(1));
+            // The property under test is that dispatch completes while the handler is STILL
+            // blocked, so these budgets must stay well under the handler's 5s release window —
+            // but 1s flaked on cold CI runners (JIT + pool spin-up), so give them 3s.
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(3));
         }
         finally
         {

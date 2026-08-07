@@ -9,10 +9,16 @@ public sealed class CodexAuthProbeTests
     public void ReadsLoggedInWhenAuthFileIsPresent()
     {
         using var home = new TestDirectory();
+        // The probe now checks CLI presence BEFORE stored credentials (a stale auth.json without a
+        // launchable CLI must read CliMissing), so LoggedIn needs a resolvable executable too. Use
+        // a fake like the test below — the machine's real codex install must not decide this test.
+        using var install = new TestDirectory();
+        var fakeCodex = Path.Combine(install.Path, "codex.exe");
+        File.WriteAllText(fakeCodex, "binary");
         File.WriteAllText(Path.Combine(home.Path, "auth.json"), "{\"tokens\":{\"access\":\"abc\"}}");
         WithCodexHome(home.Path, () =>
         {
-            var probe = new CodexAuthProbe(new AgentHostOptions());
+            var probe = new CodexAuthProbe(new AgentHostOptions { CodexExecutable = fakeCodex });
             var snapshot = probe.Read();
             Assert.Equal(CodexAuthStatus.LoggedIn, snapshot.Status);
             Assert.Equal("logged-in", snapshot.Wire);
