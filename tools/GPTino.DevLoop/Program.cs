@@ -1399,6 +1399,15 @@ internal static partial class Program
         {
             try
             {
+                // A bare metadata Change on a directory that still exists is NTFS timestamp noise
+                // (CI runners produce these on e.g. 'ui' with a byte-identical tree) — any real
+                // content change fires a file-level event and is caught by the completion re-hash,
+                // which stays the authoritative check. Creates, deletes, and renames still trip.
+                if (eventArgs.ChangeType == WatcherChangeTypes.Changed &&
+                    Directory.Exists(eventArgs.FullPath))
+                {
+                    return;
+                }
                 if (IsSnapshotPath(_repositoryRoot, eventArgs.FullPath))
                 {
                     MarkMutation(
