@@ -1,5 +1,0 @@
-{
-  "asserts": [
-    { "component": "(?i)utili[sz]ation.*probe|util ?probe", "output": "solved", "kind": "count", "min": 1, "max": 1 }
-  ]
-}

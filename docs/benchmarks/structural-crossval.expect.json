@@ -1,6 +1,0 @@
-{
-  "asserts": [
-    { "component": "(?i)(karamba_)?frame_?solver|cross ?val", "output": "CrossVal", "kind": "json", "path": "midDzM", "min": -0.08486, "max": -0.08235 },
-    { "component": "(?i)(karamba_)?frame_?solver|cross ?val", "output": "CrossVal", "kind": "json", "path": "sumRzKN", "min": 37.66, "max": 39.60 }
-  ]
-}

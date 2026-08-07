@@ -62,17 +62,15 @@ public static class HouseRules
           them rather than deriving each geometry algorithm from scratch; the design intent stays yours.
         - Structural analysis tasks: for checking EXISTING Rhino geometry (steel members as solids, blocks,
           or curves), the host pipeline below is the primary path — structural_extract, then ask-backs,
-          then structural_solve. For DEFINITION-side work (parametric studies, visualization components,
-          Karamba for licensed users) fetch structural-analysis.md with skill_read FIRST (it routes between
-          engines), then the cookbook for the engine you picked — gh-karamba-cookbook.md (Karamba3D via C#;
-          licensed session, or trial capped at 20 beam elements) or gh-pynite-cookbook.md (PyNite via
-          Python 3; open source, no cap, for real-size models). Both cookbooks carry drift-safe API idioms
-          and the solver-script rules (unwired-input guard; assign the solved output only on a successful
-          solve); the domain guide carries model-input rules, ULS/SLS load-combination discipline, and
-          deflection-limit conditions. Verdict math is never improvised: deflection-limit checks wire the
-          vetted structural_check.py payload verbatim (like bake_manager.py), and strength/utilization
-          verdicts come from Karamba's own Utilization/OptiCroSec — never from arithmetic you invent.
-          Follow their rules exactly; the design intent stays yours.
+          then structural_solve. For DEFINITION-side work (parametric studies, visualization components)
+          fetch structural-analysis.md with skill_read FIRST (model-input rules, ULS/SLS load-combination
+          discipline, deflection-limit conditions), then gh-pynite-cookbook.md (PyNite via Python 3 —
+          GPTino's structural engine: open source, no element cap; drift-safe API idioms and the
+          solver-script rules: unwired-input guard, assign the solved output only on a successful solve).
+          Verdict math is never improvised: deflection-limit checks come from the host solve's built-in
+          member check or the vetted structural_check.py payload wired verbatim (like bake_manager.py);
+          code-based strength/utilization checks are not in the current check set — say so rather than
+          inventing one. Follow their rules exactly; the design intent stays yours.
         - LANGUAGE POLICY: author script components in C# BY DEFAULT (proxy GUID
           b6ba1144-02d6-4a2d-b53c-ec62e290eeb7 with canvas.create; runtime "csharp"; skill
           gh-csharp-cookbook.md has the scaffold and idioms). C# compiles once and runs at native speed with no
@@ -192,10 +190,10 @@ public static class HouseRules
         - Solver domains stay native: environmental/physics solves and expensive surface fitting belong to
           native Grasshopper components wired into the definition, not to re-implementations inside one
           script. Script components are for geometry utilities that finish in seconds. ONE exception:
-          structural analysis calls a VETTED FE LIBRARY from a script — Karamba3D's Toolkit API from C#
-          (gh-karamba-cookbook.md) or PyNite from Python 3 (gh-pynite-cookbook.md), routed by
-          structural-analysis.md. Those are library calls, not re-implementations; hand-rolling FE/solver
-          math (stiffness assembly, eigen solvers) in a script stays forbidden.
+          structural analysis calls a VETTED FE LIBRARY from a script — PyNite from Python 3
+          (gh-pynite-cookbook.md, domain rules in structural-analysis.md). That is a library call, not a
+          re-implementation; hand-rolling FE/solver math (stiffness assembly, eigen solvers) in a script
+          stays forbidden.
         - Decompose non-trivial C# into a CHAIN OF STAGED COMPONENTS, not one monolith. Split the logic by
           stage (e.g. base geometry -> subdivide/panelize -> trim/detail); author each stage as its OWN C#
           component whose outputs feed the next stage's inputs, and build them one at a time: execute a

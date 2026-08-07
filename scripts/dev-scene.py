@@ -6,7 +6,7 @@
 # Builds the benchmark Rhino scene selected by $GPTINO_SCENE_KIND and saves it to
 # $GPTINO_SCENE_3DM.  Kinds:
 #   paneling   (default) warped surface + boundary + reveal curves + attractor points
-#   structural column axis lines + perimeter beam lines + isolated test beam (Karamba)
+#   structural column axis lines + perimeter beam lines + isolated test beam (FE bench)
 #   hygiene    geometry with DELIBERATE audit defects (endpoint gaps, near-duplicates)
 #   structural-solids  unit-prototype block instances + loose PCA brace + one deliberate
 #                      free end + a mesh distractor (structural_extract live gate)
@@ -34,9 +34,9 @@ def _on_layer(obj, layer):
 
 
 def build_structural():
-    # Karamba benchmark fixture (doc units mm -- the mm->m conversion is part of what
-    # the benchmark verifies). Element budget is designed for the trial cap (20 beam
-    # elements): 4 columns x 1 + 4 beams x 3 subdivisions = 16 when the agent meshes it.
+    # FE benchmark fixture (doc units mm -- the mm->m conversion is part of what
+    # the benchmark verifies). Small on purpose: 4 columns + 4 beams keeps every
+    # theory check hand-computable.
     #
     # Frame: one 4 m x 3 m bay, columns 3 m tall, on layers 'Columns' / 'Beams'.
     bay_x, bay_y, h = 4000, 3000, 3000

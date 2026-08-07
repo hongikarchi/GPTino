@@ -2,7 +2,8 @@
 #
 # SHIPPED, DETERMINISTIC CODE — the agent never writes or edits this. It is the promotion of the
 # live-validated scripts/pynite-real-model.py (1,199-member production model: 0.85 s solve, exact
-# equilibrium, 0.9 % cross-validation against Karamba), parameterized for tool use. Reproducibility
+# equilibrium, 0.9 % cross-validation against an independent commercial FE engine during
+# development), parameterized for tool use. Reproducibility
 # is the point: "the frame was solved correctly" is a safety claim, and a safety claim regenerated
 # by a language model on every call is not a claim at all.
 #

@@ -6,9 +6,8 @@
 #   iy   ~= sqrt(Iy/A)  (radius of gyration definition)
 #   iz   ~= sqrt(Iz/A)
 #   m    ~= A * 0.785   (steel 7850 kg/m3 -> kg/m per cm2)
-# Tolerances are catalog-rounding tolerances (plan: field-differentiated; J/Iw excluded
-# until Phase 1b). The 3-way comparison against the Karamba bundled table is a separate
-# pass once that table's location/format is imported.
+# Tolerances are catalog-rounding tolerances (field-differentiated; J/Iw excluded — the
+# shipped values are fillet-less analytic and flagged as such in the file meta).
 [CmdletBinding()]
 param([string]$SectionsPath = 'assets\data\structural\sections.json')
 

@@ -6,8 +6,8 @@ namespace GPTino.AgentHost.Tests;
 
 /// <summary>
 /// The SHIPPED solver asset against closed-form theory, headless: a fixed-fixed beam under
-/// self-weight deflects wL⁴/384EI at midspan. Same oracle discipline as the live Karamba/PyNite
-/// gates — a solver that merely "runs" proves nothing; matching mechanics does. Requires a
+/// self-weight deflects wL⁴/384EI at midspan. Same oracle discipline as the live FE gates —
+/// a solver that merely "runs" proves nothing; matching mechanics does. Requires a
 /// Python with PyNiteFEA on this machine (the repo's validated dev environment); a missing
 /// interpreter FAILS rather than skips, because a silently-skipped theory gate reads as
 /// coverage that does not exist.

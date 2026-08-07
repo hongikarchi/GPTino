@@ -20,8 +20,8 @@
    "Avz": "cm2"
   },
   "axes": "y = strong axis (bending about y), z = weak axis; EC3 convention",
-  "source": "Published European steel profile tables (standard catalog values); verify with scripts/verify-structural-data.ps1 (self-consistency) and 3-way against the Karamba3D bundled table before relying on a new row",
-  "phase1b_pending": "It (torsion) and Iw (warping) columns deferred until the 3-way import from the Karamba table (LTB checks need them)",
+  "source": "Published European steel profile tables (standard catalog values); verify with scripts/verify-structural-data.ps1 (self-consistency) before relying on a new row",
+  "phase1b_pending": "It (torsion) and Iw (warping) carry fillet-less analytic values; source table-published values before relying on them for LTB checks",
   "significantDigits": 3,
   "torsion_note": "It = sum(b*t^3)/3, Iw = Iy_weak*(H-tf)^2/4 (doubly-symmetric I, fillet-less analytic; catalog It runs a few % higher from fillets - treat LTB checks with +-10% caution until table-sourced values land)"
  },

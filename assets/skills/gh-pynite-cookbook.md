@@ -1,20 +1,11 @@
-PyNite open-source FE idioms for Python 3 components — import pattern, section-axis convention, solver contract. Fetch for unlimited-size structural tasks.
+PyNite open-source FE idioms for Python 3 components — import pattern, section-axis convention, solver contract. Fetch for in-canvas structural tasks.
 
 Reference notes for running the PyNite open-source FE engine INSIDE a Grasshopper Python 3
-component. Companion to gh-karamba-cookbook.md and structural-analysis.md (engine routing
-lives there). Live-verified 2026-08-05: in-canvas PyNite reproduced the 8 m beam oracle to
-0.004% (-7.6187 vs -7.619 mm theory).
-
-## When PyNite vs Karamba
-
-- PyNite: NO license, NO element cap, runs anywhere Python does (in-canvas AND host-side/
-  server). Euler-Bernoulli members (no shear deformation). Use for real-size models
-  (a real steel building is hundreds of members — 30x past the Karamba trial cap).
-- Karamba: licensed session or <=20-beam trial; shear-deformation beams; native views and
-  built-in EC3 checks. Use as the small-model cross-validation oracle and for licensed users.
-- Cross-engine tolerance when comparing the same model: displacement ~1% on slender members
-  (shear-formulation difference grows as members get stocky), reactions ~2% when Karamba
-  built the section from plates (fillet-less area).
+component. Companion to structural-analysis.md (domain rules: model input, load combos,
+verdict discipline). Live-verified 2026-08-05: in-canvas PyNite reproduced the 8 m beam
+oracle to 0.004% (-7.6187 vs -7.619 mm theory). PyNite is GPTino's structural engine:
+no license, no element cap, runs anywhere Python does. Members are Euler-Bernoulli (no
+shear deformation) — fine for slender members; note it when members are stocky (L/h < ~10).
 
 ## Import (pre-installed environment)
 
@@ -68,7 +59,7 @@ rz = fe.nodes["N0"].RxnFZ["L"]       # reactions per support node
 - Singular matrix -> results are nan/huge, PyNite may only WARN: always run the sanity
   invariants (sum reactions == applied loads, displacement scale) before trusting output.
 
-## Solver-script contract (same as Karamba scripts)
+## Solver-script contract
 
 - Wire-fed inputs -> null-guard first lines; skip the solve and leave `solved` UNASSIGNED
   unless the analysis completed (never assign solved=False).

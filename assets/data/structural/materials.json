@@ -1,7 +1,7 @@
 {
   "meta": {
     "description": "Structural material constants, Phase 1: structural steel per EN 10025.",
-    "units": "Moduli and strengths in kN/m2 (matches Karamba's IsotropicMaterial inputs directly: E=210000000 means 210 GPa); density in kg/m3; thickness bounds in mm",
+    "units": "Moduli and strengths in kN/m2 (E=210000000 means 210 GPa — the unit system FE inputs consume directly); density in kg/m3; thickness bounds in mm",
     "source": "EN 1993-1-1 / EN 10025 nominal values",
     "note": "fy is thickness-dependent; rows give the t<=40mm nominal value with the 40<t<=80mm value alongside. gammaM0/gammaM1 are EC3 recommended values (national annexes may differ)."
   },
