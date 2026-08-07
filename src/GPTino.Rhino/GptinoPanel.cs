@@ -1,6 +1,5 @@
 using System.Net;
 using System.Runtime.InteropServices;
-using System.Security;
 using Eto.Drawing;
 using Eto.Forms;
 
@@ -12,33 +11,11 @@ public sealed class GptinoPanel : Panel
 {
     private const string OpenGrasshopperScheme = "gptino";
 
-    // WebView2 suspends rendering while it computes the native window as occluded; that tracker can
-    // stick after another application fully covered the (floated or docked) panel, leaving a white
-    // surface after the user returns — the well-known CalculateNativeWindowOcclusion bug. The loader
-    // reads this environment variable when the browser environment is created, so disabling the
-    // feature BEFORE the first WebView instantiates prevents the stuck state at the source. The
-    // repaint watchdog below stays as the recovery path for an already-running browser process.
-    static GptinoPanel()
-    {
-        const string variable = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
-        const string feature = "--disable-features=CalculateNativeWindowOcclusion";
-        try
-        {
-            var existing = Environment.GetEnvironmentVariable(variable);
-            if (string.IsNullOrWhiteSpace(existing))
-            {
-                Environment.SetEnvironmentVariable(variable, feature);
-            }
-            else if (!existing.Contains("CalculateNativeWindowOcclusion", StringComparison.OrdinalIgnoreCase))
-            {
-                Environment.SetEnvironmentVariable(variable, $"{existing} {feature}");
-            }
-        }
-        catch (SecurityException)
-        {
-            // Best effort: without the flag the foreground-edge recomposite below still recovers.
-        }
-    }
+    // NOTE: the WebView2 occlusion-disable flag (WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS) is set in
+    // GptinoPlugIn.DisableWebViewOcclusionDetection at plugin load — earlier than any panel, which
+    // is what the WebView2 loader requires. Do not duplicate it here.
+
+    private const string SuppressFloatPromptSettingKey = "SuppressFloatingKeepVisiblePrompt";
 
     private readonly uint _documentSerial;
     private readonly WebView _webView;
@@ -46,6 +23,8 @@ public sealed class GptinoPanel : Panel
     private bool _navigated;
     private bool _wasVisible;
     private bool _wasForeground;
+    private bool _wasFloating;
+    private bool _floatPromptOpen;
     private Uri? _navigatedBaseUri;
     private string? _waitingKey;
 
@@ -142,6 +121,18 @@ public sealed class GptinoPanel : Panel
                 ForceRecomposite();
             }
             _wasForeground = foreground;
+
+            // Docked→floating edge: when the panel lands in Rhino's floating container and Rhino
+            // still hides floating windows on deactivate, offer (once per float) to flip that
+            // option so the panel stays visible while the user works in other applications. A
+            // restored session that starts out floating fires the edge on the first tick, which
+            // is deliberate — the annoyance applies from the first app switch.
+            var floating = IsHostedInFloatingContainer();
+            if (floating && !_wasFloating)
+            {
+                MaybeOfferKeepVisibleOnFloat();
+            }
+            _wasFloating = floating;
         }
     }
 
@@ -177,6 +168,168 @@ public sealed class GptinoPanel : Panel
         }
         _ = GetWindowThreadProcessId(foreground, out var owningProcessId);
         return owningProcessId == (uint)Environment.ProcessId;
+    }
+
+    private const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxLength);
+
+    /// <summary>
+    /// True when the panel currently lives in Rhino's floating dock container rather than the main
+    /// frame. Rhino has no public "is this panel floating" API; the discriminator (verified live)
+    /// is the top-level ancestor window's caption — the floating container is a top-level WPF
+    /// window titled "TabPanelDockBarFloatingForm()", while a docked panel's root is the Rhino
+    /// main frame (document title). Eto's NativeHandle resolves to a window inside whichever host
+    /// currently parents the panel, so GA_ROOT lands on the right container after every re-parent.
+    /// </summary>
+    private bool IsHostedInFloatingContainer()
+    {
+        try
+        {
+            var handle = NativeHandle;
+            if (handle == IntPtr.Zero)
+            {
+                return false;
+            }
+            var root = GetAncestor(handle, GA_ROOT);
+            if (root == IntPtr.Zero)
+            {
+                return false;
+            }
+            var text = new System.Text.StringBuilder(128);
+            _ = GetWindowText(root, text, text.Capacity);
+            return text.ToString().Contains("FloatingForm", StringComparison.Ordinal);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// On the docked→floating edge: when Rhino's HideFloatingWindowsOnDeactivate option is still
+    /// on (the default — the floated panel vanishes whenever another app is active) and the user
+    /// has not said "don't ask again", offer to flip it. Consent writes the option immediately via
+    /// <see cref="RhinoAdvancedSettings"/>; decline just skips until the next float. The prompt is
+    /// self-extinguishing: once the option is false the condition never holds again.
+    /// </summary>
+    private void MaybeOfferKeepVisibleOnFloat()
+    {
+        if (_floatPromptOpen || IsFloatPromptSuppressed())
+        {
+            return;
+        }
+        if (RhinoAdvancedSettings.TryGetHideFloatingWindowsOnDeactivate() != true)
+        {
+            return; // already kept visible, or accessors unavailable — nothing to offer
+        }
+        _floatPromptOpen = true;
+        try
+        {
+            switch (ShowKeepVisibleDialog())
+            {
+                case FloatPromptChoice.KeepVisible:
+                    if (!RhinoAdvancedSettings.TrySetHideFloatingWindowsOnDeactivate(false))
+                    {
+                        MessageBox.Show(
+                            this,
+                            "GPTino could not change the option automatically.\n\n" +
+                            "To keep floating panels visible, open Rhino Options > Advanced, search for " +
+                            "\"HideFloating\", and set Rhino.Options.Advanced.HideFloatingWindowsOnDeactivate to False.",
+                            "GPTino",
+                            MessageBoxType.Information);
+                    }
+                    break;
+                case FloatPromptChoice.DontAskAgain:
+                    SuppressFloatPrompt();
+                    break;
+            }
+        }
+        catch (Exception)
+        {
+            // A failed prompt must never take down the panel tick.
+        }
+        finally
+        {
+            _floatPromptOpen = false;
+        }
+    }
+
+    private enum FloatPromptChoice
+    {
+        NotNow,
+        KeepVisible,
+        DontAskAgain,
+    }
+
+    private FloatPromptChoice ShowKeepVisibleDialog()
+    {
+        var choice = FloatPromptChoice.NotNow;
+        var dialog = new Dialog<bool>
+        {
+            Title = "GPTino",
+            Padding = new Padding(16),
+            Resizable = false,
+        };
+        var keepVisible = new Button { Text = "Keep visible" };
+        keepVisible.Click += (_, _) => { choice = FloatPromptChoice.KeepVisible; dialog.Close(true); };
+        var notNow = new Button { Text = "Not now" };
+        notNow.Click += (_, _) => { choice = FloatPromptChoice.NotNow; dialog.Close(false); };
+        var dontAskAgain = new Button { Text = "Don't ask again" };
+        dontAskAgain.Click += (_, _) => { choice = FloatPromptChoice.DontAskAgain; dialog.Close(false); };
+        dialog.DefaultButton = keepVisible;
+        dialog.AbortButton = notNow;
+        dialog.Content = new StackLayout
+        {
+            Spacing = 12,
+            Items =
+            {
+                new Label
+                {
+                    Text =
+                        "Rhino hides floating panels while another application is active,\n" +
+                        "so this panel will disappear whenever you switch apps.\n\n" +
+                        "Keep it visible instead? This turns off the Rhino option\n" +
+                        "\"HideFloatingWindowsOnDeactivate\" (affects all floating Rhino panels).",
+                },
+                new StackLayout
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                    Items = { keepVisible, notNow, dontAskAgain },
+                },
+            },
+        };
+        dialog.ShowModal(this);
+        return choice;
+    }
+
+    private static bool IsFloatPromptSuppressed()
+    {
+        try
+        {
+            return GptinoPlugIn.Instance?.Settings.GetBool(SuppressFloatPromptSettingKey, false) ?? false;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static void SuppressFloatPrompt()
+    {
+        try
+        {
+            GptinoPlugIn.Instance?.Settings.SetBool(SuppressFloatPromptSettingKey, true);
+        }
+        catch (Exception)
+        {
+            // Best effort — without persistence the user is asked again on the next float.
+        }
     }
 
     private bool TryNavigateToAgentHost()
@@ -221,11 +374,11 @@ public sealed class GptinoPanel : Panel
     }
 
     /// <summary>
-    /// The document states the waiting page explains. "unsaved" = a plain new document (no scary
-    /// wording — every fresh Rhino start looks like this); "autosave" = the document sits on an
-    /// autosave path (crash recovery / autosave copy opened directly) and is never observed;
-    /// "readonly" = Rhino opened the file read-only (another instance or a stale .rhl lock), so
-    /// saves will fail until the lock is cleared.
+    /// The document states the waiting page explains. "unsaved" = a plain new document (a gentle
+    /// File &gt; Save ask, no scary wording — every fresh Rhino start looks like this); "autosave"
+    /// = the document sits on an autosave path (crash recovery / autosave copy opened directly)
+    /// and is never observed; "readonly" = Rhino opened the file read-only (another instance or a
+    /// stale .rhl lock), so saves will fail until the lock is cleared.
     /// </summary>
     private string DescribeDocumentState()
     {
@@ -276,6 +429,14 @@ public sealed class GptinoPanel : Panel
                 long gone, then reopen the file.
               </div>
               """,
+            // A plain new document: the one thing standing between the user and an attached
+            // panel is a File > Save, so say exactly that — plainly, not as a warning box.
+            // Grasshopper deliberately goes unmentioned: since the unconditional Rhino-only
+            // target registration, a saved Rhino file alone boots the AgentHost, and the panel
+            // itself (login gate, then the Model/Data tab CTAs) walks the user through the rest.
+            "unsaved" => """
+              <p>Save this Rhino document (<b>File &gt; Save</b>) and GPTino attaches by itself.</p>
+              """,
             _ => string.Empty,
         };
         var html = $$"""
@@ -286,11 +447,6 @@ public sealed class GptinoPanel : Panel
                 <style>
                   body { font: 13px system-ui; margin: 20px; color: #c9d1d9; background: #161b22; }
                   small { color: #8b949e; }
-                  a.cta {
-                    display: inline-block; margin: 10px 0; padding: 6px 12px;
-                    border: 1px solid #526334; border-radius: 6px;
-                    color: #b7e166; text-decoration: none; background: rgba(183,225,102,0.06);
-                  }
                   .notice {
                     margin: 10px 0; padding: 8px 12px;
                     border-left: 3px solid #e6b85c; border-radius: 0 6px 6px 0;
@@ -302,8 +458,8 @@ public sealed class GptinoPanel : Panel
                 <h3>GPTino is starting</h3>
                 <p>{{status}}</p>
                 {{stateNotice}}
-                <a class="cta" href="gptino://open-grasshopper">Open Grasshopper to start</a>
-                <p><small>GPTino pairs one saved Rhino file with one saved Grasshopper file. Open (and save) a Grasshopper definition to begin.</small></p>
+                <p><small>GPTino attaches to the saved Rhino file — no Grasshopper needed to start.
+                Open a definition whenever canvas work begins; Rhino-side sessions run without one.</small></p>
                 <small>Rhino document {{_documentSerial}}</small>
               </body>
             </html>

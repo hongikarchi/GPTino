@@ -187,13 +187,16 @@ public sealed class GptinoPlugIn : PlugIn
         try
         {
             const string variable = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
-            const string flag = "--disable-features=CalculateNativeWindowOcclusionEnabled";
+            // Chromium's feature STRING is "CalculateNativeWindowOcclusion" — the earlier
+            // "...OcclusionEnabled" spelling copied the C++ constant name and disabled a feature
+            // that does not exist, which is why the flag never took effect.
+            const string flag = "--disable-features=CalculateNativeWindowOcclusion";
             var existing = Environment.GetEnvironmentVariable(variable);
             if (string.IsNullOrEmpty(existing))
             {
                 Environment.SetEnvironmentVariable(variable, flag);
             }
-            else if (!existing.Contains("CalculateNativeWindowOcclusionEnabled", StringComparison.Ordinal))
+            else if (!existing.Contains("CalculateNativeWindowOcclusion", StringComparison.Ordinal))
             {
                 // Preserve any value another component set; only append our flag.
                 Environment.SetEnvironmentVariable(variable, existing + " " + flag);

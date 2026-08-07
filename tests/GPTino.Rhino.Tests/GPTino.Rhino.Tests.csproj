@@ -6,6 +6,14 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <!-- The RhinoCommon package ships REFERENCE assemblies (metadata-only, never executable), so
+         the canary inspects them with MetadataLoadContext. Compile assets stay excluded because
+         the local FakeRhinoApp stand-in would collide with the real types (CS0436); the runtime
+         asset copy is what puts RhinoCommon.dll next to the tests for inspection. -->
+    <PackageReference Include="RhinoCommon">
+      <ExcludeAssets>compile</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="System.Reflection.MetadataLoadContext" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio">
       <PrivateAssets>all</PrivateAssets>
@@ -26,6 +34,8 @@
              Link="Production/StructuralAxisMath.cs" />
     <Compile Include="../../src/GPTino.Rhino/RhinoUiThreadDispatcher.cs"
              Link="Production/RhinoUiThreadDispatcher.cs" />
+    <Compile Include="../../src/GPTino.Rhino/RhinoAdvancedSettings.cs"
+             Link="Production/RhinoAdvancedSettings.cs" />
     <Compile Include="../../tools/GPTino.LiveE2E/RhinoLaunchArguments.cs"
              Link="Production/RhinoLaunchArguments.cs" />
   </ItemGroup>
