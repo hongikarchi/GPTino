@@ -577,14 +577,22 @@ public sealed class CodexAppServerClientProtocolTests
         using var notification = JsonDocument.Parse(
             "{\"method\":\"test/notification\",\"params\":{}}");
         await InvokeProcessOutputAsync(client, notification.RootElement, generation.Value);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        // Pure readiness hang-guard on a deterministic signal — generous, not part of the proof.
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         var stopwatch = Stopwatch.StartNew();
-        await client.StopAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        // The property is that Stop returns AT ALL while the handler is still parked on `release`
+        // (set only after Stop returns, so an UNBOUNDED drain would deadlock forever and any
+        // finite budget catches it). The bounded path is a fixed ~1.1s internally (1s drain
+        // deadline + 100ms grace); the old 2s budget left ~0.9s for runner noise and flaked on
+        // cold CI runners — 10s keeps the same proof with real headroom.
+        await client.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
         stopwatch.Stop();
 
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2));
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10));
         Assert.True(GetGenerationToken(generation.Value).IsCancellationRequested);
+        // Stop must have abandoned the handler, not waited it out: nothing has released it yet.
+        Assert.False(release.Task.IsCompleted);
         release.TrySetResult();
         await client.DisposeAsync();
         generation.Dispose();
@@ -686,7 +694,10 @@ public sealed class CodexAppServerClientProtocolTests
         client.DynamicToolHandler = (_, _) =>
         {
             entered.TrySetResult();
-            release.Wait(TimeSpan.FromSeconds(5));
+            // In the passing case the finally below releases this immediately after the asserts;
+            // the 60s cap only stops a failing run from parking a pool thread for long. It must
+            // stay FAR above the observation budgets in the try block — see the comment there.
+            release.Wait(TimeSpan.FromSeconds(60));
             return Task.FromResult(DynamicToolResult.Ok(new { late = true }));
         };
         using var request = JsonDocument.Parse("""
@@ -709,10 +720,13 @@ public sealed class CodexAppServerClientProtocolTests
         try
         {
             // The property under test is that dispatch completes while the handler is STILL
-            // blocked, so these budgets must stay well under the handler's 5s release window —
-            // but 1s flaked on cold CI runners (JIT + pool spin-up), so give them 3s.
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            await dispatch.WaitAsync(TimeSpan.FromSeconds(3));
+            // blocked, so these budgets must stay well under BOTH ways the blocked handler could
+            // stop mattering: its own release window (60s above) and the client's 30-second
+            // DynamicToolCallTimeout (a regressed inline dispatch would complete via deadline
+            // expiry). 1s and then 3s both lost to cold CI runners (JIT + pool spin-up); 10s
+            // gives real headroom while keeping 3x/6x margins under those windows.
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(10));
         }
         finally
         {

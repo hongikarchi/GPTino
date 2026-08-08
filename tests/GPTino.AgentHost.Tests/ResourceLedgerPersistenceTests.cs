@@ -581,16 +581,39 @@ public sealed class ResourceLedgerPersistenceTests
         return (state, view);
     }
 
+    /// <summary>
+    /// Releases the pooled connections of exactly THIS ledger database. Microsoft.Data.Sqlite
+    /// keys its pools by connection string, so the builder must mirror
+    /// <see cref="ResourceLedgerStore"/>'s verbatim — a drift fails these tests loudly (the swap
+    /// helpers below hit still-open handles / an unmerged WAL) rather than silently. Closing the
+    /// pooled connections checkpoints and removes the WAL and drops the file handles, which is
+    /// everything the byte-level helpers need; a process-global pool clear would additionally
+    /// yank pooled connections out from under concurrently running test collections, which is
+    /// why the boundary gate forbids it.
+    /// </summary>
+    private static void ReleaseLedgerDatabasePool(string databasePath)
+    {
+        using var poolKey = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.GetFullPath(databasePath),
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared,
+            ForeignKeys = true
+        }.ToString());
+        SqliteConnection.ClearPool(poolKey);
+    }
+
     private static byte[] ReadLedgerDatabaseBytes(string databasePath)
     {
-        // Pooled connections keep file handles; release them before touching the bytes.
-        SqliteConnection.ClearAllPools();
+        // Pooled connections keep file handles (and recent commits in the WAL); release this
+        // database's pool so the main file's bytes are complete before reading them.
+        ReleaseLedgerDatabasePool(databasePath);
         return File.ReadAllBytes(databasePath);
     }
 
     private static void SwapLedgerDatabaseBytes(string databasePath, byte[] content)
     {
-        SqliteConnection.ClearAllPools();
+        ReleaseLedgerDatabasePool(databasePath);
         File.WriteAllBytes(databasePath, content);
         // A mismatched WAL/SHM pair would fight the swapped main file.
         File.Delete(databasePath + "-wal");
