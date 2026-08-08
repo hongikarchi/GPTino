@@ -1656,6 +1656,41 @@ button.status-chip:hover strong {
   font-size: var(--fs-micro);
 }
 
+/* Per-target context for destructive cleanups: name prominent, role/impact as quiet body lines,
+   plus the GH zoom chip. Full-width block under the item row (the li is flex-wrap), indented to
+   align with the checkbox label text. */
+.approval-card-targets {
+  flex-basis: 100%;
+  margin: 0 0 2px;
+  padding-left: 20px;
+  list-style: none;
+}
+
+.approval-card-targets li {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  padding: 2px 0 3px;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
+.approval-target-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.approval-target-label {
+  font-size: var(--fs-meta);
+}
+
+.approval-target-line {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
 .approval-card-choices {
   display: inline-flex;
   gap: 10px;

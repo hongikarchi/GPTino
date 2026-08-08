@@ -73,6 +73,30 @@ const demoApprovalCard = JSON.stringify({
       measure: "간격 0.42 mm",
       targets: [{ objectId: "a0b1c2d3-0003-4e4e-9f9f-000000000003", fingerprint: "fp-b1" }],
     },
+    // W3 destructive cleanup: targets carry model-authored label/role/impact so the user can judge
+    // the deletion, and each row gets a canvas-zoom chip (demo focus no-ops with a "N 선택" note).
+    // The two items above stay bare on purpose — they verify the legacy rendering path.
+    {
+      id: "orphan-grid",
+      label: "쓰이지 않는 구 그리드 파이프라인 2개를 삭제합니다",
+      measure: "다운스트림 연결 0개",
+      targets: [
+        {
+          objectId: "a0b1c2d3-0004-4e4e-9f9f-000000000004",
+          fingerprint: "fp-c1",
+          label: "Series (GridX-old)",
+          role: "예전 X 방향 그리드 간격을 만들던 시리즈 — 지금은 어느 컴포넌트에도 연결되어 있지 않습니다",
+          impact: "삭제해도 결과 기하는 변하지 않습니다. 새 GridX 슬라이더가 같은 역할을 대신합니다",
+        },
+        {
+          objectId: "a0b1c2d3-0005-4e4e-9f9f-000000000005",
+          fingerprint: "fp-c2",
+          label: "Unit X (old)",
+          role: "구 시리즈 출력을 X 벡터로 바꾸던 컴포넌트",
+          impact: "상류 시리즈와 함께 삭제됩니다 — 대체물은 필요 없습니다",
+        },
+      ],
+    },
   ],
 });
 

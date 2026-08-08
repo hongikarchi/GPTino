@@ -349,6 +349,138 @@ public sealed class DynamicToolDispatcherTests
         Assert.Equal(jobId, backend.ResumedJobId);
     }
 
+    /// <summary>
+    /// W3 SHARED CONTRACT: approval_request targets carry optional label/role/impact strings that
+    /// must round-trip into the stored ApprovalCard JSON (the panel renders them per target).
+    /// </summary>
+    [Fact]
+    public async Task ApprovalRequestRoundTripsRoleAndImpactIntoTheStoredCard()
+    {
+        using var directory = new TestDirectory();
+        var (dispatcher, store, _) = await CreateDispatcherAsync(directory);
+        var session = await BindSessionAsync(store, "approval-thread");
+        var componentId = Guid.NewGuid();
+
+        var result = await dispatcher.DispatchAsync(
+            Call(
+                "approval_request",
+                $$"""
+                {
+                  "summary": "정리: 살아있는 컴포넌트 1개 삭제 승인 요청",
+                  "items": [{
+                    "id": "cleanup-1",
+                    "label": "구형 패널 스크립트 삭제",
+                    "targets": [{
+                      "objectId": "{{componentId:D}}",
+                      "fingerprint": "fp-live-1",
+                      "label": "PanelStage",
+                      "role": "격자 곡면을 패널로 분할하는 단계",
+                      "impact": "PanelStage → Bake 와이어가 끊기고 새 C# 체인이 대체합니다"
+                    }]
+                  }]
+                }
+                """,
+                threadId: "approval-thread"),
+            CancellationToken.None);
+
+        Assert.True(result.Success, result.Text);
+        var stored = (await store.FindSessionAsync(session.Id))!.ApprovalCard;
+        Assert.NotNull(stored);
+        // Observation 1: the raw stored JSON carries the new fields (what the panel deserializes).
+        // Non-ASCII values are \u-escaped in storage, so assert on the property names.
+        Assert.Contains("\"role\":", stored, StringComparison.Ordinal);
+        Assert.Contains("\"impact\":", stored, StringComparison.Ordinal);
+        Assert.Contains("\"label\":\"PanelStage\"", stored, StringComparison.Ordinal);
+        // Observation 2: the typed card round-trips them on the exact target.
+        var card = JsonSerializer.Deserialize<ApprovalCard>(
+            stored!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var target = Assert.Single(Assert.Single(card.Items).Targets);
+        Assert.Equal(componentId, target.ObjectId);
+        Assert.Equal("fp-live-1", target.Fingerprint);
+        Assert.Equal("PanelStage", target.Label);
+        Assert.Equal("격자 곡면을 패널로 분할하는 단계", target.Role);
+        Assert.Equal("PanelStage → Bake 와이어가 끊기고 새 C# 체인이 대체합니다", target.Impact);
+    }
+
+    /// <summary>
+    /// W3 Finding 8: model-authored target display strings are clamped to 300 chars (ellipsis) at
+    /// intake, so a runaway generation can never flood the stored card or the approval UI.
+    /// </summary>
+    [Fact]
+    public async Task ApprovalRequestClampsOversizedTargetDisplayStrings()
+    {
+        using var directory = new TestDirectory();
+        var (dispatcher, store, _) = await CreateDispatcherAsync(directory);
+        var session = await BindSessionAsync(store, "clamp-thread");
+        var oversized = new string('R', 400);
+
+        var result = await dispatcher.DispatchAsync(
+            Call(
+                "approval_request",
+                $$"""
+                {
+                  "summary": "clamp",
+                  "items": [{
+                    "id": "clamp-1",
+                    "label": "clamp target strings",
+                    "targets": [{
+                      "objectId": "{{Guid.NewGuid():D}}",
+                      "fingerprint": "fp-clamp",
+                      "label": "short label",
+                      "role": "{{oversized}}",
+                      "impact": "{{oversized}}"
+                    }]
+                  }]
+                }
+                """,
+                threadId: "clamp-thread"),
+            CancellationToken.None);
+
+        Assert.True(result.Success, result.Text);
+        var stored = (await store.FindSessionAsync(session.Id))!.ApprovalCard;
+        var card = JsonSerializer.Deserialize<ApprovalCard>(
+            stored!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var target = Assert.Single(Assert.Single(card.Items).Targets);
+        // The short string is untouched; the oversized ones are cut to exactly 300 with ellipsis.
+        Assert.Equal("short label", target.Label);
+        Assert.Equal(300, target.Role!.Length);
+        Assert.EndsWith("…", target.Role, StringComparison.Ordinal);
+        Assert.Equal(300, target.Impact!.Length);
+        Assert.EndsWith("…", target.Impact, StringComparison.Ordinal);
+        // The binding pair is never clamped.
+        Assert.Equal("fp-clamp", target.Fingerprint);
+    }
+
+    /// <summary>Legacy cards (pre-W3, no label/role/impact on targets) must keep deserializing.</summary>
+    [Fact]
+    public void LegacyApprovalCardWithoutRoleAndImpactStillLoads()
+    {
+        var legacy = """
+            {
+              "status": "granted",
+              "summary": "Fix a near-miss pair.",
+              "items": [{
+                "id": "gap",
+                "label": "Close a 0.005 mm endpoint gap",
+                "measure": "0.005 mm",
+                "targets": [{ "objectId": "3f2f7a44-8f5e-4f5c-9b0a-1c2d3e4f5a6b", "fingerprint": "fp-old" }]
+              }],
+              "grantId": "grant-legacy",
+              "approvedItemIds": ["gap"]
+            }
+            """;
+
+        var card = JsonSerializer.Deserialize<ApprovalCard>(
+            legacy, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(card);
+        var target = Assert.Single(Assert.Single(card!.Items).Targets);
+        Assert.Equal("fp-old", target.Fingerprint);
+        Assert.Null(target.Label);
+        Assert.Null(target.Role);
+        Assert.Null(target.Impact);
+    }
+
     private static async Task<SessionRecord> BindSessionAsync(SessionStore store, string threadId)
     {
         var session = await store.CreateSessionAsync(new CreateSessionRequest("Artifacts"));

@@ -1826,6 +1826,33 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
 
     public string ThirdObjectFingerprint => "object-v3";
 
+    // The delete-chain components carry SEPARATE per-domain fingerprints (review W3/F3: an empty
+    // StructureFingerprint let the whole-object fallback hide the approval/authorship domain
+    // mismatch). Structure is what the delete CAS, the ledger's GrasshopperComponent rows, and
+    // approval grants bind to; layout backs canvas.move expectations. Settable so a responder can
+    // simulate a write moving a component's structure (e.g. wiring it).
+    public string ObjectStructureFingerprint { get; set; } = "structure-v1";
+
+    public string SecondObjectStructureFingerprint { get; set; } = "structure-v2";
+
+    public string ThirdObjectStructureFingerprint { get; set; } = "structure-v3";
+
+    public string ObjectLayoutFingerprint => "layout-v1";
+
+    public string SecondObjectLayoutFingerprint => "layout-v2";
+
+    public string ThirdObjectLayoutFingerprint => "layout-v3";
+
+    // Stable socket identities for the linear delete chain (Source.Out -> Stage.In,
+    // Stage.Out -> Sink.In), so wire payloads/declarations in tests can reference them.
+    public Guid SourceOutputParameterId { get; } = Guid.Parse("aa11a2b3-0001-4c4d-8e8f-101010100001");
+
+    public Guid StageInputParameterId { get; } = Guid.Parse("aa11a2b3-0002-4c4d-8e8f-101010100002");
+
+    public Guid StageOutputParameterId { get; } = Guid.Parse("aa11a2b3-0003-4c4d-8e8f-101010100003");
+
+    public Guid SinkInputParameterId { get; } = Guid.Parse("aa11a2b3-0004-4c4d-8e8f-101010100004");
+
     public bool IncludeNumberSliderValue { get; set; }
 
     // Opt-in: wire the two canvas objects (first -> second) so the tidy layout has a real dataflow cluster
@@ -2011,17 +2038,65 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
         if (IncludeDeleteChain)
         {
             var typeId = Guid.Parse("29322931-96ae-4d34-874b-a722bc3a0e4a");
+            CanvasParameterState Socket(
+                Guid owner,
+                Guid parameterId,
+                string name,
+                CanvasParameterDirection direction,
+                params CanvasParameterEndpoint[] sources) =>
+                new(owner, parameterId, name, name, direction, "Generic", null,
+                    CanvasParameterAccess.Item, Optional: true, sources);
+            // Linear mode models the sockets too (stable ids + CurrentSources), so the
+            // disconnect/schema dataflow guards see the same wire union production snapshots
+            // carry. Cycle mode keeps today's bare objects — its wires alone define the cycle.
+            var linear = !IncludeDeleteCycle;
             var chainObjects = new[]
             {
                 new CanvasObjectState(
                     CanvasObjectId, typeId, "Source",
-                    new CanvasPoint(10, 20), new CanvasSize(90, 40), ObjectFingerprint),
+                    new CanvasPoint(10, 20), new CanvasSize(90, 40), ObjectFingerprint)
+                {
+                    StructureFingerprint = ObjectStructureFingerprint,
+                    LayoutFingerprint = ObjectLayoutFingerprint,
+                    Outputs = linear
+                        ? [Socket(CanvasObjectId, SourceOutputParameterId, "Out", CanvasParameterDirection.Output)]
+                        : [],
+                },
                 new CanvasObjectState(
                     SecondCanvasObjectId, typeId, "Stage",
-                    new CanvasPoint(140, 20), new CanvasSize(90, 40), SecondObjectFingerprint),
+                    new CanvasPoint(140, 20), new CanvasSize(90, 40), SecondObjectFingerprint)
+                {
+                    StructureFingerprint = SecondObjectStructureFingerprint,
+                    LayoutFingerprint = SecondObjectLayoutFingerprint,
+                    Inputs = linear
+                        ?
+                        [
+                            Socket(
+                                SecondCanvasObjectId, StageInputParameterId, "In",
+                                CanvasParameterDirection.Input,
+                                new CanvasParameterEndpoint(CanvasObjectId, SourceOutputParameterId))
+                        ]
+                        : [],
+                    Outputs = linear
+                        ? [Socket(SecondCanvasObjectId, StageOutputParameterId, "Out", CanvasParameterDirection.Output)]
+                        : [],
+                },
                 new CanvasObjectState(
                     ThirdCanvasObjectId, typeId, "Sink",
-                    new CanvasPoint(270, 20), new CanvasSize(90, 40), ThirdObjectFingerprint),
+                    new CanvasPoint(270, 20), new CanvasSize(90, 40), ThirdObjectFingerprint)
+                {
+                    StructureFingerprint = ThirdObjectStructureFingerprint,
+                    LayoutFingerprint = ThirdObjectLayoutFingerprint,
+                    Inputs = linear
+                        ?
+                        [
+                            Socket(
+                                ThirdCanvasObjectId, SinkInputParameterId, "In",
+                                CanvasParameterDirection.Input,
+                                new CanvasParameterEndpoint(SecondCanvasObjectId, StageOutputParameterId))
+                        ]
+                        : [],
+                },
             };
             var chainWires = IncludeDeleteCycle
                 ? new[]
@@ -2031,8 +2106,12 @@ internal sealed class LiveDocumentBackendHarness : IAsyncDisposable
                 }
                 : new[]
                 {
-                    new WireState(CanvasObjectId, Guid.NewGuid(), SecondCanvasObjectId, Guid.NewGuid()),
-                    new WireState(SecondCanvasObjectId, Guid.NewGuid(), ThirdCanvasObjectId, Guid.NewGuid()),
+                    new WireState(
+                        CanvasObjectId, SourceOutputParameterId,
+                        SecondCanvasObjectId, StageInputParameterId),
+                    new WireState(
+                        SecondCanvasObjectId, StageOutputParameterId,
+                        ThirdCanvasObjectId, SinkInputParameterId),
                 };
             return new(
                 target.GrasshopperDocumentId!.Value,

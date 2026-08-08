@@ -860,7 +860,16 @@ public sealed class DynamicToolDispatcher
                     {
                         if (Guid.TryParse(TryString(target, "objectId"), out var objectId))
                         {
-                            targets.Add(new ApprovalGrantItem(objectId, TryString(target, "fingerprint") ?? string.Empty));
+                            // Label/role/impact are optional model-authored display strings (SHARED
+                            // CONTRACT with the panel); absent stays null and old cards keep loading.
+                            // Clamped to a sane display length so a runaway generation cannot flood
+                            // the stored card or the approval UI.
+                            targets.Add(new ApprovalGrantItem(
+                                objectId,
+                                TryString(target, "fingerprint") ?? string.Empty,
+                                ClampDisplayText(TryString(target, "label")),
+                                ClampDisplayText(TryString(target, "role")),
+                                ClampDisplayText(TryString(target, "impact"))));
                         }
                     }
                 }
@@ -896,6 +905,14 @@ public sealed class DynamicToolDispatcher
                 + "in the ChangeSet's approvalGrantId and touch ONLY the approved items.",
         };
     }
+
+    /// <summary>
+    /// Display-string clamp for model-authored approval-card text (target label/role/impact):
+    /// anything past 300 chars is truncated with an ellipsis. 300 comfortably fits the longest
+    /// honest one-line explanation while keeping a runaway generation from flooding the card.
+    /// </summary>
+    internal static string? ClampDisplayText(string? value) =>
+        value is { Length: > 300 } ? value[..299] + "…" : value;
 
     private static readonly JsonSerializerOptions GoalJson = new(JsonSerializerDefaults.Web);
 

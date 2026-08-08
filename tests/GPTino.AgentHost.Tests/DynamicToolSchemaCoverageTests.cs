@@ -62,6 +62,61 @@ public sealed class DynamicToolSchemaCoverageTests
             schema.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
     }
 
+    /// <summary>
+    /// W3: the change_submit schema uses additionalProperties=false, so without an explicit
+    /// "intent" property the model could never declare a cleanup tier the backend enforces —
+    /// the exact drift class this file guards. The enum must cover all three CleanupIntents.
+    /// </summary>
+    [Fact]
+    public void ChangeSetSchemaExposesTheCleanupIntentEnum()
+    {
+        var intents = CollectEnumContaining(CleanupIntents.Relayout);
+        Assert.Equal(
+            new[] { CleanupIntents.Relayout, CleanupIntents.Regroup, CleanupIntents.Destructive },
+            intents);
+
+        var json = JsonSerializer.SerializeToElement(DynamicToolSpecs.Create());
+        var submit = Assert.Single(
+            json[0].GetProperty("tools").EnumerateArray().ToArray(),
+            tool => tool.GetProperty("name").GetString() == "change_submit");
+        var changeSet = submit.GetProperty("inputSchema").GetProperty("properties").GetProperty("changeSet");
+        Assert.True(changeSet.GetProperty("properties").TryGetProperty("intent", out _));
+        // Optional: authoring ChangeSets omit it, so it must not be required.
+        Assert.DoesNotContain(
+            "intent",
+            changeSet.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
+    }
+
+    /// <summary>
+    /// W3 SHARED CONTRACT: approval_request targets gained optional label/role/impact — the panel
+    /// renders them per target, so the model-facing schema must actually admit them
+    /// (additionalProperties=false would otherwise reject every card that fills them).
+    /// </summary>
+    [Fact]
+    public void ApprovalRequestTargetsExposeLabelRoleAndImpact()
+    {
+        var json = JsonSerializer.SerializeToElement(DynamicToolSpecs.Create());
+        var approval = Assert.Single(
+            json[0].GetProperty("tools").EnumerateArray().ToArray(),
+            tool => tool.GetProperty("name").GetString() == "approval_request");
+        var targetProperties = approval
+            .GetProperty("inputSchema").GetProperty("properties")
+            .GetProperty("items").GetProperty("items")
+            .GetProperty("properties").GetProperty("targets")
+            .GetProperty("items").GetProperty("properties");
+        Assert.True(targetProperties.TryGetProperty("label", out _));
+        Assert.True(targetProperties.TryGetProperty("role", out _));
+        Assert.True(targetProperties.TryGetProperty("impact", out _));
+        // The grant binding itself is unchanged: objectId+fingerprint stay the only required pair.
+        var required = approval
+            .GetProperty("inputSchema").GetProperty("properties")
+            .GetProperty("items").GetProperty("items")
+            .GetProperty("properties").GetProperty("targets")
+            .GetProperty("items").GetProperty("required")
+            .EnumerateArray().Select(item => item.GetString()).ToArray();
+        Assert.Equal(new[] { "objectId", "fingerprint" }, required);
+    }
+
     private static IEnumerable<string> EnumCamelNames<TEnum>() where TEnum : struct, Enum =>
         Enum.GetNames<TEnum>().Select(JsonNamingPolicy.CamelCase.ConvertName);
 

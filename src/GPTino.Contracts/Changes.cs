@@ -149,7 +149,28 @@ public sealed record ChangeSet(
     // objects WITHOUT GPTino provenance stamps, bound server-side to the exact
     // (objectId, fingerprint) pairs the user saw. Rides the ChangeSet so it is covered by the
     // idempotency hash; absent on GPTino-created objects (autonomy-by-default).
-    string? ApprovalGrantId = null);
+    string? ApprovalGrantId = null,
+    // Optional declared cleanup intent (wire name "intent"; one of the CleanupIntents constants).
+    // Null = normal authoring, no tier restriction. When declared, the submit-time tier gate
+    // (ValidateCleanupIntent) restricts which operation kinds the ChangeSet may carry — see
+    // CleanupIntents. Serialization-compatible: absent in stored/legacy JSON deserializes as null.
+    string? Intent = null);
+
+/// <summary>
+/// The declared-cleanup tiers a ChangeSet may opt into via <see cref="ChangeSet.Intent"/>. Each
+/// tier names the op kinds it allows (tiers are cumulative): Relayout = {moveComponent, setLayout};
+/// Regroup adds setGroup; Destructive adds deleteComponent. Destructive needs NO grant by itself —
+/// deleting orphans or this session's own components is the honest destructive cleanup; the
+/// Layer-1 live-wire delete guard (which applies to EVERY ChangeSet regardless of intent —
+/// declaring Destructive never bypasses it) refuses live FOREIGN targets at execution unless an
+/// ApprovalGrantId covers them.
+/// </summary>
+public static class CleanupIntents
+{
+    public const string Relayout = "cleanupRelayout";
+    public const string Regroup = "cleanupRegroup";
+    public const string Destructive = "cleanupDestructive";
+}
 
 public enum JobState
 {

@@ -1130,14 +1130,17 @@ public sealed partial class LiveDocumentBackend
         var ids = new List<Guid>();
         foreach (var item in array.EnumerateArray())
         {
+            // Exact "D" format like RequireArgumentGuid: the adapter's STJ deserialization
+            // accepts nothing else, so anything looser fails mid-batch instead of here.
             if (item.ValueKind != JsonValueKind.Object ||
                 !item.TryGetProperty(idProperty, out var idValue) ||
                 idValue.ValueKind != JsonValueKind.String ||
-                !Guid.TryParse(idValue.GetString(), out var id) ||
+                !Guid.TryParseExact(idValue.GetString(), "D", out var id) ||
                 id == Guid.Empty)
             {
                 throw new InvalidOperationException(
-                    $"Operation '{operationId}' has an item without a valid '{idProperty}'.");
+                    $"Operation '{operationId}' has an item without a valid '{idProperty}' " +
+                    "(canonical dashed UUID form required).");
             }
             ids.Add(id);
         }
@@ -1157,10 +1160,13 @@ public sealed partial class LiveDocumentBackend
         HashSet<Guid> result = [];
         foreach (var item in value.EnumerateObject())
         {
-            if (!Guid.TryParse(item.Name, out var id) || id == Guid.Empty || !result.Add(id))
+            // Exact "D" format like RequireArgumentGuid: STJ's dictionary Guid keys accept
+            // nothing else, so a braced key would fail inside the adapter mid-batch.
+            if (!Guid.TryParseExact(item.Name, "D", out var id) || id == Guid.Empty || !result.Add(id))
             {
                 throw new InvalidOperationException(
-                    $"Operation '{operationId}' argument '{property}' contains an invalid or duplicate UUID key.");
+                    $"Operation '{operationId}' argument '{property}' contains an invalid or duplicate " +
+                    "UUID key (canonical dashed form required).");
             }
         }
         if (result.Count == 0)
@@ -1275,16 +1281,22 @@ public sealed partial class LiveDocumentBackend
         return value.GetString()!;
     }
 
+    // Exact "D" format only (8-4-4-4-12, no braces/parentheses/bare-hex): the adapters
+    // deserialize payload GUIDs with System.Text.Json, which accepts exactly this shape. A
+    // braced GUID that Guid.TryParse tolerated here used to sail through submit and then fail
+    // INSIDE the adapter mid-batch — an engineered way to cut survivor wires. Reject it up
+    // front, before anything is enqueued.
     private static Guid RequireArgumentGuid(
         JsonElement arguments,
         string property,
         string operationId)
     {
         var text = RequireArgumentString(arguments, property, operationId);
-        if (!Guid.TryParse(text, out var value) || value == Guid.Empty)
+        if (!Guid.TryParseExact(text, "D", out var value) || value == Guid.Empty)
         {
             throw new InvalidOperationException(
-                $"Operation '{operationId}' argument '{property}' must be a non-empty UUID.");
+                $"Operation '{operationId}' argument '{property}' must be a non-empty UUID in " +
+                "canonical dashed form (8-4-4-4-12, no braces).");
         }
         return value;
     }

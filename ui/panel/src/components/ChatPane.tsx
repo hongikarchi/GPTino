@@ -989,6 +989,7 @@ export function ChatPane({ session, conflicts, models, limits, grasshopperDocs, 
             busy={busyActions.has(`approval:${session.id}`)}
             onAnswer={onAnswerApproval}
             onFocus={onFocus}
+            onFocusCanvas={onFocusCanvas}
           />
         ) : null}
         {/* The live work log: only the last few steps stay on screen; older ones fold behind a

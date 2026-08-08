@@ -29,9 +29,9 @@ public sealed class DeleteReorderTests
             harness,
             session,
             snapshot.Revision,
-            ("delete-source", harness.CanvasObjectId, harness.ObjectFingerprint),
-            ("delete-stage", harness.SecondCanvasObjectId, harness.SecondObjectFingerprint),
-            ("delete-sink", harness.ThirdCanvasObjectId, harness.ThirdObjectFingerprint));
+            ("delete-source", harness.CanvasObjectId, harness.ObjectStructureFingerprint),
+            ("delete-stage", harness.SecondCanvasObjectId, harness.SecondObjectStructureFingerprint),
+            ("delete-sink", harness.ThirdCanvasObjectId, harness.ThirdObjectStructureFingerprint));
 
         var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
             session,
@@ -52,11 +52,18 @@ public sealed class DeleteReorderTests
         harness.IncludeDeleteChain = true;
         await using var responder = harness.StartResponder();
         var session = await harness.Store.CreateSessionAsync(new CreateSessionRequest("Split"));
+        // The stage still feeds the SURVIVING sink, so the W3 live-wire delete guard would refuse
+        // it as foreign; this test is about reorder segmentation, so make the stage self-authored
+        // (Direct-origin ledger row at the CURRENT structure fingerprint — the full predicate).
+        harness.Backend.SeedResourceLedgerForTests(
+            session,
+            new ResourceAddress(ResourceKind.GrasshopperComponent, harness.SecondCanvasObjectId.ToString("D")),
+            harness.SecondObjectStructureFingerprint);
         var snapshot = await harness.CaptureSnapshotViewAsync();
         var deleteSource = await CreateDeleteOperationAsync(
-            harness, session, "delete-source", harness.CanvasObjectId, harness.ObjectFingerprint);
+            harness, session, "delete-source", harness.CanvasObjectId, harness.ObjectStructureFingerprint);
         var deleteStage = await CreateDeleteOperationAsync(
-            harness, session, "delete-stage", harness.SecondCanvasObjectId, harness.SecondObjectFingerprint);
+            harness, session, "delete-stage", harness.SecondCanvasObjectId, harness.SecondObjectStructureFingerprint);
         var moveResource = new ResourceAddress(
             ResourceKind.GrasshopperComponentLayout,
             harness.ThirdCanvasObjectId.ToString("D"));
@@ -75,7 +82,7 @@ public sealed class DeleteReorderTests
                     },
                     expectedFingerprints = new Dictionary<Guid, string>
                     {
-                        [harness.ThirdCanvasObjectId] = harness.ThirdObjectFingerprint
+                        [harness.ThirdCanvasObjectId] = harness.ThirdObjectLayoutFingerprint
                     }
                 }
             });
@@ -96,7 +103,7 @@ public sealed class DeleteReorderTests
             [deleteSource.Operation, moveOperation, deleteStage.Operation],
             [
                 deleteSource.Expectation,
-                new ResourceExpectation(moveResource, harness.ThirdObjectFingerprint),
+                new ResourceExpectation(moveResource, harness.ThirdObjectLayoutFingerprint),
                 deleteStage.Expectation,
             ]);
 
@@ -124,8 +131,8 @@ public sealed class DeleteReorderTests
             harness,
             session,
             snapshot.Revision,
-            ("delete-source", harness.CanvasObjectId, harness.ObjectFingerprint),
-            ("delete-stage", harness.SecondCanvasObjectId, harness.SecondObjectFingerprint));
+            ("delete-source", harness.CanvasObjectId, harness.ObjectStructureFingerprint),
+            ("delete-stage", harness.SecondCanvasObjectId, harness.SecondObjectStructureFingerprint));
 
         var submitted = ToElement(await harness.Backend.SubmitChangeAsync(
             session,
@@ -151,9 +158,9 @@ public sealed class DeleteReorderTests
             harness,
             session,
             snapshot.Revision,
-            ("delete-source", harness.CanvasObjectId, harness.ObjectFingerprint),
-            ("delete-stage", harness.SecondCanvasObjectId, harness.SecondObjectFingerprint),
-            ("delete-sink", harness.ThirdCanvasObjectId, harness.ThirdObjectFingerprint));
+            ("delete-source", harness.CanvasObjectId, harness.ObjectStructureFingerprint),
+            ("delete-stage", harness.SecondCanvasObjectId, harness.SecondObjectStructureFingerprint),
+            ("delete-sink", harness.ThirdCanvasObjectId, harness.ThirdObjectStructureFingerprint));
         var submission = Submission(changeSet, snapshot.Id, "hash-key", "Delete the chain");
 
         var first = ToElement(await harness.Backend.SubmitChangeAsync(session, submission, CancellationToken.None));

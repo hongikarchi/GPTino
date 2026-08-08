@@ -202,6 +202,27 @@ Canvas wiring discipline (mandatory):
 - Never wire buttons or outputs into unrelated x/y inputs to force execution — no fake dependencies.
 - During layout cleanup only move, group, or delete verified orphans — never touch wires, values, or code.
 
+Cleanup discipline (mandatory):
+- Cleanup defaults to NON-destructive. Declare the ChangeSet's intent for cleanup work:
+  "cleanupRelayout" (moveComponent/setLayout only), "cleanupRegroup" (adds setGroup),
+  "cleanupDestructive" (adds deleteComponent; deleting orphans or your own components needs no
+  grant); omit intent for normal authoring — ops outside the declared tier are rejected at submit.
+- Deleting a component that still has wires to SURVIVING components is refused — regardless of
+  intent — unless this session authored its current committed state (authored AND unchanged) or
+  the user approved exactly that (objectId, current structure fingerprint) target. Orphans (every
+  wire ends inside the same delete batch) are always deletable. Cutting dataflow INTO a live
+  foreign component — a bare disconnectWire, or a setComponentIo that drops its wired inputs — is
+  the same act and takes the same rule.
+- Rebuilds run author → rewire → delete-orphans: create the replacement chain, rewire the surviving
+  consumers, COMMIT, then delete the now-orphaned originals in their own ChangeSet. A live foreign
+  delete cannot share a ChangeSet with createComponent/connectWire/updatePythonSource/
+  disconnectWire/setComponentIo/setValue/referenceRhinoObjects.
+- A destructive-cleanup approval_request must explain EACH target: label, role (what the component
+  does in the definition), and impact (which wires get cut / what replaces it), with the
+  component's CURRENT structure fingerprint (the grasshopperComponent resource fingerprint from
+  snapshot/job results — the same one the delete CAS expects) — the user judges the deletion from
+  that card.
+
 Speed discipline (mandatory):
 - A script component (C# by default; Python 3 only when the task needs it) is authored as an ORDERED chain of ChangeSets. Plan the whole chain in one
   deliberation, submit each ChangeSet with wait=true, and chain from each job result's committed block —

@@ -5,18 +5,34 @@ using Microsoft.Data.Sqlite;
 namespace GPTino.AgentHost.Data;
 
 /// <summary>
+/// How a session's ledger claim on a resource was established. DIRECT = the committed writeSet
+/// explicitly declared the resource (or the job created the component) — real authorship.
+/// OBSERVED = the row was recorded from a commit's side-effect snapshot diff (e.g. wiring a
+/// foreign component moved its structure fingerprint). Both origins are equally valid CAS
+/// baselines for gptino:auto / self-stale rebase; ONLY the delete-authorization branch of the
+/// live-wire guard requires DIRECT — merely touching a foreign component must never mint delete
+/// rights over it.
+/// </summary>
+public enum ResourceLedgerOrigin
+{
+    Observed,
+    Direct,
+}
+
+/// <summary>
 /// One durable resource-ledger row: the composite resource key ("Kind:Id:Field" — the doc_key
 /// column scopes it; the in-memory ledger prefixes the same docKey as "{docKey}|Kind:Id:Field"),
-/// the structured address it was built from, and the "this session last committed this
+/// the structured address it was built from, the "this session last committed this
 /// fingerprint at this revision" fact the gptino:auto / self-stale-rebase safety predicate
-/// consults.
+/// consults, and how that claim was established (<see cref="ResourceLedgerOrigin"/>).
 /// </summary>
 public sealed record ResourceLedgerRecord(
     string ResourceKey,
     ResourceAddress Resource,
     string Fingerprint,
     Guid SessionId,
-    long Revision);
+    long Revision,
+    ResourceLedgerOrigin Origin = ResourceLedgerOrigin.Observed);
 
 /// <summary>
 /// Durable mirror of the per-runtime resource ledger ("this session last committed fingerprint X
@@ -33,7 +49,11 @@ public sealed class ResourceLedgerStore
     // Bump on any incompatible table change. A mismatch DROPS the table and starts cold — the
     // ledger is restorable knowledge, so losing it can never lose user data, and it must never
     // crash startup. v2: added the store-side monotonic `seq` column compaction orders by.
-    private const string SchemaVersion = "2";
+    // v3: added the `origin` column (direct vs observed authorship — the delete guard's ownership
+    // branch accepts only DIRECT rows). The v2->v3 mismatch is a documented one-time cold start:
+    // every session loses its auto-fill baselines once and re-earns them on its next commits;
+    // no user data is at risk (a missing row can only ever cause a refusal).
+    private const string SchemaVersion = "3";
 
     // Per-document row cap: deleted resources' rows are never removed (mirroring the in-memory
     // ledger, which also only ever upserts), so growth is bounded here instead — on exceeding
@@ -94,6 +114,7 @@ public sealed class ResourceLedgerStore
                     fingerprint TEXT NOT NULL,
                     revision INTEGER NOT NULL,
                     seq INTEGER NOT NULL,
+                    origin TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(doc_key, resource_key)
                 );
@@ -161,8 +182,8 @@ public sealed class ResourceLedgerStore
                 upsert.CommandText = """
                     INSERT INTO resource_ledger(
                         doc_key,resource_key,resource_kind,resource_id,resource_field,
-                        session_id,fingerprint,revision,seq,updated_at)
-                    VALUES($doc,$key,$kind,$id,$field,$session,$fingerprint,$revision,$seq,$updated)
+                        session_id,fingerprint,revision,seq,origin,updated_at)
+                    VALUES($doc,$key,$kind,$id,$field,$session,$fingerprint,$revision,$seq,$origin,$updated)
                     ON CONFLICT(doc_key,resource_key) DO UPDATE SET
                         resource_kind=excluded.resource_kind,
                         resource_id=excluded.resource_id,
@@ -171,6 +192,7 @@ public sealed class ResourceLedgerStore
                         fingerprint=excluded.fingerprint,
                         revision=excluded.revision,
                         seq=excluded.seq,
+                        origin=excluded.origin,
                         updated_at=excluded.updated_at;
                     """;
                 upsert.Parameters.AddWithValue("$doc", canonicalDocKey);
@@ -182,6 +204,7 @@ public sealed class ResourceLedgerStore
                 upsert.Parameters.AddWithValue("$fingerprint", entry.Fingerprint);
                 upsert.Parameters.AddWithValue("$revision", entry.Revision);
                 upsert.Parameters.AddWithValue("$seq", ++nextSequence);
+                upsert.Parameters.AddWithValue("$origin", entry.Origin.ToString());
                 upsert.Parameters.AddWithValue("$updated", now);
                 await upsert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -223,7 +246,7 @@ public sealed class ResourceLedgerStore
             await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var command = connection.CreateCommand();
             command.CommandText = """
-                SELECT resource_key,resource_kind,resource_id,resource_field,session_id,fingerprint,revision
+                SELECT resource_key,resource_kind,resource_id,resource_field,session_id,fingerprint,revision,origin
                 FROM resource_ledger
                 WHERE doc_key=$doc COLLATE NOCASE;
                 """;
@@ -237,12 +260,19 @@ public sealed class ResourceLedgerStore
                 {
                     continue;
                 }
+                // An unknown origin value (a downgrade reading newer rows) degrades to Observed:
+                // the row keeps its CAS-baseline utility but never mints delete rights.
+                if (!Enum.TryParse<ResourceLedgerOrigin>(reader.GetString(7), ignoreCase: true, out var origin))
+                {
+                    origin = ResourceLedgerOrigin.Observed;
+                }
                 records.Add(new ResourceLedgerRecord(
                     reader.GetString(0),
                     new ResourceAddress(kind, reader.GetString(2), reader.GetString(3)),
                     reader.GetString(5),
                     sessionId,
-                    reader.GetInt64(6)));
+                    reader.GetInt64(6),
+                    origin));
             }
             return records;
         }

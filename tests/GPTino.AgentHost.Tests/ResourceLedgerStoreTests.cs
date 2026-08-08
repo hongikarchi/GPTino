@@ -85,6 +85,32 @@ public sealed class ResourceLedgerStoreTests
     }
 
     [Fact]
+    public async Task OriginColumnRoundTripsBothValues()
+    {
+        // W3 Finding 1(b): the delete guard's ownership branch accepts only DIRECT rows, so the
+        // durable origin must survive the round trip exactly — a dropped/garbled origin would
+        // either grant delete rights to a side-effect row or strip them from a real author.
+        using var directory = new TestDirectory();
+        var store = new ResourceLedgerStore(directory.GetPath("resource-ledger.db"));
+        await store.InitializeAsync();
+        var session = Guid.NewGuid();
+
+        await store.UpsertAsync("doc0000aaaa",
+        [
+            Record("authored", "fp-1", session) with { Origin = ResourceLedgerOrigin.Direct },
+            Record("touched", "fp-2", session) with { Origin = ResourceLedgerOrigin.Observed },
+        ]);
+
+        var stored = await store.ReadDocumentAsync("doc0000aaaa");
+        Assert.Equal(
+            ResourceLedgerOrigin.Direct,
+            Assert.Single(stored, record => record.ResourceKey.Contains(":authored:")).Origin);
+        Assert.Equal(
+            ResourceLedgerOrigin.Observed,
+            Assert.Single(stored, record => record.ResourceKey.Contains(":touched:")).Origin);
+    }
+
+    [Fact]
     public async Task ReadReturnsOnlyTheRequestedDocumentsRows()
     {
         using var directory = new TestDirectory();

@@ -51,8 +51,14 @@ public sealed partial class LiveDocumentBackend
     /// <summary>Post-solve canvas.inspectOutputs result for one written component.</summary>
     internal sealed record JobComponentOutputs(Guid ComponentId, JsonElement Inspection);
 
+    // Origin defaults to Observed — the SAFE default: an origin-less construction can serve as a
+    // CAS baseline (auto-fill / self-stale rebase ignore origin) but never as delete authorization.
     internal readonly record struct ResourceLedgerEntry(
-        ResourceAddress Resource, string Fingerprint, Guid SessionId, long Revision);
+        ResourceAddress Resource,
+        string Fingerprint,
+        Guid SessionId,
+        long Revision,
+        ResourceLedgerOrigin Origin = ResourceLedgerOrigin.Observed);
 
     /// <summary>
     /// Post-commit chaining data: the fresh snapshot identity plus the committed write

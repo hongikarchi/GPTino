@@ -117,6 +117,29 @@ public sealed class FingerprintAutoFillTests
     }
 
     [Fact]
+    public void ObservedOriginEntryStillFillsAuto()
+    {
+        // W3 Finding 1(b) boundary: the origin marker restricts DELETE authorization only. A
+        // side-effect (Observed) row is still this session's own last write of the resource, so
+        // gptino:auto keeps resolving from it — origin must never break CAS filling/rebase.
+        var session = Guid.NewGuid();
+        var source = Source("00000000-0000-0000-0000-0000000000af");
+        var changeSet = ChangeSetWith(session, new ResourceExpectation(source, ResourceExpectation.AutoFingerprint));
+        var snapshot = SnapshotWith(new ResourceFingerprint(source, "fp-observed"));
+        var ledger = new Dictionary<string, LiveDocumentBackend.ResourceLedgerEntry>(StringComparer.Ordinal)
+        {
+            [Key(source)] = new(
+                source, "fp-observed", session, 4, GPTino.AgentHost.Data.ResourceLedgerOrigin.Observed),
+        };
+
+        var (resolved, conflicts) = LiveDocumentBackend.ResolveAutoExpectations(
+            changeSet, snapshot, session, DocKey, ledger);
+
+        Assert.Empty(conflicts);
+        Assert.Equal("fp-observed", Assert.Single(resolved.WriteSet).ExpectedFingerprint);
+    }
+
+    [Fact]
     public void ResourceNeverWrittenByThisSessionIsRefused()
     {
         var session = Guid.NewGuid();

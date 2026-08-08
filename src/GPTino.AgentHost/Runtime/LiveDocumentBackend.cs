@@ -526,8 +526,12 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         {
             return;
         }
+        // Rhino objects AND Grasshopper components: the live-wire delete guard honors grants on
+        // canvas components too, and a consumed component approval must stop covering replays the
+        // same way a Rhino one does (one application per consent).
         var writtenObjectIds = entry.Job.ChangeSet.WriteSet
-            .Where(expectation => expectation.Resource.Kind == ResourceKind.RhinoObject)
+            .Where(expectation => expectation.Resource.Kind is
+                ResourceKind.RhinoObject or ResourceKind.GrasshopperComponent)
             .Select(expectation => Guid.TryParse(expectation.Resource.Id, out var id) ? id : Guid.Empty)
             .Where(id => id != Guid.Empty)
             .ToHashSet();
@@ -1249,7 +1253,9 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             ],
             Array.Empty<VerificationPredicate>(),
             Array.Empty<RollbackBeforeImage>(),
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            // The host's own tidy is declared non-destructive cleanup and passes its own tier gate.
+            Intent: CleanupIntents.Relayout);
 
         var submission = JsonSerializer.SerializeToElement(
             new
@@ -1320,6 +1326,22 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             _logger.LogWarning(exception, "Automatic post-turn tidy failed for session {SessionId}.", session.Id);
             return 0;
         }
+    }
+
+    // Test seam (InternalsVisibleTo): seeds one in-memory resource-ledger row exactly as a
+    // committed job would, so the live-wire delete guard's self-authorship branch can be exercised
+    // without a full authoring round trip. Hydration only TryAdds, so a seeded row survives it.
+    // Origin defaults to Direct — the "this session genuinely authored it" claim the seam exists
+    // to simulate; pass Observed to model a side-effect (snapshot-diff) row instead.
+    internal void SeedResourceLedgerForTests(
+        SessionRecord session,
+        ResourceAddress resource,
+        string fingerprint,
+        ResourceLedgerOrigin origin = ResourceLedgerOrigin.Direct)
+    {
+        var docKey = ResolveSessionTargetState(session).DocKey;
+        _resourceLedger[ResourceLedgerKey(docKey, resource)] =
+            new ResourceLedgerEntry(resource, fingerprint, session.Id, Revision: 0, origin);
     }
 
     // Test seam (InternalsVisibleTo): seeds the per-turn accumulator exactly as a committed create
@@ -1423,6 +1445,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         }
 
         ValidateChangeSet(changeSet, session);
+        ValidateCleanupIntent(changeSet);
         RejectWritesOnEndpointFixAnchors(changeSet);
         var draftOperations = await PreflightDraftOperationsAsync(
             session.Id,
@@ -1510,6 +1533,22 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 $"{snapshot.State.Revision}. Resubmit with baseSnapshotRevision set to -1 (auto) or to the " +
                 "current revision above.");
         }
+
+        // Mixed-batch ban (Layer 1, submit surface): a ChangeSet that deletes a LIVE component this
+        // session did not author (and the user did not approve) must not also carry build or
+        // dataflow-mutating operations — rebuilds are forced into the safe author → rewire →
+        // delete-orphans sequence. Self-authored-only and grant-covered deletes keep full freedom.
+        // Uses the submit-time snapshot for wire topology; authorship comes from the in-memory
+        // ledger with a read-only durable-store consult on a miss (a cold post-restart ledger must
+        // not false-teach "did not author it"; the execute-time guard re-checks after hydration).
+        await RejectLiveForeignDeleteMixedBatchAsync(
+            changeSet,
+            draftOperations,
+            snapshot.Canvas,
+            session.Id,
+            targetState.DocKey,
+            approvalItems,
+            cancellationToken).ConfigureAwait(false);
 
         await RefreshScheduleAsync(cancellationToken).ConfigureAwait(false);
         LiveJobEntry entry;
@@ -1981,7 +2020,12 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 before.State.Revision,
                 execution.Token).ConfigureAwait(false);
             PreflightPythonSchemas(preparedOperations, before);
-            PreflightDeterministicAdapterRejections(preparedOperations, before);
+            PreflightDeterministicAdapterRejections(
+                preparedOperations,
+                before,
+                job.ChangeSet.SessionId,
+                targetState.DocKey,
+                entry.ApprovalItems);
             // After the synchronous rejections so the cheaper, more specific instance/type
             // confusion guard wins over the catalog lookup for the same bogus GUID.
             await PreflightCanvasCreateComponentTypesAsync(
@@ -2194,6 +2238,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                     before,
                     after,
                     operationObservations,
+                    job.ChangeSet,
                     job.ChangeSet.SessionId,
                     job.JobId).ConfigureAwait(false);
                 var message = string.Join(" ", verificationProblems);
@@ -2241,6 +2286,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 before,
                 after,
                 operationObservations,
+                job.ChangeSet,
                 job.ChangeSet.SessionId,
                 job.JobId).ConfigureAwait(false);
             AccumulateTurnCreatedComponents(job.ChangeSet.SessionId, before.Canvas, after.Canvas);
@@ -3997,25 +4043,54 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
     // and every type hint (the adapter accepts ANY hint and degrades unknown ones to a generic
     // socket — see GrasshopperPythonFoundationAdapter.ResolveSafeType and the accept-all comment
     // above its allowObject branch — so a hint whitelist here would mint new false declines).
-    private static void PreflightDeterministicAdapterRejections(
+    private void PreflightDeterministicAdapterRejections(
         IReadOnlyList<PreparedOperation> prepared,
-        SnapshotEnvelope before)
+        SnapshotEnvelope before,
+        Guid sessionId,
+        string docKey,
+        IReadOnlyDictionary<Guid, string>? approvalItems)
     {
+        // The batch's whole delete-target set, computed once: a wire whose OTHER endpoint is also
+        // being deleted is internal to the batch and never makes a target "live".
+        HashSet<Guid>? deleteTargets = null;
         foreach (var item in prepared)
         {
             switch (item.BridgeOperation)
             {
                 case "canvas.setWire":
                     PreflightWireEndpoints(item, prepared, before);
+                    PreflightLiveWireDisconnectGuard(
+                        item,
+                        deleteTargets ??= CollectCanvasDeleteTargets(prepared),
+                        before,
+                        sessionId,
+                        docKey,
+                        approvalItems);
                     break;
                 case "canvas.create":
                     PreflightCreateTypeInstanceConfusion(item, before);
+                    break;
+                case "canvas.delete":
+                    PreflightLiveWireDeleteGuard(
+                        item,
+                        deleteTargets ??= CollectCanvasDeleteTargets(prepared),
+                        before,
+                        sessionId,
+                        docKey,
+                        approvalItems);
                     break;
                 case "python.setTyping":
                     PreflightTypingTarget(item, prepared, before);
                     break;
                 case "python.setSchema":
                     PreflightSchemaSocketNames(item, prepared, before);
+                    PreflightForeignSchemaWireDropGuard(
+                        item,
+                        deleteTargets ??= CollectCanvasDeleteTargets(prepared),
+                        before,
+                        sessionId,
+                        docKey,
+                        approvalItems);
                     break;
                 case "python.execute":
                     PreflightExecuteCost(item, before);
@@ -4025,6 +4100,479 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                     PreflightSdkSourceGuard(item);
                     break;
             }
+        }
+    }
+
+    // ----- Live-wire delete guard (W3 Layer 1) --------------------------------------------------
+    //
+    // "Cleanup" must be physically unable to destroy a working definition. A delete target with NO
+    // survivor-adjacent wires (every wire touching it has its other endpoint also in the batch's
+    // delete set) is an orphan and stays freely deletable. A target that still feeds/consumes a
+    // SURVIVING component is LIVE: deleting it cuts working dataflow, so it is allowed only when
+    // (a) the resource ledger proves THIS session authored it — a DIRECT-origin row of this session
+    // whose fingerprint still equals the component's CURRENT structure fingerprint (same session
+    // AND unchanged; a user rewire voids the claim, and a mere side-effect touch never minted one),
+    // or (b) the job's user-approval grant covers (objectId, current STRUCTURE fingerprint — the
+    // same domain the delete CAS validates). Everything else is refused PRE-WRITE as
+    // precondition_refused, so classification stays a clean Failed. The same 3-branch decision
+    // guards DATAFLOW-CUTTING ops: a bare wire disconnect whose consumer is a live foreign
+    // component, and a schema write that would drop a foreign component's wired inputs — otherwise
+    // "orphan it in changeset 1, delete it freely in changeset 2" reduces approval to submitting
+    // twice. Applies to EVERY ChangeSet regardless of any declared cleanup intent.
+
+    private static HashSet<Guid> CollectCanvasDeleteTargets(IReadOnlyList<PreparedOperation> prepared)
+    {
+        var targets = new HashSet<Guid>();
+        foreach (var item in prepared)
+        {
+            if (string.Equals(item.BridgeOperation, "canvas.delete", StringComparison.Ordinal) &&
+                item.Arguments.TryGetProperty("objectId", out var idElement) &&
+                idElement.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(idElement.GetString(), out var objectId))
+            {
+                targets.Add(objectId);
+            }
+        }
+        return targets;
+    }
+
+    /// <summary>
+    /// The delete target's wires whose OTHER endpoint survives the batch, as human-readable
+    /// "source nick → target nick" strings. Uses the same wire union the consumer-first delete
+    /// reorder uses (canvas wires + each input's CurrentSources). Empty = the target is an orphan.
+    /// </summary>
+    internal static IReadOnlyList<string> SurvivorAdjacentWires(
+        CanvasSnapshot canvas,
+        Guid target,
+        IReadOnlySet<Guid> deleteTargets)
+    {
+        var names = new Dictionary<Guid, string>();
+        foreach (var item in canvas.Objects)
+        {
+            names[item.ObjectId] = string.IsNullOrWhiteSpace(item.Name)
+                ? item.ObjectId.ToString("D")
+                : item.Name;
+        }
+        string Label(Guid id) => names.TryGetValue(id, out var name) ? name : id.ToString("D");
+
+        var edges = new HashSet<(Guid Source, Guid Consumer)>();
+        foreach (var wire in canvas.Wires)
+        {
+            if (wire.SourceObjectId != wire.TargetObjectId)
+            {
+                edges.Add((wire.SourceObjectId, wire.TargetObjectId));
+            }
+        }
+        foreach (var item in canvas.Objects)
+        {
+            foreach (var input in item.Inputs)
+            {
+                foreach (var source in input.CurrentSources)
+                {
+                    if (source.OwnerObjectId != item.ObjectId)
+                    {
+                        edges.Add((source.OwnerObjectId, item.ObjectId));
+                    }
+                }
+            }
+        }
+
+        var survivorWires = new List<string>();
+        foreach (var (source, consumer) in edges)
+        {
+            var other = source == target ? consumer
+                : consumer == target ? source
+                : (Guid?)null;
+            if (other is null || deleteTargets.Contains(other.Value))
+            {
+                continue;
+            }
+            survivorWires.Add($"{Label(source)} → {Label(consumer)}");
+        }
+        return survivorWires;
+    }
+
+    /// <summary>
+    /// The component's current STRUCTURE fingerprint — the domain the delete CAS validates and
+    /// snapshot/job results expose for the grasshopperComponent resource. Falls back to the
+    /// whole-object hash only when the adapter did not compute per-domain hashes (legacy
+    /// adapters/test fakes), mirroring BuildResources exactly.
+    /// </summary>
+    private static string? CurrentStructureFingerprint(CanvasObjectState? liveObject) =>
+        liveObject is null
+            ? null
+            : string.IsNullOrEmpty(liveObject.StructureFingerprint)
+                ? liveObject.Fingerprint
+                : liveObject.StructureFingerprint;
+
+    /// <summary>
+    /// The full self-authorship safety predicate over one ledger claim: same session AND a DIRECT
+    /// origin (the committed writeSet declared the component, or the op created it — a side-effect
+    /// snapshot-diff row never authorizes a delete) AND unchanged (the recorded fingerprint still
+    /// equals the component's current structure fingerprint — a manual user rewire voids the
+    /// claim). Shared by the in-memory guard and the submit-time durable-store consult.
+    /// </summary>
+    private static bool ProvesSelfAuthorship(
+        Guid entrySessionId,
+        ResourceLedgerOrigin entryOrigin,
+        string entryFingerprint,
+        Guid sessionId,
+        CanvasObjectState? liveObject) =>
+        entrySessionId == sessionId &&
+        entryOrigin == ResourceLedgerOrigin.Direct &&
+        CurrentStructureFingerprint(liveObject) is { } currentStructure &&
+        string.Equals(entryFingerprint, currentStructure, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The in-memory ledger's doc-scoped GrasshopperComponent row proves this session authored the
+    /// component AND its committed state is unchanged (see <see cref="ProvesSelfAuthorship"/>).
+    /// </summary>
+    private bool IsSelfAuthoredComponent(
+        string docKey,
+        Guid sessionId,
+        Guid objectId,
+        CanvasObjectState? liveObject) =>
+        _resourceLedger.TryGetValue(
+            ResourceLedgerKey(
+                docKey,
+                new ResourceAddress(ResourceKind.GrasshopperComponent, objectId.ToString("D"))),
+            out var entry) &&
+        ProvesSelfAuthorship(entry.SessionId, entry.Origin, entry.Fingerprint, sessionId, liveObject);
+
+    /// <summary>The job's resolved approval grant covers (objectId, current structure fingerprint).</summary>
+    private static bool ApprovalCoversComponent(
+        IReadOnlyDictionary<Guid, string>? approvalItems,
+        Guid objectId,
+        CanvasObjectState? liveObject) =>
+        approvalItems is not null &&
+        liveObject is not null &&
+        approvalItems.TryGetValue(objectId, out var approvedFingerprint) &&
+        CurrentStructureFingerprint(liveObject) is { } currentStructure &&
+        string.Equals(approvedFingerprint, currentStructure, StringComparison.Ordinal);
+
+    private void PreflightLiveWireDeleteGuard(
+        PreparedOperation item,
+        IReadOnlySet<Guid> deleteTargets,
+        SnapshotEnvelope before,
+        Guid sessionId,
+        string docKey,
+        IReadOnlyDictionary<Guid, string>? approvalItems)
+    {
+        if (!item.Arguments.TryGetProperty("objectId", out var idElement) ||
+            idElement.ValueKind != JsonValueKind.String ||
+            !Guid.TryParse(idElement.GetString(), out var objectId))
+        {
+            return; // unreadable target — the adapter's own validation owns that refusal
+        }
+        var survivorWires = SurvivorAdjacentWires(before.Canvas, objectId, deleteTargets);
+        if (survivorWires.Count == 0)
+        {
+            return; // orphan (or wired only into this batch's other deletes) — always deletable
+        }
+        var liveObject = before.Canvas.Objects.FirstOrDefault(candidate => candidate.ObjectId == objectId);
+        if (IsSelfAuthoredComponent(docKey, sessionId, objectId, liveObject))
+        {
+            return; // this session authored it and it is unchanged — full freedom over its own work
+        }
+        if (ApprovalCoversComponent(approvalItems, objectId, liveObject))
+        {
+            return; // the user approved exactly this (objectId, current structure fingerprint)
+        }
+        var label = liveObject is null || string.IsNullOrWhiteSpace(liveObject.Name)
+            ? objectId.ToString("D")
+            : liveObject.Name;
+        throw new BridgeProtocolException(
+            PreconditionRefusedFailureCode,
+            $"Operation '{item.Operation.OperationId}': component '{label}' ({objectId:D}) is LIVE — " +
+            $"deleting it would cut wires to surviving components: {string.Join(", ", survivorWires)}. " +
+            "This session did not author its current committed state and no user approval covers it, " +
+            "so the delete is refused before any write. Either (1) wire the surviving consumers to the " +
+            "replacement chain and commit that first, so this component becomes an orphan and is freely " +
+            "deletable, or (2) request the user's approval via approval_request — one target with this " +
+            "objectId and the component's CURRENT structure fingerprint (the grasshopperComponent " +
+            "resource fingerprint from snapshot/job results), plus its role and impact — and resubmit " +
+            "with the granted approvalGrantId.");
+    }
+
+    /// <summary>
+    /// Dataflow-cutting disconnect gate (same class as the live-foreign delete): a bare
+    /// canvas.setWire disconnect whose CONSUMER endpoint (the component losing an input) is a
+    /// live foreign component takes the same 3-branch decision — consumer self-authored, approval
+    /// grant covering the consumer, or refused pre-write. Disconnects whose consumer is
+    /// self-authored, created in this batch, or itself in the batch's delete set stay free, so
+    /// rewiring your own chain never regresses.
+    /// </summary>
+    private void PreflightLiveWireDisconnectGuard(
+        PreparedOperation item,
+        IReadOnlySet<Guid> deleteTargets,
+        SnapshotEnvelope before,
+        Guid sessionId,
+        string docKey,
+        IReadOnlyDictionary<Guid, string>? approvalItems)
+    {
+        if (!item.Arguments.TryGetProperty("action", out var actionElement) ||
+            actionElement.ValueKind != JsonValueKind.String ||
+            !string.Equals(actionElement.GetString(), "disconnect", StringComparison.OrdinalIgnoreCase) ||
+            !item.Arguments.TryGetProperty("wire", out var wire) ||
+            wire.ValueKind != JsonValueKind.Object ||
+            !wire.TryGetProperty("sourceObjectId", out var sourceElement) ||
+            !sourceElement.TryGetGuid(out var sourceObjectId) ||
+            !wire.TryGetProperty("targetObjectId", out var targetElement) ||
+            !targetElement.TryGetGuid(out var consumerObjectId))
+        {
+            return; // connects and unreadable payloads — the adapter's own validation owns those
+        }
+        if (deleteTargets.Contains(consumerObjectId))
+        {
+            return; // the consumer is being deleted by this same batch — its delete op is the guarded act
+        }
+        var consumer = before.Canvas.Objects.FirstOrDefault(candidate => candidate.ObjectId == consumerObjectId);
+        if (consumer is null)
+        {
+            return; // created inside this ChangeSet (or unknown) — nothing live is being cut
+        }
+        if (!WireEdgeExists(before.Canvas, sourceObjectId, consumerObjectId))
+        {
+            return; // no live dataflow between the endpoints — a no-op disconnect cuts nothing
+        }
+        if (IsSelfAuthoredComponent(docKey, sessionId, consumerObjectId, consumer))
+        {
+            return; // rewiring its own chain — full freedom
+        }
+        if (ApprovalCoversComponent(approvalItems, consumerObjectId, consumer))
+        {
+            return; // the user approved touching exactly this consumer at its current structure
+        }
+        var names = new Dictionary<Guid, string>();
+        foreach (var candidate in before.Canvas.Objects)
+        {
+            names[candidate.ObjectId] = string.IsNullOrWhiteSpace(candidate.Name)
+                ? candidate.ObjectId.ToString("D")
+                : candidate.Name;
+        }
+        string Label(Guid id) => names.TryGetValue(id, out var name) ? name : id.ToString("D");
+        throw new BridgeProtocolException(
+            PreconditionRefusedFailureCode,
+            $"Operation '{item.Operation.OperationId}': disconnecting wire " +
+            $"{Label(sourceObjectId)} → {Label(consumerObjectId)} cuts dataflow into live component " +
+            $"'{Label(consumerObjectId)}' ({consumerObjectId:D}), which this session did not author " +
+            "and no user approval covers. Orphaning a foreign component is the same act as deleting " +
+            "it, so the disconnect is refused before any write. Either (1) make this rewire part of " +
+            "the batch that also handles the consumer (wire the replacement first, or delete the " +
+            "consumer in the same approved batch), or (2) request the user's approval via " +
+            "approval_request — one target with the consumer's objectId and its CURRENT structure " +
+            "fingerprint, plus its role and impact — and resubmit with the granted approvalGrantId.");
+    }
+
+    /// <summary>
+    /// Dataflow-cutting schema gate: a python.setSchema on a live foreign component whose declared
+    /// inputs no longer include a currently WIRED input (by name) would drop or rebind that wire —
+    /// the same class of cut as a bare disconnect, so it takes the same 3-branch decision. The
+    /// append-only count preflight already refuses shrinking schemas for everyone; this guards the
+    /// rename/reorder path that leaves counts intact but abandons a wired socket.
+    /// </summary>
+    private void PreflightForeignSchemaWireDropGuard(
+        PreparedOperation item,
+        IReadOnlySet<Guid> deleteTargets,
+        SnapshotEnvelope before,
+        Guid sessionId,
+        string docKey,
+        IReadOnlyDictionary<Guid, string>? approvalItems)
+    {
+        if (!item.Arguments.TryGetProperty("componentId", out var componentElement) ||
+            !componentElement.TryGetGuid(out var componentId) ||
+            deleteTargets.Contains(componentId))
+        {
+            return; // unreadable, or the component is deleted by this batch (that delete is guarded)
+        }
+        var component = before.Canvas.Objects.FirstOrDefault(candidate => candidate.ObjectId == componentId);
+        if (component is null)
+        {
+            return; // created inside this ChangeSet — nothing live is being reshaped
+        }
+        var declaredInputNames = new HashSet<string>(
+            SchemaSocketNames(item.Arguments, "inputs"),
+            StringComparer.Ordinal);
+        var droppedWiredInputs = component.Inputs
+            .Where(input => input.CurrentSources.Count > 0 && !declaredInputNames.Contains(input.Name))
+            .ToArray();
+        if (droppedWiredInputs.Length == 0)
+        {
+            return; // every wired input survives by name — no dataflow is cut
+        }
+        if (IsSelfAuthoredComponent(docKey, sessionId, componentId, component))
+        {
+            return; // reshaping its own component — full freedom
+        }
+        if (ApprovalCoversComponent(approvalItems, componentId, component))
+        {
+            return; // the user approved touching exactly this component at its current structure
+        }
+        var cutWires = droppedWiredInputs
+            .SelectMany(input => input.CurrentSources.Select(source =>
+            {
+                var owner = before.Canvas.Objects.FirstOrDefault(
+                    candidate => candidate.ObjectId == source.OwnerObjectId);
+                var ownerLabel = owner is null || string.IsNullOrWhiteSpace(owner.Name)
+                    ? source.OwnerObjectId.ToString("D")
+                    : owner.Name;
+                return $"{ownerLabel} → {input.Name}";
+            }))
+            .ToArray();
+        var label = string.IsNullOrWhiteSpace(component.Name) ? componentId.ToString("D") : component.Name;
+        throw new BridgeProtocolException(
+            PreconditionRefusedFailureCode,
+            $"Operation '{item.Operation.OperationId}': the declared schema for live component " +
+            $"'{label}' ({componentId:D}) no longer lists its wired input(s) " +
+            $"{string.Join(", ", droppedWiredInputs.Select(input => $"'{input.Name}'"))} — applying it " +
+            $"would cut dataflow: {string.Join(", ", cutWires)}. This session did not author the " +
+            "component and no user approval covers it, so the write is refused before any change. " +
+            "Keep every wired input's name in the declared inputs (append-only, renames included), or " +
+            "request the user's approval via approval_request — one target with this componentId and " +
+            "its CURRENT structure fingerprint — and resubmit with the granted approvalGrantId.");
+    }
+
+    /// <summary>An edge source → consumer exists in the live wire union (canvas wires + CurrentSources).</summary>
+    private static bool WireEdgeExists(CanvasSnapshot canvas, Guid source, Guid consumer) =>
+        canvas.Wires.Any(wire => wire.SourceObjectId == source && wire.TargetObjectId == consumer) ||
+        canvas.Objects.Any(item => item.ObjectId == consumer &&
+            item.Inputs.Any(input => input.CurrentSources.Any(candidate => candidate.OwnerObjectId == source)));
+
+    // The op kinds banned alongside an UNAUTHORIZED live-foreign delete: the build ops (rebuilds
+    // are forced into author → rewire → delete-orphans) plus every other dataflow/state-mutating
+    // op that could disguise the same rebuild in one batch (disconnects, schema edits, value
+    // writes, Rhino-reference retargets).
+    private static readonly OperationKind[] LiveForeignDeleteBannedKinds =
+    [
+        OperationKind.CreateComponent,
+        OperationKind.ConnectWire,
+        OperationKind.UpdatePythonSource,
+        OperationKind.DisconnectWire,
+        OperationKind.SetComponentIo,
+        OperationKind.SetValue,
+        OperationKind.ReferenceRhinoObjects,
+    ];
+
+    /// <summary>
+    /// Submit-time mixed-batch ban: when the delete set contains ANY live component this session
+    /// did not author and the user did not approve, the same ChangeSet must not also carry build
+    /// or dataflow-mutating operations (<see cref="LiveForeignDeleteBannedKinds"/>). Forces
+    /// rebuilds into author → rewire → delete-orphans. When the in-memory ledger has no row for a
+    /// target (typical right after a restart, before the worker hydrates the doc), the durable
+    /// <see cref="ResourceLedgerStore"/> is consulted READ-ONLY — the in-memory ledger is never
+    /// mutated from the submit thread; hydration stays worker-only.
+    /// </summary>
+    internal async Task RejectLiveForeignDeleteMixedBatchAsync(
+        ChangeSet changeSet,
+        IReadOnlyList<PreparedOperation> draftOperations,
+        CanvasSnapshot canvas,
+        Guid sessionId,
+        string docKey,
+        IReadOnlyDictionary<Guid, string>? approvalItems,
+        CancellationToken cancellationToken)
+    {
+        var bannedOperations = changeSet.Operations
+            .Where(operation => LiveForeignDeleteBannedKinds.Contains(operation.Kind))
+            .Select(operation => $"'{operation.OperationId}' ({operation.Kind})")
+            .ToArray();
+        if (bannedOperations.Length == 0)
+        {
+            return;
+        }
+        var deleteTargets = CollectCanvasDeleteTargets(draftOperations);
+        if (deleteTargets.Count == 0)
+        {
+            return;
+        }
+        // Lazily fetched, read-only durable rows for THIS doc — only when an in-memory miss makes
+        // the durable store the last authorship witness before a conservative refusal.
+        IReadOnlyDictionary<string, ResourceLedgerRecord>? durableRows = null;
+        foreach (var item in draftOperations)
+        {
+            if (!string.Equals(item.BridgeOperation, "canvas.delete", StringComparison.Ordinal) ||
+                !item.Arguments.TryGetProperty("objectId", out var idElement) ||
+                idElement.ValueKind != JsonValueKind.String ||
+                !Guid.TryParse(idElement.GetString(), out var objectId))
+            {
+                continue;
+            }
+            if (SurvivorAdjacentWires(canvas, objectId, deleteTargets).Count == 0)
+            {
+                continue;
+            }
+            var liveObject = canvas.Objects.FirstOrDefault(candidate => candidate.ObjectId == objectId);
+            if (IsSelfAuthoredComponent(docKey, sessionId, objectId, liveObject) ||
+                ApprovalCoversComponent(approvalItems, objectId, liveObject))
+            {
+                continue;
+            }
+            var resourceKey = $"{ResourceKind.GrasshopperComponent}:{objectId:D}:*";
+            var inMemoryRowExists = _resourceLedger.ContainsKey(ResourceLedgerKey(docKey, resourceKey));
+            if (!inMemoryRowExists)
+            {
+                durableRows ??= await ReadDurableLedgerRowsReadOnlyAsync(docKey, cancellationToken)
+                    .ConfigureAwait(false);
+                if (durableRows.TryGetValue(resourceKey, out var record))
+                {
+                    if (ProvesSelfAuthorship(
+                            record.SessionId, record.Origin, record.Fingerprint, sessionId, liveObject))
+                    {
+                        continue; // the durable ledger proves authorship the cold runtime forgot
+                    }
+                    inMemoryRowExists = true; // knowledge exists — the honest cause IS non-authorship
+                }
+            }
+            if (!inMemoryRowExists)
+            {
+                // No row anywhere: authorship genuinely could not be confirmed — say so instead of
+                // asserting "did not author", and teach the two real remedies.
+                throw new InvalidOperationException(
+                    $"Operation '{item.Operation.OperationId}' deletes live component {objectId:D} " +
+                    "(it still has wires to surviving components), and this session's authorship of it " +
+                    "could not be confirmed (neither the runtime nor the durable resource ledger has a " +
+                    $"row for it), so it cannot share a ChangeSet with: {string.Join(", ", bannedOperations)}. " +
+                    "Either submit the deletes in their own ChangeSet — execution re-checks authorship " +
+                    "after the ledger is hydrated — or request the user's approval via approval_request " +
+                    "and resubmit with the granted approvalGrantId.");
+            }
+            throw new InvalidOperationException(
+                $"Operation '{item.Operation.OperationId}' deletes live component {objectId:D} " +
+                "(it still has wires to surviving components and this session did not author its " +
+                "current committed state), " +
+                $"but the same ChangeSet also contains build/mutation operations: {string.Join(", ", bannedOperations)}. " +
+                "Rebuilds run author → rewire → delete-orphans: submit the creates/wires/source writes " +
+                "first and commit them so the old component becomes an orphan, then delete it in its own " +
+                "ChangeSet (with user approval via approval_request if it is still live).");
+        }
+    }
+
+    /// <summary>
+    /// Read-only durable-ledger consult for the submit thread, keyed by the docKey-less composite
+    /// resource key. Any store trouble degrades to "no rows" — the caller then refuses
+    /// conservatively, which a resubmit-after-hydration or an approval can always resolve.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, ResourceLedgerRecord>> ReadDurableLedgerRowsReadOnlyAsync(
+        string docKey,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var records = await _resourceLedgerStore.ReadDocumentAsync(docKey, cancellationToken)
+                .ConfigureAwait(false);
+            var map = new Dictionary<string, ResourceLedgerRecord>(records.Count, StringComparer.Ordinal);
+            foreach (var record in records)
+            {
+                map[record.ResourceKey] = record;
+            }
+            return map;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                exception,
+                "Submit-time durable ledger consult for doc {DocKey} failed; treating it as empty.",
+                docKey);
+            return new Dictionary<string, ResourceLedgerRecord>(StringComparer.Ordinal);
         }
     }
 
@@ -5668,6 +6216,9 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             state = state.ToString().ToLowerInvariant(),
             phase = entry.Phase,
             message = entry.Message,
+            // The declared cleanup intent (null for authoring): the cheap surface that lets the
+            // panel/history label cleanup jobs (e.g. "정리(비파괴)") without re-reading the ChangeSet.
+            intent = entry.Job.ChangeSet.Intent,
             duplicate,
             enqueueSequence = entry.Job.EnqueueSequence,
             committed = ProjectJobView(entry.Committed, entry),
@@ -5805,12 +6356,43 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
         SnapshotEnvelope before,
         SnapshotEnvelope after,
         IReadOnlyList<ResourceObservation> observations,
+        ChangeSet changeSet,
         Guid sessionId,
         Guid jobId)
     {
         try
         {
             var docKey = targetState.DocKey;
+            // Origin/provenance inputs: a row is DIRECT when the committed writeSet explicitly
+            // declared that resource, or the job created the component (its sub-domain rows share
+            // the claim) — everything the snapshot diff merely OBSERVED (e.g. a foreign component
+            // whose structure fingerprint moved because this job wired it) stays OBSERVED and can
+            // never authorize a delete. A session's established DIRECT claim survives its own
+            // later side-effect updates (see OriginOf) so rewiring your own chain never demotes it.
+            var declaredResourceKeys = changeSet.WriteSet
+                .Select(expectation =>
+                    $"{expectation.Resource.Kind}:{expectation.Resource.Id}:{expectation.Resource.Field}")
+                .ToHashSet(StringComparer.Ordinal);
+            var beforeObjectIdSet = before.Canvas.Objects.Select(item => item.ObjectId).ToHashSet();
+            var createdComponentIdKeys = after.Canvas.Objects
+                .Where(item => !beforeObjectIdSet.Contains(item.ObjectId))
+                .Select(item => item.ObjectId.ToString("D"))
+                .ToHashSet(StringComparer.Ordinal);
+            ResourceLedgerOrigin OriginOf(string key, ResourceAddress resource)
+            {
+                if (declaredResourceKeys.Contains(key) || createdComponentIdKeys.Contains(resource.Id))
+                {
+                    return ResourceLedgerOrigin.Direct;
+                }
+                // The same session's own commits advance its resources' fingerprints as a side
+                // effect (a wire moves the consumer's structure hash); the authorship FACT does not
+                // change, so an existing DIRECT claim of THIS session is preserved, never demoted.
+                return _resourceLedger.TryGetValue(ResourceLedgerKey(docKey, key), out var existing) &&
+                    existing.SessionId == sessionId &&
+                    existing.Origin == ResourceLedgerOrigin.Direct
+                        ? ResourceLedgerOrigin.Direct
+                        : ResourceLedgerOrigin.Observed;
+            }
             var beforeFingerprints = before.State.Resources.ToDictionary(
                 item => $"{item.Resource.Kind}:{item.Resource.Id}:{item.Resource.Field}",
                 item => item.Fingerprint,
@@ -5873,7 +6455,6 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             // wire→execute(auto) chain: the wire re-solve can change runtime messages, moving the
             // shared Python-state fingerprint). A foreign session's rows are never refreshed —
             // its next auto declines on the drift, which is the correct outcome.
-            var beforeObjectIds = before.Canvas.Objects.Select(item => item.ObjectId).ToHashSet();
             foreach (var component in after.Canvas.Objects)
             {
                 var id = component.ObjectId.ToString("D");
@@ -5883,7 +6464,7 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                 {
                     continue;
                 }
-                var created = !beforeObjectIds.Contains(component.ObjectId);
+                var created = !beforeObjectIdSet.Contains(component.ObjectId);
                 var owned = ScriptSubDomainKinds.Any(kind =>
                     _resourceLedger.TryGetValue(
                         ResourceLedgerKey(docKey, new ResourceAddress(kind, id)),
@@ -5920,6 +6501,9 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
             var changedRecords = new List<ResourceLedgerRecord>(records.Count);
             foreach (var (key, value) in records)
             {
+                // Origin is decided BEFORE the in-memory upsert below overwrites the row OriginOf
+                // consults for the same-session preserve rule.
+                var origin = OriginOf(key, value.Resource);
                 // In-memory key is doc-scoped ("{docKey}|{kind}:{id}:{field}") like the durable
                 // row; the durable ResourceKey column keeps the docKey-less composite (the
                 // doc_key column already scopes it).
@@ -5927,13 +6511,15 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                     value.Resource,
                     value.Fingerprint,
                     sessionId,
-                    after.State.Revision);
+                    after.State.Revision,
+                    origin);
                 changedRecords.Add(new ResourceLedgerRecord(
                     key,
                     value.Resource,
                     value.Fingerprint,
                     sessionId,
-                    after.State.Revision));
+                    after.State.Revision,
+                    origin));
             }
             // CancellationToken.None: the write physically landed; a cancelled turn must not
             // skip recording it (the whole point is surviving interruption).
@@ -6012,7 +6598,8 @@ public sealed partial class LiveDocumentBackend : BackgroundService, ILiveDocume
                     record.Resource,
                     record.Fingerprint,
                     record.SessionId,
-                    record.Revision));
+                    record.Revision,
+                    record.Origin));
             }
         }
         catch (OperationCanceledException)

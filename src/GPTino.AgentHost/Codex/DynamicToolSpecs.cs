@@ -1,3 +1,5 @@
+using GPTino.Contracts;
+
 namespace GPTino.AgentHost.Codex;
 
 internal static class DynamicToolSpecs
@@ -316,7 +318,15 @@ internal static class DynamicToolSpecs
                     "If the returned state is still queued/executing — normal when other sessions are ahead — fall back to " +
                     "polling job_status; the jobId is always returned. state=failed with an applied block means the writes " +
                     "landed but did not commit (e.g. script compile/runtime errors): read diagnostics[], fix, and resubmit " +
-                    "with gptino:auto — the retry is not stale-blocked. " + PayloadGuide,
+                    "with gptino:auto — the retry is not stale-blocked. CLEANUP TIERS: cleanup ChangeSets declare " +
+                    "changeSet.intent — cleanupRelayout (moveComponent/setLayout only), cleanupRegroup (adds setGroup), " +
+                    "cleanupDestructive (adds deleteComponent; deleting orphans or your own components needs no grant); " +
+                    "omit intent for authoring. Regardless of intent, deleting a component that still has wires to " +
+                    "surviving components is refused unless this session authored it (and it is unchanged) or the user " +
+                    "approved that exact (objectId, current STRUCTURE fingerprint) — the same gate covers cutting " +
+                    "dataflow INTO a live foreign component (a bare disconnectWire, or a setComponentIo dropping its " +
+                    "wired inputs). Rebuilds run author → rewire → delete-orphans, and a live foreign delete cannot " +
+                    "share a ChangeSet with create/wire/source/disconnect/schema/value/reference operations. " + PayloadGuide,
                     new
                     {
                         type = "object",
@@ -471,12 +481,19 @@ internal static class DynamicToolSpecs
                     }),
                 Function(
                     "approval_request",
-                    "Ask the user to approve destructive fixes to geometry THEY made. The broker refuses " +
+                    "Ask the user to approve destructive fixes to geometry THEY made — and destructive " +
+                    "CLEANUP of live Grasshopper components you did not author. The broker refuses " +
                     "delete/modify/transform on objects without GPTino provenance unless the ChangeSet " +
                     "carries an approvalGrantId, and this is how you get one. List exactly what you would " +
                     "touch, one item per finding, each with the objectIds AND the fingerprints rhino_audit " +
                     "returned — the grant binds to those fingerprints, so a stale one fails the fix instead " +
-                    "of hitting a moved object. Add choices when the machine must not decide (which of two " +
+                    "of hitting a moved object. For destructive-cleanup approval on Grasshopper components, " +
+                    "fill each target completely: objectId = the component INSTANCE id, fingerprint = the " +
+                    "same fingerprint the delete CAS expects — the component's STRUCTURE fingerprint, i.e. " +
+                    "the grasshopperComponent resource fingerprint from snapshot/job results, label = a " +
+                    "short name, role = what the component does in the definition, impact = what changes if " +
+                    "it is deleted (which wires get cut / what replaces it) — the user judges the deletion " +
+                    "from those lines. Add choices when the machine must not decide (which of two " +
                     "near-duplicates to keep is always the user's call). Never bundle unrelated fixes into " +
                     "one item. This tool does NOT change anything: after calling it, end your turn. The " +
                     "granted items and the grantId arrive with the next turn.",
@@ -505,8 +522,11 @@ internal static class DynamicToolSpecs
                                                 type = "object",
                                                 properties = new
                                                 {
-                                                    objectId = new { type = "string", format = "uuid" },
-                                                    fingerprint = new { type = "string", description = "The fingerprint the audit reported for that object." }
+                                                    objectId = new { type = "string", format = "uuid", description = "Rhino object id, or the Grasshopper component INSTANCE id for canvas cleanup." },
+                                                    fingerprint = new { type = "string", description = "The fingerprint the audit reported — for a GH component, the same fingerprint the delete CAS expects: its CURRENT structure fingerprint (the grasshopperComponent resource fingerprint from snapshot/job results)." },
+                                                    label = new { type = "string", description = "Short display name for this target, in the user's language." },
+                                                    role = new { type = "string", description = "What this component does in the definition (fill for destructive cleanup)." },
+                                                    impact = new { type = "string", description = "What changes if it is deleted — which wires get cut, what replaces it." }
                                                 },
                                                 required = new[] { "objectId", "fingerprint" },
                                                 additionalProperties = false
@@ -620,6 +640,17 @@ internal static class DynamicToolSpecs
                     "provenance stamps — i.e. the user's own geometry. The user mints it by " +
                     "approving on the audit card; never invent one. Never author approved or " +
                     "sourceDocKey fields yourself — the server injects them."
+            },
+            intent = new
+            {
+                type = "string",
+                @enum = new[] { CleanupIntents.Relayout, CleanupIntents.Regroup, CleanupIntents.Destructive },
+                description = "Declared cleanup tier; omit for authoring work. cleanupRelayout admits " +
+                    "moveComponent/setLayout; cleanupRegroup adds setGroup; cleanupDestructive adds " +
+                    "deleteComponent — no grant needed for orphans or components this session authored. " +
+                    "Ops outside the declared tier are rejected at submit. Deleting live (survivor-wired) " +
+                    "components you did not author still needs user approval (approvalGrantId) " +
+                    "regardless of tier."
             }
         },
         required = new[]

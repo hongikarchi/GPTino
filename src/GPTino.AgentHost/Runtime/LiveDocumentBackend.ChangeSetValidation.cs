@@ -77,6 +77,64 @@ public sealed partial class LiveDocumentBackend
         }
     }
 
+    // Layer-2 declared-cleanup tiers (W3): which op kinds each intent admits. Cumulative —
+    // regroup includes relayout's kinds, destructive includes both. Reads are deliberately NOT
+    // admitted: a cleanup ChangeSet is a pure canvas-hygiene write, and anything that needs a
+    // typed read is authoring work that should drop the intent.
+    private static readonly HashSet<OperationKind> RelayoutIntentKinds =
+        [OperationKind.MoveComponent, OperationKind.SetLayout];
+
+    private static readonly HashSet<OperationKind> RegroupIntentKinds =
+        [OperationKind.MoveComponent, OperationKind.SetLayout, OperationKind.SetGroup];
+
+    private static readonly HashSet<OperationKind> DestructiveIntentKinds =
+        [OperationKind.MoveComponent, OperationKind.SetLayout, OperationKind.SetGroup, OperationKind.DeleteComponent];
+
+    /// <summary>
+    /// Submit-time tier gate for the optional declared cleanup intent (Layer 2). Null intent =
+    /// normal authoring, no tier restriction (the Layer-1 live-wire delete guard still applies to
+    /// every ChangeSet). A declared tier restricts the op kinds only. The destructive tier does
+    /// NOT demand a grant at submit — orphan and self-authored deletes are the honest destructive
+    /// cleanup and need none; the execution-time guard is the authority that refuses live-foreign
+    /// targets and teaches approval_request. When a grant id IS supplied it must resolve
+    /// (ResolveApprovalGrant throws for an unknown/expired id on every submission).
+    /// </summary>
+    internal static void ValidateCleanupIntent(ChangeSet changeSet)
+    {
+        if (changeSet.Intent is null)
+        {
+            return;
+        }
+        var allowed = changeSet.Intent switch
+        {
+            CleanupIntents.Relayout => RelayoutIntentKinds,
+            CleanupIntents.Regroup => RegroupIntentKinds,
+            CleanupIntents.Destructive => DestructiveIntentKinds,
+            _ => null,
+        };
+        if (allowed is null)
+        {
+            throw new InvalidOperationException(
+                $"Unknown cleanup intent '{changeSet.Intent}'. Valid intents: '{CleanupIntents.Relayout}' " +
+                $"(moveComponent/setLayout), '{CleanupIntents.Regroup}' (adds setGroup), " +
+                $"'{CleanupIntents.Destructive}' (adds deleteComponent; live foreign targets additionally " +
+                "need user approval at execution). Omit intent entirely for normal authoring work.");
+        }
+        var outsideTier = changeSet.Operations
+            .Where(operation => !allowed.Contains(operation.Kind))
+            .Select(operation => $"'{operation.OperationId}' ({operation.Kind})")
+            .ToArray();
+        if (outsideTier.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"Cleanup intent '{changeSet.Intent}' does not admit: {string.Join(", ", outsideTier)}. " +
+                $"'{CleanupIntents.Relayout}' allows moveComponent/setLayout; '{CleanupIntents.Regroup}' " +
+                $"adds setGroup; '{CleanupIntents.Destructive}' adds deleteComponent. The only valid " +
+                "alternatives are declaring the tier that matches the work, omitting intent (authoring), " +
+                "or — for live foreign deletes — user approval via approval_request.");
+        }
+    }
+
     /// <summary>
     /// Attaches the standard acceptance predicate per write kind when the model declared none:
     /// creates/bakes verify the object exists, deletes verify absence, wires verify presence or

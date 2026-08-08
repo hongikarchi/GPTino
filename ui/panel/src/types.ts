@@ -143,12 +143,28 @@ export interface ApprovalCard {
   approvedItemIds?: string[] | null;
 }
 
+/**
+ * One (objectId, fingerprint) pair an approval item would touch. The binding/expiry semantics live
+ * entirely in objectId+fingerprint; label/role/impact are optional model-authored presentation (in
+ * the user's language) so destructive-cleanup requests can be judged, and legacy cards omit them.
+ */
+export interface ApprovalTarget {
+  objectId: string;
+  fingerprint: string;
+  /** Short human name for the component, e.g. its nickname. */
+  label?: string | null;
+  /** What this component does in the definition. */
+  role?: string | null;
+  /** What changes if it is deleted / what replaces it. */
+  impact?: string | null;
+}
+
 export interface ApprovalItem {
   id: string;
   label: string;
   measure?: string | null;
   /** Each target pins an object to the fingerprint that was audited. */
-  targets: { objectId: string; fingerprint: string }[];
+  targets: ApprovalTarget[];
   choices?: string[] | null;
 }
 

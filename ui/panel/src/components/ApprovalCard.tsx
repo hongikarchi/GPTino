@@ -1,5 +1,7 @@
 import { useState } from "react";
-import type { ApprovalCard as ApprovalCardData, FocusMode, FocusResult } from "../types";
+import type { ApprovalCard as ApprovalCardData, CanvasFocusResult, FocusMode, FocusResult } from "../types";
+import { approvalTargetRows } from "./approvalTargets";
+import { GhFocusChip } from "./GhFocusChip";
 import { useFocusTarget } from "./useFocusTarget";
 
 /**
@@ -19,9 +21,15 @@ interface ApprovalCardProps {
     choices?: Record<string, string>;
   }): void;
   onFocus?(objectIds: string[], mode: FocusMode): Promise<FocusResult>;
+  /**
+   * The panel's existing Grasshopper canvas-focus channel (POST /canvas/focus — the same one
+   * [[ghfocus:…]] chips use). Destructive-cleanup targets are GH components, so their zoom chips
+   * go to the canvas, not the Rhino viewport. Optional — without it the chips simply don't render.
+   */
+  onFocusCanvas?(objectIds: string[]): Promise<CanvasFocusResult>;
 }
 
-export function ApprovalCard({ card, busy = false, onAnswer, onFocus }: ApprovalCardProps) {
+export function ApprovalCard({ card, busy = false, onAnswer, onFocus, onFocusCanvas }: ApprovalCardProps) {
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [choices, setChoices] = useState<Record<string, string>>({});
   const focus = useFocusTarget(onFocus);
@@ -40,6 +48,7 @@ export function ApprovalCard({ card, busy = false, onAnswer, onFocus }: Approval
       <ul className="approval-card-list">
         {card.items.map((item) => {
           const granted = card.approvedItemIds?.includes(item.id);
+          const targetRows = approvalTargetRows(item);
           return (
             <li key={item.id} className={answered && granted ? "granted" : ""}>
               <label>
@@ -86,6 +95,25 @@ export function ApprovalCard({ card, busy = false, onAnswer, onFocus }: Approval
                     </label>
                   ))}
                 </span>
+              ) : null}
+              {/* Model-authored per-target context so a destructive cleanup can actually be judged:
+                  what each component is, what it does, and what changes if it goes. Legacy cards
+                  (bare objectId+fingerprint targets) produce no rows and render exactly as before. */}
+              {targetRows.length > 0 ? (
+                <ul className="approval-card-targets">
+                  {targetRows.map((row) => (
+                    <li key={row.key}>
+                      <span className="approval-target-head">
+                        <strong className="approval-target-label">{row.heading}</strong>
+                        {onFocusCanvas ? (
+                          <GhFocusChip objectIds={row.zoomObjectIds} label="확대" onFocusCanvas={onFocusCanvas} />
+                        ) : null}
+                      </span>
+                      {row.role ? <span className="approval-target-line">역할: {row.role}</span> : null}
+                      {row.impact ? <span className="approval-target-line">변경: {row.impact}</span> : null}
+                    </li>
+                  ))}
+                </ul>
               ) : null}
             </li>
           );

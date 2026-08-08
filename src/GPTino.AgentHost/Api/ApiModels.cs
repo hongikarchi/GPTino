@@ -116,7 +116,19 @@ public sealed record AnswerApprovalRequest(
     IReadOnlyList<string>? ApprovedItemIds = null,
     IReadOnlyDictionary<string, string>? Choices = null);
 
-public sealed record ApprovalGrantItem(Guid ObjectId, string Fingerprint);
+/// <summary>
+/// One (objectId, fingerprint) target the approval card displays. Label/Role/Impact are optional
+/// model-authored display strings (SHARED CONTRACT with the panel): label = short name, role =
+/// what the component does in the definition, impact = what changes if it is deleted / what
+/// replaces it. Absent on legacy cards — they keep deserializing (null) and the panel simply
+/// omits those lines. Grant minting still binds ONLY (ObjectId, Fingerprint).
+/// </summary>
+public sealed record ApprovalGrantItem(
+    Guid ObjectId,
+    string Fingerprint,
+    string? Label = null,
+    string? Role = null,
+    string? Impact = null);
 
 /// <summary>Panel viewport focus: mode is select | isolate | lock | restore.</summary>
 public sealed record FocusRequest(IReadOnlyList<Guid>? ObjectIds, string? Mode, bool? Zoom);
